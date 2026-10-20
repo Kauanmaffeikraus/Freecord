@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   Copy,
   Check,
-  Wifi,
   Minus,
   Square,
   X,
@@ -25,8 +24,50 @@ import {
   Download,
   RefreshCw,
   Globe,
+  Upload,
+  Trash2,
+  Sparkles,
 } from "lucide-react";
 import { WebRTCVoiceEngine } from "./services/webrtcVoiceEngine";
+
+const AVAILABLE_BADGES = [
+  "P2P Node",
+  "Early Adopter",
+  "Serverless Pioneer",
+  "REA Verified",
+  "Mesh Host",
+  "Go Live Streamer",
+];
+
+const STATUS_EMOJIS = ["⚡", "🚀", "🎮", "💻", "🎧", "🔥", "🛡️", "🌙", "☕"];
+
+function resizeImageToDataUrl(file, maxW, maxH, quality = 0.84) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Invalid image"));
+      img.onload = () => {
+        let w = img.width;
+        let h = img.height;
+        if (w > maxW || h > maxH) {
+          const ratio = Math.min(maxW / w, maxH / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 const I18N = {
   en: {
@@ -52,7 +93,7 @@ const I18N = {
     muteMic: "Mute Microphone",
     undeafenAudio: "Undeafen Audio",
     deafenAudio: "Deafen Audio",
-    profileSettingsTooltip: "Profile & P2P Node Settings",
+    profileSettingsTooltip: "Customize Profile & P2P Node Settings",
     connectComputerBtn: "Connect P2P Computer",
     voiceStageTitle: "P2P Voice & Go Live Stage — Direct Serverless Mesh",
     turnOffCamera: "Turn Off Camera",
@@ -60,7 +101,7 @@ const I18N = {
     stopGoLive: "Stop Go Live",
     startGoLive: "Share Screen (Go Live)",
     localVolumeTooltip: (name, vol) => `Local Volume for ${name}: ${vol}%`,
-    hubBannerTitle: "🖧 Computer ↔ Computer Interconnection Hub (Serverless P2P)",
+    hubBannerTitle: "Freecord PTB — Computer ↔ Computer Interconnection Hub",
     hubBannerDesc:
       "Freecord PTB runs with zero central servers. Computers connect directly via TCP P2P Sockets, Automatic LAN/VPN Discovery (UDP Broadcast & Multicast), and WebRTC P2P (Opus Voice, Video, Go Live & DataChannel).",
     yourEndpointLabel: "YOUR P2P NETWORK ADDRESS (SHARE WITH ANOTHER PC):",
@@ -123,13 +164,35 @@ const I18N = {
     newChannelSub: "Synchronized instantaneously across the P2P mesh.",
     channelNameLabel: "Channel Name",
     createChannelBtn: "Create Channel",
-    profileModalTitle: "Profile & P2P Identity Settings",
+    profileModalTitle: "Profile Customization Studio",
     cryptoPeerIdLabel: "Cryptographic Peer ID:",
-    usernameLabel: "Username",
-    customStatusLabel: "Custom Status",
-    avatarColorLabel: "Avatar Color",
+    displayNameLabel: "Display Name",
+    usernameLabel: "Username & Tag",
+    pronounsLabel: "Pronouns",
+    pronounsPlaceholder: "e.g. he/him, she/her, they/them",
+    presenceStatusLabel: "Presence Status",
+    statusOnline: "Online",
+    statusIdle: "Idle",
+    statusDnd: "Do Not Disturb",
+    statusInvisible: "Invisible",
+    customStatusLabel: "Custom Status & Emoji",
+    bioLabel: "About Me / Bio",
+    bioPlaceholder: "Tell other P2P peers about yourself...",
+    avatarImageLabel: "Avatar Image & Color",
+    uploadAvatarBtn: "Upload Avatar",
+    removeBtn: "Remove",
+    bannerImageLabel: "Profile Banner & Theme Colors",
+    uploadBannerBtn: "Upload Banner",
+    primaryThemeLabel: "Primary Theme",
+    accentThemeLabel: "Secondary Theme",
+    badgesLabel: "Profile Badges",
     languageLabel: "Interface Language",
-    saveProfileBtn: "Save P2P Profile",
+    livePreviewLabel: "Live Profile Card Preview",
+    aboutMeSection: "ABOUT ME",
+    p2pIdentitySection: "P2P CRYPTOGRAPHIC IDENTITY",
+    quickMessagePlaceholder: (name) => `Message @${name} directly via P2P...`,
+    editMyProfileBtn: "Edit My Profile",
+    saveProfileBtn: "Save & Sync Profile",
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -154,7 +217,7 @@ const I18N = {
     muteMic: "Silenciar Microfone",
     undeafenAudio: "Ativar Áudio",
     deafenAudio: "Desativar Áudio (Ensurdecer)",
-    profileSettingsTooltip: "Configurações de Perfil e Nó P2P",
+    profileSettingsTooltip: "Customizar Perfil e Nó P2P",
     connectComputerBtn: "Conectar Computador P2P",
     voiceStageTitle: "Palco de Voz & Go Live P2P — Malha Direta Sem Servidor",
     turnOffCamera: "Desligar Câmera",
@@ -162,7 +225,7 @@ const I18N = {
     stopGoLive: "Encerrar Go Live",
     startGoLive: "Transmitir Tela (Go Live)",
     localVolumeTooltip: (name, vol) => `Volume Local de ${name}: ${vol}%`,
-    hubBannerTitle: "🖧 Central de Interconexão Computador ↔ Computador (P2P Serverless)",
+    hubBannerTitle: "Freecord PTB — Central de Interconexão Computador ↔ Computador",
     hubBannerDesc:
       "O Freecord PTB opera sem nenhum servidor central. Os computadores se conectam diretamente via Sockets TCP P2P, Descoberta Automática LAN/VPN (UDP Broadcast & Multicast) e WebRTC P2P (Voz Opus, Vídeo, Go Live e DataChannel).",
     yourEndpointLabel: "SEU ENDEREÇO P2P NA REDE (ENVIE PARA OUTRO PC):",
@@ -225,13 +288,35 @@ const I18N = {
     newChannelSub: "Sincronizado instantaneamente na malha P2P.",
     channelNameLabel: "Nome do Canal",
     createChannelBtn: "Criar Canal",
-    profileModalTitle: "Configurações de Perfil & Identidade P2P",
+    profileModalTitle: "Estúdio de Customização de Perfil",
     cryptoPeerIdLabel: "Peer ID Criptográfico:",
-    usernameLabel: "Nome de Usuário",
-    customStatusLabel: "Status Personalizado",
-    avatarColorLabel: "Cor do Avatar",
+    displayNameLabel: "Nome de Exibição",
+    usernameLabel: "Usuário & Tag",
+    pronounsLabel: "Pronomes",
+    pronounsPlaceholder: "ex: ele/dele, ela/dela",
+    presenceStatusLabel: "Status de Presença",
+    statusOnline: "Online",
+    statusIdle: "Ausente",
+    statusDnd: "Não Perturbe",
+    statusInvisible: "Invisível",
+    customStatusLabel: "Status Personalizado & Emoji",
+    bioLabel: "Sobre Mim / Bio",
+    bioPlaceholder: "Conte aos outros peers P2P sobre você...",
+    avatarImageLabel: "Imagem e Cor do Avatar",
+    uploadAvatarBtn: "Enviar Avatar",
+    removeBtn: "Remover",
+    bannerImageLabel: "Banner do Perfil & Cores do Tema",
+    uploadBannerBtn: "Enviar Banner",
+    primaryThemeLabel: "Cor Primária",
+    accentThemeLabel: "Cor Secundária",
+    badgesLabel: "Insígnias do Perfil (Badges)",
     languageLabel: "Idioma da Interface / Language",
-    saveProfileBtn: "Salvar Perfil P2P",
+    livePreviewLabel: "Pré-visualização do Cartão de Perfil",
+    aboutMeSection: "SOBRE MIM",
+    p2pIdentitySection: "IDENTIDADE CRIPTOGRÁFICA P2P",
+    quickMessagePlaceholder: (name) => `Enviar mensagem direta P2P para @${name}...`,
+    editMyProfileBtn: "Editar Meu Perfil",
+    saveProfileBtn: "Salvar e Sincronizar Perfil",
   },
 };
 
@@ -271,9 +356,11 @@ const INITIAL_REA_MESSAGES = [
     channelId: "ch_rea",
     author: {
       peerId: "rea_system",
-      username: "REA Architecture Ledger",
+      displayName: "REA Architecture Ledger",
+      username: "rea_ledger",
       tag: "6.7.0",
       avatarColor: "#9b59b6",
+      avatarUrl: "./logo.png",
     },
     timestamp: "Today",
     text:
@@ -289,9 +376,11 @@ const INITIAL_REA_MESSAGES = [
     channelId: "ch_geral",
     author: {
       peerId: "freecord_node",
-      username: "Freecord P2P Engine",
+      displayName: "Freecord P2P Engine",
+      username: "freecord",
       tag: "P2P",
       avatarColor: "#5865f2",
+      avatarUrl: "./logo.png",
     },
     timestamp: "Now",
     text:
@@ -317,6 +406,177 @@ function VideoStreamView({ stream, muted = false }) {
   return <video ref={videoRef} autoPlay playsInline muted={muted} />;
 }
 
+function UserAvatar({
+  profile,
+  size = "normal",
+  speaking = false,
+  showStatus = false,
+  onClick,
+  style = {},
+}) {
+  const name = profile?.displayName || profile?.username || "FC";
+  const initials = name.slice(0, 2).toUpperCase();
+  const status = profile?.status || "online";
+
+  return (
+    <div
+      className={`avatar-circle ${size === "small" ? "small" : ""} ${
+        speaking ? "speaking" : ""
+      }`}
+      style={{
+        backgroundColor: profile?.avatarColor || "#5865f2",
+        cursor: onClick ? "pointer" : undefined,
+        ...style,
+      }}
+      onClick={onClick}
+    >
+      {profile?.avatarUrl ? (
+        <img src={profile.avatarUrl} alt={name} />
+      ) : (
+        initials
+      )}
+      {showStatus && <span className={`status-dot ${status}`} />}
+    </div>
+  );
+}
+
+function ProfileCard({ profile, isSelf, t, onEditProfile, onQuickDm }) {
+  const [quickText, setQuickText] = useState("");
+  const displayName = profile?.displayName || profile?.username || "Peer";
+  const username = profile?.username || "peer";
+  const tag = profile?.tag || "0000";
+  const status = profile?.status || "online";
+  const statusColors = {
+    online: "#23a55a",
+    idle: "#f0b232",
+    dnd: "#f23f43",
+    invisible: "#80848e",
+  };
+
+  const primaryBg = profile?.accentColorPrimary || "#1e1f22";
+  const secondaryBg = profile?.accentColorSecondary || "#2b2d31";
+
+  return (
+    <div
+      className="profile-card-preview"
+      style={{
+        background: `linear-gradient(165deg, ${primaryBg} 0%, ${secondaryBg} 100%)`,
+      }}
+    >
+      {/* Banner */}
+      <div
+        className="profile-banner"
+        style={{
+          backgroundColor: profile?.bannerColor || "#5865f2",
+          backgroundImage: profile?.bannerUrl ? `url(${profile.bannerUrl})` : undefined,
+        }}
+      />
+
+      {/* Avatar + Badges */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div className="profile-avatar-holder">
+          <div
+            className="profile-avatar-inner"
+            style={{ backgroundColor: profile?.avatarColor || "#5865f2" }}
+          >
+            {profile?.avatarUrl ? (
+              <img src={profile.avatarUrl} alt={displayName} />
+            ) : (
+              displayName.slice(0, 2).toUpperCase()
+            )}
+          </div>
+          <span
+            className="profile-status-indicator"
+            style={{ backgroundColor: statusColors[status] || "#23a55a" }}
+          />
+        </div>
+
+        <div className="profile-badges-bar" style={{ paddingLeft: 12 }}>
+          {(profile?.badges || ["P2P Node"]).map((b) => (
+            <span key={b} className="profile-badge-pill">
+              ✦ {b}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Card Body */}
+      <div className="profile-card-body">
+        <div className="profile-display-name">{displayName}</div>
+        <div className="profile-username-row">
+          <span>
+            @{username}#{tag}
+          </span>
+          {profile?.pronouns && (
+            <>
+              <span>•</span>
+              <span>{profile.pronouns}</span>
+            </>
+          )}
+        </div>
+
+        {(profile?.customStatus || profile?.statusEmoji) && (
+          <div className="profile-custom-status-box">
+            {profile?.statusEmoji && <span>{profile.statusEmoji}</span>}
+            <span>{profile?.customStatus}</span>
+          </div>
+        )}
+
+        <div className="profile-section-divider" />
+
+        <div className="profile-section-label">{t.aboutMeSection}</div>
+        <div className="profile-bio-text">
+          {profile?.bio || "Serverless P2P Node running on Freecord PTB."}
+        </div>
+
+        <div className="profile-section-divider" />
+
+        <div className="profile-section-label">{t.p2pIdentitySection}</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "Consolas, monospace" }}>
+          <div>Peer ID: {profile?.peerId}</div>
+          {profile?.fingerprint && <div>MLS/SHA256: {profile.fingerprint}</div>}
+          {profile?.address && (
+            <div>
+              Endpoint: {profile.address}:{profile.port || "WebRTC"} ({profile.rttMs || 1} ms)
+            </div>
+          )}
+        </div>
+
+        {isSelf && onEditProfile && (
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ width: "100%", justifyContent: "center", marginTop: 12 }}
+            onClick={onEditProfile}
+          >
+            <Sparkles size={14} />
+            <span>{t.editMyProfileBtn}</span>
+          </button>
+        )}
+
+        {!isSelf && onQuickDm && (
+          <form
+            style={{ marginTop: 12 }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!quickText.trim()) return;
+              onQuickDm(profile, quickText.trim());
+              setQuickText("");
+            }}
+          >
+            <input
+              className="form-input"
+              placeholder={t.quickMessagePlaceholder(displayName)}
+              value={quickText}
+              onChange={(e) => setQuickText(e.target.value)}
+            />
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const isElectron = Boolean(window.DiscordNative?.isRenderer);
 
@@ -328,11 +588,21 @@ export default function App() {
     instanceId: "1",
     profile: {
       peerId: `fc_web_${Math.random().toString(36).slice(2, 7)}`,
-      username: "FreecordPeer",
+      displayName: "Freecord Peer",
+      username: "freecord_peer",
       tag: String(Math.floor(1000 + Math.random() * 9000)),
+      pronouns: "",
+      bio: "Serverless P2P Node running on Freecord PTB.",
       avatarColor: "#5865f2",
+      avatarUrl: null,
+      bannerColor: "#5865f2",
+      bannerUrl: null,
+      accentColorPrimary: "#1e1f22",
+      accentColorSecondary: "#2b2d31",
       status: "online",
+      statusEmoji: "⚡",
       customStatus: "Connected via Direct P2P",
+      badges: ["P2P Node", "Early Adopter"],
     },
     tcpPort: 0,
     udpDiscoveryPort: 0,
@@ -345,7 +615,7 @@ export default function App() {
 
   // Rooms & Navigation State
   const [rooms, setRooms] = useState(INITIAL_ROOMS);
-  const [selectedRoomId, setSelectedRoomId] = useState("room_freecord_main"); // or "dm_hub"
+  const [selectedRoomId, setSelectedRoomId] = useState("room_freecord_main");
   const [selectedChannelId, setSelectedChannelId] = useState("ch_geral");
   const [selectedDmPeerId, setSelectedDmPeerId] = useState(null);
 
@@ -354,7 +624,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState("");
   const [typingPeers, setTypingPeers] = useState({});
 
-  // Voice & Video State (matching discord_voice)
+  // Voice & Video State
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState(null);
   const [selfMute, setSelfMute] = useState(false);
   const [selfDeafen, setSelfDeafen] = useState(false);
@@ -368,7 +638,7 @@ export default function App() {
 
   // Modals
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [connectTab, setConnectTab] = useState("ip"); // "ip" | "lan" | "sdp"
+  const [connectTab, setConnectTab] = useState("ip");
   const [directIpInput, setDirectIpInput] = useState("");
   const [connectStatusMsg, setConnectStatusMsg] = useState(null);
   const [copiedText, setCopiedText] = useState(null);
@@ -378,7 +648,7 @@ export default function App() {
   const [incomingInviteInput, setIncomingInviteInput] = useState("");
   const [generatedAnswerCode, setGeneratedAnswerCode] = useState("");
 
-  // Screen Share Picker Modal (matching discord_voice presentDesktopSourcePicker)
+  // Screen Share Picker Modal
   const [showScreenPicker, setShowScreenPicker] = useState(false);
   const [desktopSources, setDesktopSources] = useState([]);
 
@@ -387,14 +657,58 @@ export default function App() {
   const [newRoomName, setNewRoomName] = useState("");
   const [showNewChannelModal, setShowNewChannelModal] = useState(false);
   const [newChannelName, setNewChannelName] = useState("");
-  const [newChannelType, setNewChannelType] = useState("text"); // "text" | "voice"
+  const [newChannelType, setNewChannelType] = useState("text");
+
+  // Profile Customization Studio & Inspected User Popout
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [profileForm, setProfileForm] = useState({ username: "", customStatus: "", avatarColor: "#5865f2" });
+  const [inspectedProfile, setInspectedProfile] = useState(null);
+  const [profileForm, setProfileForm] = useState({
+    displayName: "",
+    username: "",
+    tag: "",
+    pronouns: "",
+    bio: "",
+    status: "online",
+    statusEmoji: "⚡",
+    customStatus: "",
+    avatarColor: "#5865f2",
+    avatarUrl: null,
+    bannerColor: "#5865f2",
+    bannerUrl: null,
+    accentColorPrimary: "#1e1f22",
+    accentColorSecondary: "#2b2d31",
+    badges: ["P2P Node", "Early Adopter"],
+  });
 
   const voiceEngineRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const avatarUploadRef = useRef(null);
+  const bannerUploadRef = useRef(null);
   const lastTypingSentRef = useRef(0);
+
+  const openProfileStudio = () => {
+    const p = nodeStatus.profile;
+    setProfileForm({
+      displayName: p.displayName || p.username || "Peer",
+      username: p.username || "peer",
+      tag: p.tag || "0000",
+      pronouns: p.pronouns || "",
+      bio: p.bio || "",
+      status: p.status || "online",
+      statusEmoji: p.statusEmoji || "⚡",
+      customStatus: p.customStatus || "",
+      avatarColor: p.avatarColor || "#5865f2",
+      avatarUrl: p.avatarUrl || null,
+      bannerColor: p.bannerColor || "#5865f2",
+      bannerUrl: p.bannerUrl || null,
+      accentColorPrimary: p.accentColorPrimary || "#1e1f22",
+      accentColorSecondary: p.accentColorSecondary || "#2b2d31",
+      badges: Array.isArray(p.badges) ? p.badges : ["P2P Node", "Early Adopter"],
+    });
+    setInspectedProfile(null);
+    setShowProfileModal(true);
+  };
 
   // Initialize WebRTC Voice Engine
   useEffect(() => {
@@ -425,7 +739,8 @@ export default function App() {
         const conn = engine.connections.get(peerId);
         const manualProf = conn?.manualProfile || {
           peerId,
-          username: "WebRTC Peer",
+          displayName: "WebRTC Peer",
+          username: "webrtc_peer",
           tag: "SDP",
           avatarColor: "#57F287",
         };
@@ -463,11 +778,6 @@ export default function App() {
         setNodeStatus(status);
         setConnectedPeers(status.connectedPeers || []);
         setLanPeers(status.lanPeers || []);
-        setProfileForm({
-          username: status.profile.username,
-          customStatus: status.profile.customStatus || "",
-          avatarColor: status.profile.avatarColor || "#5865f2",
-        });
       }
     });
 
@@ -646,7 +956,7 @@ export default function App() {
       const peer = connectedPeers.find((p) => p.peerId === selectedDmPeerId);
       return {
         id: effectiveChannelId,
-        name: peer ? `@${peer.username}` : t.p2pHubTitle,
+        name: peer ? `@${peer.displayName || peer.username}` : t.p2pHubTitle,
         topic: peer
           ? `Direct Encrypted P2P Message • Fingerprint: ${peer.fingerprint || "P2P"}`
           : t.connectModalSub,
@@ -664,6 +974,25 @@ export default function App() {
     [messages, effectiveChannelId]
   );
 
+  const buildAuthorSnapshot = () => ({
+    peerId: nodeStatus.profile.peerId,
+    displayName: nodeStatus.profile.displayName || nodeStatus.profile.username,
+    username: nodeStatus.profile.username,
+    tag: nodeStatus.profile.tag,
+    pronouns: nodeStatus.profile.pronouns,
+    bio: nodeStatus.profile.bio,
+    avatarColor: nodeStatus.profile.avatarColor,
+    avatarUrl: nodeStatus.profile.avatarUrl,
+    bannerColor: nodeStatus.profile.bannerColor,
+    bannerUrl: nodeStatus.profile.bannerUrl,
+    accentColorPrimary: nodeStatus.profile.accentColorPrimary,
+    accentColorSecondary: nodeStatus.profile.accentColorSecondary,
+    status: nodeStatus.profile.status,
+    statusEmoji: nodeStatus.profile.statusEmoji,
+    customStatus: nodeStatus.profile.customStatus,
+    badges: nodeStatus.profile.badges,
+  });
+
   const handleSendMessage = (e) => {
     e?.preventDefault();
     const trimmed = chatInput.trim();
@@ -672,12 +1001,7 @@ export default function App() {
     const newMsg = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       channelId: effectiveChannelId,
-      author: {
-        peerId: nodeStatus.profile.peerId,
-        username: nodeStatus.profile.username,
-        tag: nodeStatus.profile.tag,
-        avatarColor: nodeStatus.profile.avatarColor,
-      },
+      author: buildAuthorSnapshot(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       text: trimmed,
       reactions: {},
@@ -688,6 +1012,24 @@ export default function App() {
 
     const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
     sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, targetPeer);
+  };
+
+  const handleSendQuickDm = (peerProfile, text) => {
+    const sorted = [nodeStatus.profile.peerId, peerProfile.peerId].sort().join("__");
+    const dmChId = `dm_${sorted}`;
+    const newMsg = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      channelId: dmChId,
+      author: buildAuthorSnapshot(),
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      text,
+      reactions: {},
+    };
+    setMessages((prev) => [...prev, newMsg]);
+    sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, peerProfile.peerId);
+    setInspectedProfile(null);
+    setSelectedRoomId("dm_hub");
+    setSelectedDmPeerId(peerProfile.peerId);
   };
 
   const handleFileAttachment = (e) => {
@@ -704,12 +1046,7 @@ export default function App() {
       const newMsg = {
         id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         channelId: effectiveChannelId,
-        author: {
-          peerId: nodeStatus.profile.peerId,
-          username: nodeStatus.profile.username,
-          tag: nodeStatus.profile.tag,
-          avatarColor: nodeStatus.profile.avatarColor,
-        },
+        author: buildAuthorSnapshot(),
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         text: t.fileSharedText(file.name, (file.size / 1024).toFixed(1)),
         attachment: {
@@ -910,8 +1247,8 @@ export default function App() {
         type: "success",
         text:
           lang === "en"
-            ? `Successfully connected to ${peer.username}#${peer.tag} (${peer.address}:${peer.port})!`
-            : `Conectado com sucesso a ${peer.username}#${peer.tag} (${peer.address}:${peer.port})!`,
+            ? `Successfully connected to ${peer.displayName || peer.username}#${peer.tag} (${peer.address}:${peer.port})!`
+            : `Conectado com sucesso a ${peer.displayName || peer.username}#${peer.tag} (${peer.address}:${peer.port})!`,
       });
       setDirectIpInput("");
     } catch (err) {
@@ -991,15 +1328,22 @@ export default function App() {
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
+    const sanitized = {
+      ...profileForm,
+      displayName: profileForm.displayName.trim() || profileForm.username.trim() || "Peer",
+      username: (profileForm.username.trim() || "peer").toLowerCase().replace(/\s+/g, "_"),
+      tag: (profileForm.tag.trim() || "0001").slice(0, 6),
+    };
+
     if (window.DiscordNative?.p2p) {
-      const updated = await window.DiscordNative.p2p.updateProfile(profileForm);
+      const updated = await window.DiscordNative.p2p.updateProfile(sanitized);
       if (updated) {
         setNodeStatus((prev) => ({ ...prev, profile: updated }));
       }
     } else {
       setNodeStatus((prev) => ({
         ...prev,
-        profile: { ...prev.profile, ...profileForm },
+        profile: { ...prev.profile, ...sanitized },
       }));
     }
     setShowProfileModal(false);
@@ -1009,9 +1353,8 @@ export default function App() {
     const list = [];
     if (activeVoiceChannelId === vcId) {
       list.push({
-        peerId: nodeStatus.profile.peerId,
-        username: `${nodeStatus.profile.username} ${t.youSuffix}`,
-        avatarColor: nodeStatus.profile.avatarColor,
+        ...nodeStatus.profile,
+        displayName: `${nodeStatus.profile.displayName || nodeStatus.profile.username} ${t.youSuffix}`,
         isSelf: true,
         speaking: Boolean(speakingMap[nodeStatus.profile.peerId]),
         screenSharing,
@@ -1023,9 +1366,8 @@ export default function App() {
     for (const p of connectedPeers) {
       if (p.voiceChannelId === vcId) {
         list.push({
-          peerId: p.peerId,
-          username: p.username,
-          avatarColor: p.avatarColor || "#5865f2",
+          ...p,
+          displayName: p.displayName || p.username,
           isSelf: false,
           speaking: Boolean(speakingMap[p.peerId]),
           screenSharing: Boolean(p.voiceState?.screenSharing),
@@ -1039,12 +1381,14 @@ export default function App() {
   };
 
   const activeTyping = typingPeers[effectiveChannelId];
+  const selfDisplayName = nodeStatus.profile.displayName || nodeStatus.profile.username;
 
   return (
     <>
-      {/* DiscordPTB Frameless Titlebar */}
+      {/* DiscordPTB Frameless Titlebar with Official Freecord Logo */}
       <div className="titlebar">
         <div className="titlebar-left">
+          <img src="./logo.png" alt="Freecord" className="titlebar-logo" />
           <span>FREECORD</span>
           <span className="ptb-badge">PTB 1.0.1225 P2P</span>
           <div
@@ -1117,14 +1461,14 @@ export default function App() {
         {/* Left Server / P2P Spaces Rail */}
         <div className="server-rail">
           <div
-            className={`server-icon ${selectedRoomId === "dm_hub" ? "active" : ""}`}
+            className={`server-icon home-logo ${selectedRoomId === "dm_hub" ? "active" : ""}`}
             onClick={() => {
               setSelectedRoomId("dm_hub");
               setSelectedDmPeerId(null);
             }}
             title={t.p2pHubTitle}
           >
-            <Wifi size={22} />
+            <img src="./logo.png" alt="Freecord Hub" />
             {connectedPeers.length > 0 && (
               <span className="server-badge">{connectedPeers.length}</span>
             )}
@@ -1178,7 +1522,8 @@ export default function App() {
               if (selectedRoomId === "dm_hub") setShowConnectModal(true);
             }}
           >
-            <span>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <img src="./logo.png" alt="" style={{ width: 20, height: 20, borderRadius: 5 }} />
               {selectedRoomId === "dm_hub"
                 ? t.p2pHubTitle
                 : currentRoom?.name}
@@ -1220,13 +1565,8 @@ export default function App() {
                       onClick={() => setSelectedDmPeerId(peer.peerId)}
                     >
                       <div className="channel-item-left">
-                        <div
-                          className="avatar-circle small"
-                          style={{ backgroundColor: peer.avatarColor || "#5865f2" }}
-                        >
-                          {peer.username.slice(0, 2).toUpperCase()}
-                        </div>
-                        <span>{peer.username}</span>
+                        <UserAvatar profile={peer} size="small" showStatus={true} />
+                        <span>{peer.displayName || peer.username}</span>
                       </div>
                       <span style={{ fontSize: 10, color: "#4ade80" }}>{peer.rttMs}ms</span>
                     </div>
@@ -1294,15 +1634,18 @@ export default function App() {
                       {members.length > 0 && (
                         <div className="voice-channel-users">
                           {members.map((m) => (
-                            <div key={m.peerId} className="voice-user-row">
+                            <div
+                              key={m.peerId}
+                              className="voice-user-row"
+                              onClick={() => setInspectedProfile(m)}
+                            >
                               <div className="voice-user-left">
-                                <div
-                                  className={`avatar-circle small ${m.speaking ? "speaking" : ""}`}
-                                  style={{ backgroundColor: m.avatarColor }}
-                                >
-                                  {m.username.slice(0, 2).toUpperCase()}
-                                </div>
-                                <span style={{ fontSize: 12 }}>{m.username}</span>
+                                <UserAvatar
+                                  profile={m}
+                                  size="small"
+                                  speaking={m.speaking}
+                                />
+                                <span style={{ fontSize: 12 }}>{m.displayName}</span>
                               </div>
                               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                 {m.screenSharing && <span className="live-badge">{t.liveBadge}</span>}
@@ -1365,27 +1708,19 @@ export default function App() {
           <div className="user-panel">
             <div
               className="user-panel-info"
-              onClick={() => {
-                setProfileForm({
-                  username: nodeStatus.profile.username,
-                  customStatus: nodeStatus.profile.customStatus || "",
-                  avatarColor: nodeStatus.profile.avatarColor || "#5865f2",
-                });
-                setShowProfileModal(true);
-              }}
+              onClick={openProfileStudio}
               title={t.profileSettingsTooltip}
             >
-              <div
-                className={`avatar-circle ${speakingMap[nodeStatus.profile.peerId] ? "speaking" : ""}`}
-                style={{ backgroundColor: nodeStatus.profile.avatarColor || "#5865f2" }}
-              >
-                {nodeStatus.profile.username.slice(0, 2).toUpperCase()}
-                <span className="status-dot" />
-              </div>
+              <UserAvatar
+                profile={nodeStatus.profile}
+                speaking={Boolean(speakingMap[nodeStatus.profile.peerId])}
+                showStatus={true}
+              />
               <div style={{ minWidth: 0 }}>
-                <div className="user-panel-name">{nodeStatus.profile.username}</div>
+                <div className="user-panel-name">{selfDisplayName}</div>
                 <div className="user-panel-sub">
-                  #{nodeStatus.profile.tag} • {t.portLabel} {nodeStatus.tcpPort || "Web"}
+                  {nodeStatus.profile.statusEmoji || ""}{" "}
+                  {nodeStatus.profile.customStatus || `#${nodeStatus.profile.tag}`}
                 </div>
               </div>
             </div>
@@ -1407,14 +1742,7 @@ export default function App() {
               </button>
               <button
                 className="icon-btn"
-                onClick={() => {
-                  setProfileForm({
-                    username: nodeStatus.profile.username,
-                    customStatus: nodeStatus.profile.customStatus || "",
-                    avatarColor: nodeStatus.profile.avatarColor || "#5865f2",
-                  });
-                  setShowProfileModal(true);
-                }}
+                onClick={openProfileStudio}
                 title={t.profileSettingsTooltip}
               >
                 <Settings size={17} />
@@ -1436,6 +1764,10 @@ export default function App() {
             </div>
 
             <div className="stage-header-right">
+              <button className="btn-secondary" onClick={openProfileStudio}>
+                <Sparkles size={14} />
+                <span>{t.editMyProfileBtn}</span>
+              </button>
               <button className="btn-primary" onClick={() => setShowConnectModal(true)}>
                 <Radio size={15} />
                 <span>{t.connectComputerBtn}</span>
@@ -1482,23 +1814,15 @@ export default function App() {
                       {(videoEnabled || screenSharing) && localMediaStream ? (
                         <VideoStreamView stream={localMediaStream} muted={true} />
                       ) : (
-                        <div
-                          className={`avatar-circle ${
-                            speakingMap[nodeStatus.profile.peerId] ? "speaking" : ""
-                          }`}
-                          style={{
-                            width: 68,
-                            height: 68,
-                            fontSize: 24,
-                            backgroundColor: nodeStatus.profile.avatarColor,
-                          }}
-                        >
-                          {nodeStatus.profile.username.slice(0, 2).toUpperCase()}
-                        </div>
+                        <UserAvatar
+                          profile={nodeStatus.profile}
+                          speaking={Boolean(speakingMap[nodeStatus.profile.peerId])}
+                          style={{ width: 68, height: 68, fontSize: 24 }}
+                        />
                       )}
                       <div className="video-tile-overlay">
                         <span className="video-tile-name">
-                          {nodeStatus.profile.username} {t.youSuffix}
+                          {selfDisplayName} {t.youSuffix}
                           {screenSharing && <span className="live-badge">GO LIVE</span>}
                         </span>
                       </div>
@@ -1517,23 +1841,15 @@ export default function App() {
                           {hasVideo ? (
                             <VideoStreamView stream={rStream} muted={selfDeafen} />
                           ) : (
-                            <div
-                              className={`avatar-circle ${
-                                speakingMap[peer.peerId] ? "speaking" : ""
-                              }`}
-                              style={{
-                                width: 68,
-                                height: 68,
-                                fontSize: 24,
-                                backgroundColor: peer.avatarColor || "#5865f2",
-                              }}
-                            >
-                              {peer.username.slice(0, 2).toUpperCase()}
-                            </div>
+                            <UserAvatar
+                              profile={peer}
+                              speaking={Boolean(speakingMap[peer.peerId])}
+                              style={{ width: 68, height: 68, fontSize: 24 }}
+                            />
                           )}
                           <div className="video-tile-overlay" style={{ pointerEvents: "auto" }}>
                             <span className="video-tile-name">
-                              {peer.username}
+                              {peer.displayName || peer.username}
                               {peer.voiceState?.screenSharing && (
                                 <span className="live-badge">{t.liveBadge}</span>
                               )}
@@ -1548,7 +1864,7 @@ export default function App() {
                                 setPeerVolumes((prev) => ({ ...prev, [peer.peerId]: v }));
                                 voiceEngineRef.current?.setLocalVolume(peer.peerId, v);
                               }}
-                              title={t.localVolumeTooltip(peer.username, vol)}
+                              title={t.localVolumeTooltip(peer.displayName || peer.username, vol)}
                               style={{ width: 75, cursor: "pointer" }}
                             />
                           </div>
@@ -1564,35 +1880,51 @@ export default function App() {
                 <div className="messages-scroller" style={{ padding: "22px 26px" }}>
                   <div
                     style={{
-                      background: "linear-gradient(135deg, rgba(88,101,242,0.18), rgba(35,165,90,0.12))",
+                      background: "linear-gradient(135deg, rgba(88,101,242,0.18), rgba(155,89,182,0.14))",
                       border: "1px solid rgba(88,101,242,0.35)",
                       borderRadius: 10,
                       padding: 20,
                       marginBottom: 20,
+                      display: "flex",
+                      gap: 18,
+                      alignItems: "center",
                     }}
                   >
-                    <h2 style={{ color: "#fff", fontSize: 20, marginBottom: 6 }}>
-                      {t.hubBannerTitle}
-                    </h2>
-                    <p style={{ color: "var(--text-normal)", fontSize: 13, lineHeight: 1.5 }}>
-                      {t.hubBannerDesc}
-                    </p>
+                    <img
+                      src="./logo.png"
+                      alt="Freecord Logo"
+                      style={{
+                        width: 76,
+                        height: 76,
+                        borderRadius: 16,
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <h2 style={{ color: "#fff", fontSize: 20, marginBottom: 6 }}>
+                        {t.hubBannerTitle}
+                      </h2>
+                      <p style={{ color: "var(--text-normal)", fontSize: 13, lineHeight: 1.5 }}>
+                        {t.hubBannerDesc}
+                      </p>
 
-                    <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10 }}>
-                      {(nodeStatus.connectionStrings || []).map((ep) => (
-                        <div key={ep} className="endpoint-copy-card" style={{ marginBottom: 0, gap: 12 }}>
-                          <div>
-                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
-                              {t.yourEndpointLabel}
+                      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        {(nodeStatus.connectionStrings || []).map((ep) => (
+                          <div key={ep} className="endpoint-copy-card" style={{ marginBottom: 0, gap: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
+                                {t.yourEndpointLabel}
+                              </div>
+                              <div className="endpoint-code">{ep}</div>
                             </div>
-                            <div className="endpoint-code">{ep}</div>
+                            <button className="btn-primary" onClick={() => handleCopy(ep)}>
+                              {copiedText === ep ? <Check size={14} /> : <Copy size={14} />}
+                              <span>{copiedText === ep ? t.copied : t.copyIpPort}</span>
+                            </button>
                           </div>
-                          <button className="btn-primary" onClick={() => handleCopy(ep)}>
-                            {copiedText === ep ? <Check size={14} /> : <Copy size={14} />}
-                            <span>{copiedText === ep ? t.copied : t.copyIpPort}</span>
-                          </button>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   </div>
 
@@ -1637,15 +1969,10 @@ export default function App() {
                           }}
                         >
                           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                            <div
-                              className="avatar-circle"
-                              style={{ backgroundColor: lp.avatarColor || "#5865f2" }}
-                            >
-                              {lp.username.slice(0, 2).toUpperCase()}
-                            </div>
+                            <UserAvatar profile={lp} showStatus={true} />
                             <div>
                               <div style={{ fontWeight: 700, color: "#fff" }}>
-                                {lp.username}#{lp.tag}{" "}
+                                {lp.displayName || lp.username}#{lp.tag}{" "}
                                 <span className="message-peer-badge">{lp.peerId}</span>
                               </div>
                               <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
@@ -1685,16 +2012,20 @@ export default function App() {
 
                     {filteredMessages.map((msg) => (
                       <div key={msg.id} className="message-item">
-                        <div
-                          className="avatar-circle"
-                          style={{ backgroundColor: msg.author?.avatarColor || "#5865f2" }}
-                        >
-                          {(msg.author?.username || "FC").slice(0, 2).toUpperCase()}
-                        </div>
+                        <UserAvatar
+                          profile={msg.author}
+                          onClick={() => setInspectedProfile(msg.author)}
+                        />
 
                         <div className="message-content">
                           <div className="message-header">
-                            <span className="message-author">{msg.author?.username}</span>
+                            <span
+                              className="message-author"
+                              style={{ cursor: "pointer" }}
+                              onClick={() => setInspectedProfile(msg.author)}
+                            >
+                              {msg.author?.displayName || msg.author?.username}
+                            </span>
                             <span className="message-peer-badge">
                               #{msg.author?.tag || "P2P"}
                             </span>
@@ -1807,7 +2138,7 @@ export default function App() {
                             sendP2PPacket({
                               type: "TYPING_STATE",
                               channelId: effectiveChannelId,
-                              username: nodeStatus.profile.username,
+                              username: selfDisplayName,
                             });
                           }
                         }}
@@ -1826,21 +2157,19 @@ export default function App() {
               <div className="channel-section-title" style={{ paddingTop: 0 }}>
                 <span>{t.youSidebarHeader}</span>
               </div>
-              <div className="peer-card">
+              <div
+                className="peer-card"
+                onClick={() => setInspectedProfile(nodeStatus.profile)}
+              >
                 <div className="peer-card-left">
-                  <div
-                    className="avatar-circle"
-                    style={{ backgroundColor: nodeStatus.profile.avatarColor }}
-                  >
-                    {nodeStatus.profile.username.slice(0, 2).toUpperCase()}
-                    <span className="status-dot" />
-                  </div>
+                  <UserAvatar profile={nodeStatus.profile} showStatus={true} />
                   <div className="peer-card-meta">
                     <span className="peer-card-name">
-                      {nodeStatus.profile.username}#{nodeStatus.profile.tag}
+                      {selfDisplayName}#{nodeStatus.profile.tag}
                     </span>
                     <span className="peer-card-sub">
-                      TCP {t.portLabel}: {nodeStatus.tcpPort || "Web"}
+                      {nodeStatus.profile.statusEmoji || ""}{" "}
+                      {nodeStatus.profile.customStatus || `TCP: ${nodeStatus.tcpPort || "Web"}`}
                     </span>
                   </div>
                 </div>
@@ -1853,28 +2182,21 @@ export default function App() {
                 <div
                   key={peer.peerId}
                   className="peer-card"
-                  onClick={() => {
-                    setSelectedRoomId("dm_hub");
-                    setSelectedDmPeerId(peer.peerId);
-                  }}
-                  title={`P2P Fingerprint: ${peer.fingerprint}`}
+                  onClick={() => setInspectedProfile(peer)}
+                  title={`Click to view ${peer.displayName || peer.username}'s Profile Card`}
                 >
                   <div className="peer-card-left">
-                    <div
-                      className={`avatar-circle ${
-                        speakingMap[peer.peerId] ? "speaking" : ""
-                      }`}
-                      style={{ backgroundColor: peer.avatarColor || "#5865f2" }}
-                    >
-                      {peer.username.slice(0, 2).toUpperCase()}
-                      <span className="status-dot" />
-                    </div>
+                    <UserAvatar
+                      profile={peer}
+                      speaking={Boolean(speakingMap[peer.peerId])}
+                      showStatus={true}
+                    />
                     <div className="peer-card-meta">
                       <span className="peer-card-name">
-                        {peer.username}#{peer.tag}
+                        {peer.displayName || peer.username}#{peer.tag}
                       </span>
                       <span className="peer-card-sub">
-                        {peer.address}:{peer.port} • {peer.rttMs}ms
+                        {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port} • ${peer.rttMs}ms`}
                       </span>
                     </div>
                   </div>
@@ -1895,14 +2217,9 @@ export default function App() {
                 .map((lp) => (
                   <div key={lp.peerId} className="peer-card">
                     <div className="peer-card-left">
-                      <div
-                        className="avatar-circle"
-                        style={{ backgroundColor: lp.avatarColor || "#5865f2" }}
-                      >
-                        {lp.username.slice(0, 2).toUpperCase()}
-                      </div>
+                      <UserAvatar profile={lp} showStatus={true} />
                       <div className="peer-card-meta">
-                        <span className="peer-card-name">{lp.username}</span>
+                        <span className="peer-card-name">{lp.displayName || lp.username}</span>
                         <span className="peer-card-sub">
                           {lp.host}:{lp.tcpPort}
                         </span>
@@ -1922,6 +2239,390 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Modal: Inspected User Profile Card Popout */}
+      {inspectedProfile && (
+        <div className="modal-backdrop" onClick={() => setInspectedProfile(null)}>
+          <div
+            style={{ width: 380, maxWidth: "94vw" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ProfileCard
+              profile={
+                inspectedProfile.peerId === nodeStatus.profile.peerId
+                  ? nodeStatus.profile
+                  : connectedPeers.find((p) => p.peerId === inspectedProfile.peerId) ||
+                    inspectedProfile
+              }
+              isSelf={inspectedProfile.peerId === nodeStatus.profile.peerId}
+              t={t}
+              onEditProfile={openProfileStudio}
+              onQuickDm={handleSendQuickDm}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Full Profile Customization Studio */}
+      {showProfileModal && (
+        <div className="modal-backdrop" onClick={() => setShowProfileModal(false)}>
+          <div className="profile-studio-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <h3 style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
+                  ✨ {t.profileModalTitle}
+                </h3>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  {t.cryptoPeerIdLabel} <b>{nodeStatus.profile.peerId}</b>
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setShowProfileModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProfile}>
+              <div className="profile-studio-grid">
+                {/* Left Column: Customization Controls */}
+                <div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 0.7fr", gap: 8 }}>
+                    <div className="form-group">
+                      <label>{t.displayNameLabel}</label>
+                      <input
+                        className="form-input"
+                        value={profileForm.displayName}
+                        onChange={(e) =>
+                          setProfileForm((p) => ({ ...p, displayName: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>{t.usernameLabel}</label>
+                      <input
+                        className="form-input"
+                        value={profileForm.username}
+                        onChange={(e) =>
+                          setProfileForm((p) => ({ ...p, username: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>#Tag</label>
+                      <input
+                        className="form-input"
+                        maxLength={6}
+                        value={profileForm.tag}
+                        onChange={(e) =>
+                          setProfileForm((p) => ({ ...p, tag: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.pronounsLabel}</label>
+                    <input
+                      className="form-input"
+                      placeholder={t.pronounsPlaceholder}
+                      value={profileForm.pronouns}
+                      onChange={(e) =>
+                        setProfileForm((p) => ({ ...p, pronouns: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.presenceStatusLabel}</label>
+                    <div className="status-selector-row">
+                      {[
+                        { id: "online", label: t.statusOnline, color: "#23a55a" },
+                        { id: "idle", label: t.statusIdle, color: "#f0b232" },
+                        { id: "dnd", label: t.statusDnd, color: "#f23f43" },
+                        { id: "invisible", label: t.statusInvisible, color: "#80848e" },
+                      ].map((st) => (
+                        <button
+                          key={st.id}
+                          type="button"
+                          className={`status-choice-btn ${
+                            profileForm.status === st.id ? "active" : ""
+                          }`}
+                          onClick={() =>
+                            setProfileForm((p) => ({ ...p, status: st.id }))
+                          }
+                        >
+                          <span
+                            style={{
+                              width: 9,
+                              height: 9,
+                              borderRadius: "50%",
+                              backgroundColor: st.color,
+                            }}
+                          />
+                          <span>{st.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.customStatusLabel}</label>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
+                      {STATUS_EMOJIS.map((em) => (
+                        <button
+                          key={em}
+                          type="button"
+                          className="quick-react-btn"
+                          style={{
+                            background:
+                              profileForm.statusEmoji === em
+                                ? "rgba(88, 101, 242, 0.35)"
+                                : "var(--bg-tertiary)",
+                            border:
+                              profileForm.statusEmoji === em
+                                ? "1px solid var(--brand-blurple)"
+                                : "1px solid transparent",
+                          }}
+                          onClick={() =>
+                            setProfileForm((p) => ({ ...p, statusEmoji: em }))
+                          }
+                        >
+                          {em}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      className="form-input"
+                      value={profileForm.customStatus}
+                      onChange={(e) =>
+                        setProfileForm((p) => ({ ...p, customStatus: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.bioLabel}</label>
+                    <textarea
+                      className="form-textarea"
+                      rows={3}
+                      placeholder={t.bioPlaceholder}
+                      value={profileForm.bio}
+                      onChange={(e) =>
+                        setProfileForm((p) => ({ ...p, bio: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  {/* Avatar Upload & Color */}
+                  <div className="form-group">
+                    <label>{t.avatarImageLabel}</label>
+                    <input
+                      ref={avatarUploadRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await resizeImageToDataUrl(file, 240, 240, 0.86);
+                          setProfileForm((p) => ({ ...p, avatarUrl: dataUrl }));
+                        } catch {}
+                        e.target.value = "";
+                      }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => avatarUploadRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>{t.uploadAvatarBtn}</span>
+                      </button>
+                      {profileForm.avatarUrl && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setProfileForm((p) => ({ ...p, avatarUrl: null }))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                      {["#5865f2", "#23a55a", "#f0b232", "#eb459e", "#f23f43", "#00b0f4", "#9b59b6"].map(
+                        (c) => (
+                          <div
+                            key={c}
+                            onClick={() => setProfileForm((p) => ({ ...p, avatarColor: c }))}
+                            style={{
+                              width: 24,
+                              height: 24,
+                              borderRadius: "50%",
+                              backgroundColor: c,
+                              cursor: "pointer",
+                              border:
+                                profileForm.avatarColor === c
+                                  ? "2px solid #fff"
+                                  : "2px solid transparent",
+                            }}
+                          />
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Banner Upload & Theme Colors */}
+                  <div className="form-group">
+                    <label>{t.bannerImageLabel}</label>
+                    <input
+                      ref={bannerUploadRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await resizeImageToDataUrl(file, 640, 240, 0.84);
+                          setProfileForm((p) => ({ ...p, bannerUrl: dataUrl }));
+                        } catch {}
+                        e.target.value = "";
+                      }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => bannerUploadRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>{t.uploadBannerBtn}</span>
+                      </button>
+                      {profileForm.bannerUrl && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setProfileForm((p) => ({ ...p, bannerUrl: null }))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>Banner:</span>
+                        <input
+                          type="color"
+                          value={profileForm.bannerColor}
+                          onChange={(e) =>
+                            setProfileForm((p) => ({ ...p, bannerColor: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>{t.primaryThemeLabel}:</span>
+                        <input
+                          type="color"
+                          value={profileForm.accentColorPrimary}
+                          onChange={(e) =>
+                            setProfileForm((p) => ({ ...p, accentColorPrimary: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>{t.accentThemeLabel}:</span>
+                        <input
+                          type="color"
+                          value={profileForm.accentColorSecondary}
+                          onChange={(e) =>
+                            setProfileForm((p) => ({ ...p, accentColorSecondary: e.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Badges Selector */}
+                  <div className="form-group">
+                    <label>{t.badgesLabel}</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {AVAILABLE_BADGES.map((badge) => {
+                        const selected = (profileForm.badges || []).includes(badge);
+                        return (
+                          <button
+                            key={badge}
+                            type="button"
+                            className={`status-choice-btn ${selected ? "active" : ""}`}
+                            onClick={() => {
+                              setProfileForm((p) => {
+                                const current = new Set(p.badges || []);
+                                if (current.has(badge)) {
+                                  current.delete(badge);
+                                } else {
+                                  current.add(badge);
+                                }
+                                return { ...p, badges: Array.from(current) };
+                              });
+                            }}
+                          >
+                            ✦ {badge}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.languageLabel}</label>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        type="button"
+                        className={lang === "en" ? "btn-primary" : "btn-secondary"}
+                        onClick={() => setLang("en")}
+                      >
+                        English (EN)
+                      </button>
+                      <button
+                        type="button"
+                        className={lang === "pt" ? "btn-primary" : "btn-secondary"}
+                        onClick={() => setLang("pt")}
+                      >
+                        Português (PT-BR)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Live Interactive Profile Card Preview */}
+                <div>
+                  <div className="profile-section-label" style={{ marginBottom: 8 }}>
+                    {t.livePreviewLabel}
+                  </div>
+                  <ProfileCard
+                    profile={{
+                      ...profileForm,
+                      peerId: nodeStatus.profile.peerId,
+                    }}
+                    isSelf={true}
+                    t={t}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setShowProfileModal(false)}
+                >
+                  {t.cancelBtn}
+                </button>
+                <button type="submit" className="btn-primary">
+                  <Sparkles size={14} />
+                  <span>{t.saveProfileBtn}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal: P2P Direct Connection Hub */}
       {showConnectModal && (
@@ -2030,7 +2731,7 @@ export default function App() {
                     <div key={lp.peerId} className="endpoint-copy-card">
                       <div>
                         <strong style={{ color: "#fff" }}>
-                          {lp.username}#{lp.tag}
+                          {lp.displayName || lp.username}#{lp.tag}
                         </strong>
                         <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                           {lp.host}:{lp.tcpPort}
@@ -2253,95 +2954,6 @@ export default function App() {
                 </button>
                 <button type="submit" className="btn-primary">
                   {t.createChannelBtn}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Edit Profile */}
-      {showProfileModal && (
-        <div className="modal-backdrop" onClick={() => setShowProfileModal(false)}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <h3>{t.profileModalTitle}</h3>
-            <p className="sub">
-              {t.cryptoPeerIdLabel} <b>{nodeStatus.profile.peerId}</b>
-            </p>
-            <form onSubmit={handleSaveProfile}>
-              <div className="form-group">
-                <label>{t.usernameLabel}</label>
-                <input
-                  className="form-input"
-                  value={profileForm.username}
-                  onChange={(e) =>
-                    setProfileForm((p) => ({ ...p, username: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-group">
-                <label>{t.customStatusLabel}</label>
-                <input
-                  className="form-input"
-                  value={profileForm.customStatus}
-                  onChange={(e) =>
-                    setProfileForm((p) => ({ ...p, customStatus: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="form-group">
-                <label>{t.languageLabel}</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    type="button"
-                    className={lang === "en" ? "btn-primary" : "btn-secondary"}
-                    onClick={() => setLang("en")}
-                  >
-                    English (EN)
-                  </button>
-                  <button
-                    type="button"
-                    className={lang === "pt" ? "btn-primary" : "btn-secondary"}
-                    onClick={() => setLang("pt")}
-                  >
-                    Português (PT-BR)
-                  </button>
-                </div>
-              </div>
-              <div className="form-group">
-                <label>{t.avatarColorLabel}</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {["#5865f2", "#23a55a", "#f0b232", "#eb459e", "#f23f43", "#00b0f4", "#9b59b6"].map(
-                    (c) => (
-                      <div
-                        key={c}
-                        onClick={() => setProfileForm((p) => ({ ...p, avatarColor: c }))}
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          backgroundColor: c,
-                          cursor: "pointer",
-                          border:
-                            profileForm.avatarColor === c
-                              ? "3px solid #fff"
-                              : "2px solid transparent",
-                        }}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => setShowProfileModal(false)}
-                >
-                  {t.cancelBtn}
-                </button>
-                <button type="submit" className="btn-primary">
-                  {t.saveProfileBtn}
                 </button>
               </div>
             </form>

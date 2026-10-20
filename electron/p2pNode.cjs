@@ -68,17 +68,6 @@ class P2PNode extends EventEmitter {
   }
 
   loadInitialProfile() {
-    try {
-      if (fs.existsSync(this.stateFile)) {
-        const saved = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
-        if (saved && saved.profile && saved.profile.peerId) {
-          return saved.profile;
-        }
-      }
-    } catch (err) {
-      console.warn("[Freecord P2P] Failed to load profile:", err.message);
-    }
-
     const randomHex = crypto.randomBytes(4).toString("hex");
     const tag = String(Math.floor(1000 + Math.random() * 9000));
     const colors = ["#5865F2", "#57F287", "#FEE75C", "#EB459E", "#ED4245", "#00B0F4", "#9B59B6"];
@@ -88,17 +77,42 @@ class P2PNode extends EventEmitter {
         ? `Peer_${randomHex.slice(0, 4).toUpperCase()}`
         : `Peer_${this.instanceId}_${randomHex.slice(0, 4).toUpperCase()}`;
 
-    const profile = {
+    const defaults = {
       peerId: `fc_${randomHex}`,
-      username: defaultName,
+      displayName: defaultName,
+      username: defaultName.toLowerCase(),
       tag,
+      pronouns: "",
+      bio: "Serverless P2P Node running on Freecord PTB.",
       avatarColor,
+      avatarUrl: null,
+      bannerColor: "#5865f2",
+      bannerUrl: null,
+      accentColorPrimary: "#1e1f22",
+      accentColorSecondary: "#2b2d31",
       status: "online",
+      statusEmoji: "⚡",
       customStatus: "Connected via Direct P2P (Serverless)",
+      badges: ["P2P Node", "Early Adopter"],
     };
 
-    this.saveProfile(profile);
-    return profile;
+    try {
+      if (fs.existsSync(this.stateFile)) {
+        const saved = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
+        if (saved && saved.profile && saved.profile.peerId) {
+          return {
+            ...defaults,
+            ...saved.profile,
+            displayName: saved.profile.displayName || saved.profile.username || defaults.displayName,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn("[Freecord P2P] Failed to load profile:", err.message);
+    }
+
+    this.saveProfile(defaults);
+    return defaults;
   }
 
   saveProfile(profile) {
@@ -609,13 +623,24 @@ class P2PNode extends EventEmitter {
   }
 
   serializePeer(peer) {
+    const info = peer.info || {};
     return {
       peerId: peer.peerId,
-      username: peer.info?.username || "Peer",
-      tag: peer.info?.tag || "0000",
-      avatarColor: peer.info?.avatarColor || "#5865F2",
-      status: peer.info?.status || "online",
-      customStatus: peer.info?.customStatus || "",
+      displayName: info.displayName || info.username || "Peer",
+      username: info.username || "peer",
+      tag: info.tag || "0000",
+      pronouns: info.pronouns || "",
+      bio: info.bio || "",
+      avatarColor: info.avatarColor || "#5865F2",
+      avatarUrl: info.avatarUrl || null,
+      bannerColor: info.bannerColor || "#5865F2",
+      bannerUrl: info.bannerUrl || null,
+      accentColorPrimary: info.accentColorPrimary || "#1e1f22",
+      accentColorSecondary: info.accentColorSecondary || "#2b2d31",
+      status: info.status || "online",
+      statusEmoji: info.statusEmoji || "⚡",
+      customStatus: info.customStatus || "",
+      badges: Array.isArray(info.badges) ? info.badges : ["P2P Node"],
       address: peer.address,
       port: peer.port,
       addresses: peer.addresses || [peer.address],

@@ -60,6 +60,7 @@ function createMainWindow() {
 
   mainWindow = new BrowserWindow({
     title: `Freecord PTB (Peer #${instanceId})`,
+    icon: path.join(__dirname, "..", "public", "logo.png"),
     width: bounds.width || 1280,
     height: bounds.height || 800,
     minWidth: appSettings.MIN_WIDTH || 940,

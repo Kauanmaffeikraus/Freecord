@@ -1,6 +1,12 @@
-# Freecord PTB — Serverless P2P Communication
+<p align="center">
+  <img src="./public/logo.png" alt="Freecord Logo" width="128" height="128" style="border-radius: 28px;" />
+</p>
 
-**Freecord PTB** is a desktop and web communication platform inspired by **DiscordPTB**, engineered to run **100% Peer-to-Peer (Serverless)** — interconnecting computers directly without relying on any central server.
+<h1 align="center">Freecord PTB — Serverless P2P Communication</h1>
+
+<p align="center">
+  <strong>Freecord PTB</strong> is a desktop and web communication platform inspired by <strong>DiscordPTB</strong>, engineered to run <strong>100% Peer-to-Peer (Serverless)</strong> — interconnecting computers directly without relying on any central server.
+</p>
 
 ---
 
@@ -11,6 +17,10 @@
   - Automatic mesh peer exchange (`PEER_EXCHANGE`): connecting to one peer automatically introduces and connects you to other peers in the mesh.
 - **Zero-Config LAN & VPN Auto-Discovery (UDP Broadcast & Multicast)**:
   - Automatically discovers and interconnects computers running Freecord on the same Wi-Fi, Ethernet LAN, or virtual LAN VPN (Tailscale, ZeroTier, Radmin VPN, Hamachi) via UDP broadcast (`255.255.255.255:49150`) and multicast (`239.255.42.99:49150`).
+- **Full Profile Customization Studio (P2P-Synchronized)**:
+  - Customize your **Display Name**, **Username & Tag (`#0001`)**, **Pronouns**, **About Me Bio**, **Presence Status** (`Online`, `Idle`, `Do Not Disturb`, `Invisible`), and **Custom Status Emoji + Text**.
+  - Upload custom **Avatar** and **Profile Banner** images (automatically compressed and broadcast directly peer-to-peer with zero central storage).
+  - Personalize **2-Tone Profile Theme Gradient Colors** (Primary & Accent) and toggle **Profile Badges** (`P2P Mesh Pioneer`, `Serverless Node`, `E2EE Verified`, `Open Source Builder`, `Voice Mesh Host`, `Zero-Latency Peer`) with a live interactive Profile Card preview.
 - **Real-Time Voice, Video & Go Live Screen Sharing (WebRTC P2P Mesh)**:
   - Low-latency Opus voice chat with real-time Voice Activity Detection (speaking green ring indicator), Self Mute, Self Deafen, and per-peer local volume control (`0%–200%`).
   - Native desktop/window screen sharing (**Go Live**) powered by Electron's `desktopCapturer` and `getDisplayMedia`.
