@@ -1,0 +1,10 @@
+node_modules/
+dist/
+rea/
+*.log
+freecord-state-*.json
+settings.json
+.env
+.env.*
+.DS_Store
+Thumbs.db
