@@ -538,25 +538,89 @@ const INITIAL_REA_MESSAGES = [
   },
 ];
 
-function VideoStreamView({ stream, muted = false, fitMode = "contain", zoom = 1, videoId }) {
+function VideoStreamView({
+  stream,
+  frameUrl = null,
+  muted = false,
+  fitMode = "contain",
+  zoom = 1,
+  videoId,
+}) {
   const videoRef = useRef(null);
+  const [videoReady, setVideoReady] = useState(false);
+
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {});
+    const el = videoRef.current;
+    if (!el) return;
+    if (!stream) {
+      el.srcObject = null;
+      setVideoReady(false);
+      return;
     }
+
+    el.srcObject = stream;
+    const tryPlay = () => {
+      el.play().catch(() => {});
+    };
+    tryPlay();
+
+    const tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
+    if (tracks.some((t) => !t.muted && t.readyState === "live")) {
+      setVideoReady(true);
+    }
+
+    const handleUnmute = () => {
+      tryPlay();
+      setVideoReady(true);
+    };
+    tracks.forEach((t) => {
+      t.addEventListener?.("unmute", handleUnmute);
+    });
+
+    return () => {
+      tracks.forEach((t) => {
+        t.removeEventListener?.("unmute", handleUnmute);
+      });
+    };
   }, [stream]);
 
+  const zoomStyle = zoom !== 1 ? { transform: `scale(${zoom})` } : undefined;
+
   return (
-    <video
-      id={videoId}
-      ref={videoRef}
-      autoPlay
-      playsInline
-      muted={muted}
-      className={fitMode === "cover" ? "fit-cover" : ""}
-      style={zoom !== 1 ? { transform: `scale(${zoom})` } : undefined}
-    />
+    <div style={{ width: "100%", height: "100%", position: "relative", overflow: "hidden" }}>
+      {stream && (
+        <video
+          id={videoId}
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={muted}
+          onLoadedData={() => setVideoReady(true)}
+          onPlaying={() => setVideoReady(true)}
+          className={fitMode === "cover" ? "fit-cover" : ""}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: fitMode === "cover" ? "cover" : "contain",
+            ...zoomStyle,
+          }}
+        />
+      )}
+      {frameUrl && (!stream || !videoReady) && (
+        <img
+          src={frameUrl}
+          alt="P2P Live Stream"
+          style={{
+            position: stream ? "absolute" : "relative",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: fitMode === "cover" ? "cover" : "contain",
+            ...zoomStyle,
+          }}
+        />
+      )}
+    </div>
   );
 }
 
@@ -896,6 +960,8 @@ export default function App() {
   const [cameraTestStream, setCameraTestStream] = useState(null);
 
   const voiceEngineRef = useRef(null);
+  const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
+  const handleIncomingP2PEventRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const avatarUploadRef = useRef(null);
@@ -903,6 +969,11 @@ export default function App() {
   const serverIconUploadRef = useRef(null);
   const serverBannerUploadRef = useRef(null);
   const lastTypingSentRef = useRef(0);
+
+  useEffect(() => {
+    selfPeerIdRef.current = nodeStatus.profile.peerId;
+    voiceEngineRef.current?.setLocalPeerId(nodeStatus.profile.peerId);
+  }, [nodeStatus.profile.peerId]);
 
   const refreshMediaDevices = async () => {
     const enumerated = await WebRTCVoiceEngine.enumerateDevices();
@@ -945,21 +1016,46 @@ export default function App() {
   // Initialize WebRTC Voice Engine & Load Media Preferences
   useEffect(() => {
     const engine = new WebRTCVoiceEngine({
+      localPeerId: selfPeerIdRef.current,
       onSignalSend: (targetPeerId, signal) => {
-        sendP2PPacket(
-          {
-            type: "WEBRTC_SIGNAL",
-            signal,
-          },
-          targetPeerId
-        );
+        if (window.DiscordNative?.p2p) {
+          window.DiscordNative.p2p.send(
+            {
+              type: "WEBRTC_SIGNAL",
+              signal,
+            },
+            targetPeerId
+          );
+        }
+      },
+      onFrameSend: (framePacket) => {
+        if (window.DiscordNative?.p2p) {
+          window.DiscordNative.p2p.send({
+            type: "MEDIA_FRAME",
+            ...framePacket,
+          });
+        }
+      },
+      onAudioChunkSend: (chunkPacket) => {
+        if (window.DiscordNative?.p2p) {
+          window.DiscordNative.p2p.send({
+            type: "AUDIO_CHUNK",
+            ...chunkPacket,
+          });
+        }
       },
       onRemoteStream: (peerId, stream) => {
-        setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+        setRemoteStreams((prev) => ({ ...prev, [peerId]: { ...stream } }));
       },
       onSpeakingChange: (who, isSpeaking) => {
-        const key = who === "self" ? nodeStatus.profile.peerId : who;
+        const key = who === "self" ? selfPeerIdRef.current : who;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
+        if (who === "self") {
+          window.DiscordNative?.p2p?.send({
+            type: "VOICE_SPEAKING",
+            speaking: Boolean(isSpeaking),
+          });
+        }
       },
       onInputLevelChange: (level) => {
         setMicInputLevel(level);
@@ -968,7 +1064,7 @@ export default function App() {
         setRtcStats(stats);
       },
       onDataChannelMessage: (fromPeerId, packet) => {
-        handleIncomingP2PEvent({ ...packet, fromPeerId });
+        handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId });
       },
       onManualPeerConnected: (peerId) => {
         const conn = engine.connections.get(peerId);
@@ -1052,6 +1148,17 @@ export default function App() {
 
     const unsubPeers = p2p.onPeersUpdated((peers) => {
       setConnectedPeers(peers || []);
+      if (Array.isArray(peers)) {
+        setSpeakingMap((prev) => {
+          const next = { ...prev };
+          for (const p of peers) {
+            if (p.voiceState && typeof p.voiceState.speaking === "boolean") {
+              next[p.peerId] = p.voiceState.speaking;
+            }
+          }
+          return next;
+        });
+      }
     });
 
     const unsubLan = p2p.onLanPeersUpdated((lan) => {
@@ -1066,6 +1173,14 @@ export default function App() {
         },
         peer.peerId
       );
+      if (activeVoiceChannelId) {
+        p2p.setVoiceState(activeVoiceChannelId, {
+          muted: selfMute,
+          deafened: selfDeafen,
+          videoEnabled,
+          screenSharing,
+        });
+      }
     });
 
     const unsubDisconnected = p2p.onPeerDisconnected(({ peerId }) => {
@@ -1078,7 +1193,7 @@ export default function App() {
     });
 
     const unsubEvent = p2p.onP2PEvent((event) => {
-      handleIncomingP2PEvent(event);
+      handleIncomingP2PEventRef.current?.(event);
     });
 
     return () => {
@@ -1088,11 +1203,16 @@ export default function App() {
       unsubDisconnected?.();
       unsubEvent?.();
     };
-  }, [rooms]);
+  }, [rooms, activeVoiceChannelId, selfMute, selfDeafen, videoEnabled, screenSharing]);
 
   const sendP2PPacket = (packet, targetPeerId = null) => {
     if (window.DiscordNative?.p2p) {
       window.DiscordNative.p2p.send(packet, targetPeerId);
+      // Only also send via DataChannel if targeting a manual browser-only WebRTC peer
+      if (targetPeerId && String(targetPeerId).startsWith("webrtc_")) {
+        voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
+      }
+      return;
     }
     voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
   };
@@ -1191,8 +1311,52 @@ export default function App() {
         }
         break;
       }
+
+      case "VOICE_SPEAKING": {
+        if (event.fromPeerId) {
+          setSpeakingMap((prev) => ({
+            ...prev,
+            [event.fromPeerId]: Boolean(event.speaking),
+          }));
+        }
+        break;
+      }
+
+      case "MEDIA_FRAME": {
+        if (event.fromPeerId && event.kind && event.dataUrl) {
+          voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
+        }
+        break;
+      }
+
+      case "AUDIO_CHUNK": {
+        if (event.fromPeerId && event.pcmBase64) {
+          voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
+        }
+        break;
+      }
     }
   };
+  handleIncomingP2PEventRef.current = handleIncomingP2PEvent;
+
+  // Automatically negotiate WebRTC with any peer in the same active voice channel
+  useEffect(() => {
+    if (!activeVoiceChannelId || !voiceEngineRef.current) return;
+    const engine = voiceEngineRef.current;
+    for (const peer of connectedPeers) {
+      if (peer.voiceChannelId === activeVoiceChannelId) {
+        const existing = engine.connections.get(peer.peerId);
+        if (
+          !existing ||
+          !existing.hasNegotiated ||
+          existing.pc.connectionState === "failed" ||
+          existing.pc.connectionState === "closed"
+        ) {
+          engine.negotiateWithPeer(peer.peerId);
+        }
+      }
+    }
+  }, [activeVoiceChannelId, connectedPeers]);
 
   // Clear expired typing indicators
   useEffect(() => {
@@ -1403,12 +1567,17 @@ export default function App() {
     const next = !selfMute;
     setSelfMute(next);
     voiceEngineRef.current?.setSelfMute(next);
+    if (next) {
+      setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
+      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+    }
     if (activeVoiceChannelId) {
       window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
         muted: next,
         deafened: selfDeafen,
         videoEnabled,
         screenSharing,
+        speaking: false,
       });
     }
   };
@@ -1416,7 +1585,11 @@ export default function App() {
   const toggleSelfDeafen = () => {
     const next = !selfDeafen;
     setSelfDeafen(next);
-    if (next) setSelfMute(true);
+    if (next) {
+      setSelfMute(true);
+      setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
+      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+    }
     voiceEngineRef.current?.setSelfDeafen(next);
     if (activeVoiceChannelId) {
       window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
@@ -1424,6 +1597,7 @@ export default function App() {
         deafened: next,
         videoEnabled,
         screenSharing,
+        speaking: false,
       });
     }
   };
@@ -1440,6 +1614,11 @@ export default function App() {
           setSpotlightTileId(screenSharing ? "self_screen" : null);
         }
       } else {
+        for (const peer of connectedPeers) {
+          if (!engine.connections.has(peer.peerId)) {
+            engine.createPeerConnection(peer.peerId, true);
+          }
+        }
         const camStream = await engine.setVideoBroadcast(true);
         setVideoEnabled(true);
         setLocalCameraStream(camStream);
@@ -1578,7 +1757,15 @@ export default function App() {
 
   const startScreenShareWithSource = async (sourceId) => {
     try {
-      const stream = await voiceEngineRef.current?.setDesktopSource(sourceId, {
+      const engine = voiceEngineRef.current;
+      if (engine) {
+        for (const peer of connectedPeers) {
+          if (!engine.connections.has(peer.peerId)) {
+            engine.createPeerConnection(peer.peerId, true);
+          }
+        }
+      }
+      const stream = await engine?.setDesktopSource(sourceId, {
         resolution: screenResolution,
         frameRate: screenFps,
       });
@@ -1966,15 +2153,37 @@ export default function App() {
         ? peerMedia
         : null;
 
+      const peerScreenFrameUrl =
+        isMediaBundle && peer.voiceState?.screenSharing !== false
+          ? peerMedia.screenFrameUrl
+          : null;
+
+      const peerCameraFrameUrl =
+        isMediaBundle && peer.voiceState?.videoEnabled !== false
+          ? peerMedia.cameraFrameUrl
+          : null;
+
+      const hasRemoteScreen =
+        (peerScreenStream && peerScreenStream.getVideoTracks().length > 0) ||
+        Boolean(peerScreenFrameUrl);
+
+      const hasRemoteCamera =
+        (peerCameraStream && peerCameraStream.getVideoTracks().length > 0) ||
+        Boolean(peerCameraFrameUrl);
+
       const peerName = peer.displayName || peer.username;
 
-      if (peerScreenStream && peerScreenStream.getVideoTracks().length > 0) {
+      if (hasRemoteScreen) {
         tiles.push({
           id: `${peer.peerId}_screen`,
           peerId: peer.peerId,
           isSelf: false,
           kind: "screen",
-          stream: peerScreenStream,
+          stream:
+            peerScreenStream && peerScreenStream.getVideoTracks().length > 0
+              ? peerScreenStream
+              : null,
+          frameUrl: peerScreenFrameUrl,
           profile: peer,
           label: peerName,
           badge: t.screenBadge,
@@ -1991,14 +2200,14 @@ export default function App() {
           peerCameraStream && peerCameraStream.getVideoTracks().length > 0
             ? peerCameraStream
             : null,
+        frameUrl: peerCameraFrameUrl,
         profile: peer,
         label: peerName,
-        badge:
-          peerCameraStream && peerCameraStream.getVideoTracks().length > 0
-            ? t.cameraBadge
-            : peer.voiceState?.screenSharing && !peerScreenStream
-            ? t.liveBadge
-            : null,
+        badge: hasRemoteCamera
+          ? t.cameraBadge
+          : peer.voiceState?.screenSharing && !hasRemoteScreen
+          ? t.liveBadge
+          : null,
         speaking: Boolean(speakingMap[peer.peerId]),
       });
     }
@@ -2019,6 +2228,21 @@ export default function App() {
     lang,
   ]);
 
+  // Automatically spotlight a remote screen share when it starts if nothing is currently spotlighted
+  useEffect(() => {
+    const remoteScreenTile = stageTiles.find(
+      (tItem) => !tItem.isSelf && tItem.kind === "screen" && (tItem.stream || tItem.frameUrl)
+    );
+    if (remoteScreenTile && !spotlightTileId) {
+      setSpotlightTileId(remoteScreenTile.id);
+    } else if (
+      spotlightTileId &&
+      !stageTiles.some((tItem) => tItem.id === spotlightTileId)
+    ) {
+      setSpotlightTileId(null);
+    }
+  }, [stageTiles, spotlightTileId]);
+
   const activeSpotlightTile = useMemo(
     () => stageTiles.find((tile) => tile.id === spotlightTileId) || null,
     [stageTiles, spotlightTileId]
@@ -2032,10 +2256,14 @@ export default function App() {
       (tItem) =>
         tItem.kind === "camera" &&
         tItem.peerId === activeSpotlightTile.peerId &&
-        tItem.stream
+        (tItem.stream || tItem.frameUrl)
     );
     if (samePeerCam) return samePeerCam;
-    return stageTiles.find((tItem) => tItem.kind === "camera" && tItem.stream) || null;
+    return (
+      stageTiles.find(
+        (tItem) => tItem.kind === "camera" && (tItem.stream || tItem.frameUrl)
+      ) || null
+    );
   }, [activeSpotlightTile, stageTiles]);
 
   const renderStageTile = (tile, isSpotlight = false) => {
@@ -2043,6 +2271,7 @@ export default function App() {
     const zoom = tileZoomMap[tile.id] || 1;
     const videoDomId = `freecord_video_${tile.id}`;
     const vol = peerVolumes[tile.peerId] ?? 100;
+    const hasVisualMedia = Boolean(tile.stream || tile.frameUrl);
 
     return (
       <div
@@ -2055,10 +2284,11 @@ export default function App() {
           setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
         }
       >
-        {tile.stream ? (
+        {hasVisualMedia ? (
           <VideoStreamView
             videoId={videoDomId}
             stream={tile.stream}
+            frameUrl={tile.frameUrl}
             muted={tile.isSelf || selfDeafen}
             fitMode={fitMode}
             zoom={zoom}
@@ -2086,7 +2316,7 @@ export default function App() {
             <span>{spotlightTileId === tile.id ? t.unspotlightBtn : t.spotlightBtn}</span>
           </button>
 
-          {tile.stream && (
+          {hasVisualMedia && (
             <>
               <button
                 type="button"
@@ -2116,14 +2346,16 @@ export default function App() {
                 <span>{Math.round(zoom * 100)}%</span>
               </button>
 
-              <button
-                type="button"
-                className="tile-ctrl-btn"
-                onClick={() => toggleVideoPiP(videoDomId)}
-                title={t.pipBtn}
-              >
-                <PictureInPicture2 size={12} />
-              </button>
+              {tile.stream && (
+                <button
+                  type="button"
+                  className="tile-ctrl-btn"
+                  onClick={() => toggleVideoPiP(videoDomId)}
+                  title={t.pipBtn}
+                >
+                  <PictureInPicture2 size={12} />
+                </button>
+              )}
             </>
           )}
 
@@ -2143,7 +2375,7 @@ export default function App() {
         {isSpotlight &&
           showWebcamPipOverlay &&
           activeWebcamTileForPip &&
-          activeWebcamTileForPip.stream && (
+          (activeWebcamTileForPip.stream || activeWebcamTileForPip.frameUrl) && (
             <div
               className="floating-webcam-pip"
               style={{ width: webcamPipWidth }}
@@ -2151,6 +2383,7 @@ export default function App() {
             >
               <VideoStreamView
                 stream={activeWebcamTileForPip.stream}
+                frameUrl={activeWebcamTileForPip.frameUrl}
                 muted={true}
                 fitMode="cover"
               />

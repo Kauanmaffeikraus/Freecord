@@ -16,9 +16,24 @@ export const CAMERA_RESOLUTIONS = {
 
 export const SCREEN_FPS_OPTIONS = [15, 30, 60];
 
+function getAudioBinContainer() {
+  if (typeof document === "undefined") return null;
+  let bin = document.getElementById("freecord-remote-audio-bin");
+  if (!bin) {
+    bin = document.createElement("div");
+    bin.id = "freecord-remote-audio-bin";
+    bin.style.cssText = "position:fixed;width:0;height:0;overflow:hidden;pointer-events:none;opacity:0;";
+    document.body.appendChild(bin);
+  }
+  return bin;
+}
+
 export class WebRTCVoiceEngine {
   constructor({
+    localPeerId = null,
     onSignalSend,
+    onFrameSend,
+    onAudioChunkSend,
     onRemoteStream,
     onSpeakingChange,
     onInputLevelChange,
@@ -26,7 +41,10 @@ export class WebRTCVoiceEngine {
     onDataChannelMessage,
     onManualPeerConnected,
   }) {
+    this.localPeerId = localPeerId;
     this.onSignalSend = onSignalSend;
+    this.onFrameSend = onFrameSend;
+    this.onAudioChunkSend = onAudioChunkSend;
     this.onRemoteStream = onRemoteStream;
     this.onSpeakingChange = onSpeakingChange;
     this.onInputLevelChange = onInputLevelChange;
@@ -34,12 +52,13 @@ export class WebRTCVoiceEngine {
     this.onDataChannelMessage = onDataChannelMessage;
     this.onManualPeerConnected = onManualPeerConnected;
 
-    // Map<peerId, { pc, dataChannel, remoteStream, audioEl, gainNode, pannerNode, volume, muted, stats }>
+    // Map<peerId, PeerConnectionEntry>
     this.connections = new Map();
     this.localAudioStream = null;
     this.localVideoStream = null;
     this.localScreenStream = null;
     this.activeDesktopSourceId = null;
+    this.voiceInitPromise = null;
 
     this.selfMute = false;
     this.selfDeafen = false;
@@ -60,6 +79,21 @@ export class WebRTCVoiceEngine {
     this.audioContext = null;
     this.vadInterval = null;
     this.statsInterval = null;
+    this.frameRelayInterval = null;
+    this.relayCamVideoEl = null;
+    this.relayScrVideoEl = null;
+    this.relayCanvas = null;
+    this.txProcessorNode = null;
+    this.txSourceNode = null;
+    this.txScreenAudioSourceNode = null;
+    this.txMixNode = null;
+    this.speakingHoldUntil = 0;
+  }
+
+  setLocalPeerId(peerId) {
+    if (peerId) {
+      this.localPeerId = String(peerId);
+    }
   }
 
   static async enumerateDevices() {
@@ -124,47 +158,77 @@ export class WebRTCVoiceEngine {
     return constraints;
   }
 
+  createSilentFallbackAudioStream() {
+    const ctx = this.ensureAudioContext();
+    const dest = ctx.createMediaStreamDestination();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.00001; // Near-zero keepalive so RTP audio packets still flow
+    osc.connect(gain);
+    gain.connect(dest);
+    osc.start();
+    return dest.stream;
+  }
+
+  async getUserMediaWithTimeout(constraints, timeoutMs = 2500) {
+    return await Promise.race([
+      navigator.mediaDevices.getUserMedia(constraints),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("getUserMedia timeout")), timeoutMs)
+      ),
+    ]);
+  }
+
   async startLocalVoice(forceRestart = false) {
-    if (this.localAudioStream && !forceRestart) return this.localAudioStream;
+    if (this.localAudioStream && !forceRestart) {
+      return this.localAudioStream;
+    }
+    if (this.voiceInitPromise && !forceRestart) {
+      return await this.voiceInitPromise;
+    }
 
     if (this.localAudioStream && forceRestart) {
       this.localAudioStream.getTracks().forEach((t) => t.stop());
       this.localAudioStream = null;
     }
 
-    try {
-      this.localAudioStream = await navigator.mediaDevices.getUserMedia({
-        audio: this.buildAudioConstraints(),
-        video: false,
-      });
-      this.applyMuteState();
-      this.startVoiceActivityDetector(this.localAudioStream);
-      await this.syncAudioTrackWithPeers();
-      return this.localAudioStream;
-    } catch (err) {
-      // Fallback to default audio input if specific deviceId failed
-      if (this.audioInputDeviceId !== "default") {
-        try {
-          this.audioInputDeviceId = "default";
-          this.localAudioStream = await navigator.mediaDevices.getUserMedia({
-            audio: this.buildAudioConstraints(),
-            video: false,
-          });
-          this.applyMuteState();
-          this.startVoiceActivityDetector(this.localAudioStream);
-          await this.syncAudioTrackWithPeers();
-          return this.localAudioStream;
-        } catch {}
+    this.voiceInitPromise = (async () => {
+      try {
+        this.localAudioStream = await this.getUserMediaWithTimeout({
+          audio: this.buildAudioConstraints(),
+          video: false,
+        });
+        this.applyMuteState();
+        this.startVoiceActivityDetector(this.localAudioStream);
+        await this.syncAudioTrackWithPeers();
+        return this.localAudioStream;
+      } catch (err) {
+        if (this.audioInputDeviceId !== "default") {
+          try {
+            this.audioInputDeviceId = "default";
+            this.localAudioStream = await this.getUserMediaWithTimeout({
+              audio: this.buildAudioConstraints(),
+              video: false,
+            });
+            this.applyMuteState();
+            this.startVoiceActivityDetector(this.localAudioStream);
+            await this.syncAudioTrackWithPeers();
+            return this.localAudioStream;
+          } catch {}
+        }
+        console.warn(
+          "[Freecord VoiceEngine] Microphone unavailable or busy, using fallback stream:",
+          err.message
+        );
+        this.localAudioStream = this.createSilentFallbackAudioStream();
+        await this.syncAudioTrackWithPeers();
+        return this.localAudioStream;
+      } finally {
+        this.voiceInitPromise = null;
       }
-      console.warn(
-        "[Freecord VoiceEngine] Microphone unavailable, creating silent oscillator track:",
-        err.message
-      );
-      const ctx = this.ensureAudioContext();
-      const dest = ctx.createMediaStreamDestination();
-      this.localAudioStream = dest.stream;
-      return this.localAudioStream;
-    }
+    })();
+
+    return await this.voiceInitPromise;
   }
 
   async setAudioInputDevice(deviceId, processingOptions = {}) {
@@ -223,11 +287,85 @@ export class WebRTCVoiceEngine {
   startVoiceActivityDetector(stream) {
     try {
       const ctx = this.ensureAudioContext();
+
+      if (this.txSourceNode) {
+        try {
+          this.txSourceNode.disconnect();
+        } catch {}
+      }
+      if (this.txProcessorNode) {
+        try {
+          this.txProcessorNode.disconnect();
+        } catch {}
+      }
+
       const source = ctx.createMediaStreamSource(stream);
+      this.txSourceNode = source;
+
+      const mixNode = ctx.createGain();
+      mixNode.gain.value = 1;
+      this.txMixNode = mixNode;
+      source.connect(mixNode);
+
+      this.attachScreenAudioToMixer();
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       source.connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+      const timeData = new Float32Array(analyser.fftSize);
+
+      // ScriptProcessor for real-time 24kHz P2P PCM voice streaming
+      const processor = ctx.createScriptProcessor(2048, 1, 1);
+      const zeroGain = ctx.createGain();
+      zeroGain.gain.value = 0;
+      mixNode.connect(processor);
+      processor.connect(zeroGain);
+      zeroGain.connect(ctx.destination);
+      this.txProcessorNode = processor;
+
+      let hangoverBuffers = 0;
+      processor.onaudioprocess = (e) => {
+        if (!this.onAudioChunkSend) return;
+        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
+        if ((this.selfMute || this.selfDeafen) && !hasScreenAudio) return;
+
+        const input = e.inputBuffer.getChannelData(0);
+        let sumSq = 0;
+        for (let i = 0; i < input.length; i++) {
+          sumSq += input[i] * input[i];
+        }
+        const rms = Math.sqrt(sumSq / input.length);
+        if (rms > 0.004 || this.localSpeaking || hasScreenAudio) {
+          if (rms > 0.004 || this.localSpeaking) {
+            hangoverBuffers = 6; // Keep transmitting ~250ms after speech trailing edge
+          }
+        } else if (hangoverBuffers > 0) {
+          hangoverBuffers--;
+        } else {
+          return;
+        }
+
+        // Downsample 2x (e.g. 48000 Hz -> 24000 Hz) into Int16 PCM
+        const outLen = Math.floor(input.length / 2);
+        const pcm16 = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const sample = (input[i * 2] + input[i * 2 + 1]) * 0.5;
+          const clamped = Math.max(-1, Math.min(1, sample));
+          pcm16[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+        }
+
+        const bytes = new Uint8Array(pcm16.buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const pcmBase64 = btoa(binary);
+        this.onAudioChunkSend({
+          pcmBase64,
+          sampleRate: Math.round(ctx.sampleRate / 2),
+        });
+      };
 
       if (this.vadInterval) clearInterval(this.vadInterval);
       this.vadInterval = setInterval(() => {
@@ -239,18 +377,51 @@ export class WebRTCVoiceEngine {
           }
           return;
         }
-        analyser.getByteFrequencyData(data);
+        analyser.getByteFrequencyData(freqData);
+        analyser.getFloatTimeDomainData(timeData);
+
         let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i];
-        const avg = sum / data.length;
-        const levelPercent = Math.min(100, Math.round((avg / 65) * 100));
+        for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+        const avgFreq = sum / freqData.length;
+
+        let sumSq = 0;
+        for (let i = 0; i < timeData.length; i++) sumSq += timeData[i] * timeData[i];
+        const rms = Math.sqrt(sumSq / timeData.length);
+
+        const levelPercent = Math.min(
+          100,
+          Math.max(Math.round((avgFreq / 55) * 100), Math.round(rms * 360))
+        );
         this.onInputLevelChange?.(levelPercent);
-        const speaking = avg > 14;
+
+        const now = Date.now();
+        const voiceDetected = avgFreq > 8 || rms > 0.008;
+        if (voiceDetected) {
+          this.speakingHoldUntil = now + 320;
+        }
+        const speaking = voiceDetected || now < this.speakingHoldUntil;
         if (speaking !== this.localSpeaking) {
           this.localSpeaking = speaking;
           this.onSpeakingChange?.("self", speaking);
         }
-      }, 100);
+      }, 85);
+    } catch {}
+  }
+
+  attachScreenAudioToMixer() {
+    try {
+      if (this.txScreenAudioSourceNode) {
+        try {
+          this.txScreenAudioSourceNode.disconnect();
+        } catch {}
+        this.txScreenAudioSourceNode = null;
+      }
+      if (!this.txMixNode || !this.localScreenStream) return;
+      if (this.localScreenStream.getAudioTracks().length === 0) return;
+      const ctx = this.ensureAudioContext();
+      const scrSource = ctx.createMediaStreamSource(this.localScreenStream);
+      scrSource.connect(this.txMixNode);
+      this.txScreenAudioSourceNode = scrSource;
     } catch {}
   }
 
@@ -265,10 +436,11 @@ export class WebRTCVoiceEngine {
       this.selfMute = true;
     }
     this.applyMuteState();
-    for (const conn of this.connections.values()) {
+    for (const [peerId, conn] of this.connections.entries()) {
       if (conn.audioEl) {
-        conn.audioEl.muted = this.selfDeafen || conn.muted;
+        conn.audioEl.muted = this.selfDeafen || conn.muted || Boolean(conn.usingPcmAudio);
       }
+      this.setLocalVolume(peerId, conn.volume);
     }
   }
 
@@ -277,22 +449,36 @@ export class WebRTCVoiceEngine {
     for (const track of this.localAudioStream.getAudioTracks()) {
       track.enabled = !this.selfMute && !this.selfDeafen;
     }
+    if (this.txSourceNode && this.txMixNode) {
+      try {
+        if (this.selfMute || this.selfDeafen) {
+          this.txSourceNode.disconnect(this.txMixNode);
+        } else {
+          this.txSourceNode.connect(this.txMixNode);
+        }
+      } catch {}
+    }
   }
 
-  // Matches discord_voice setLocalVolume(userId, volume)
   setLocalVolume(peerId, volumePercent) {
     const conn = this.connections.get(peerId);
     if (!conn) return;
     conn.volume = Math.max(0, Math.min(200, Number(volumePercent)));
-    const effectiveGain = (conn.volume / 100) * (this.masterOutputVolume / 100);
-    if (conn.gainNode) {
-      conn.gainNode.gain.value = effectiveGain;
-    } else if (conn.audioEl) {
+    const effectiveGain =
+      this.selfDeafen || conn.muted
+        ? 0
+        : (conn.volume / 100) * (this.masterOutputVolume / 100);
+    if (conn.audioEl) {
       conn.audioEl.volume = Math.min(1, effectiveGain);
+    }
+    if (conn.gainNode) {
+      conn.gainNode.gain.value = effectiveGain > 1 ? effectiveGain - 1 : 0;
+    }
+    if (conn.pcmGainNode) {
+      conn.pcmGainNode.gain.value = effectiveGain;
     }
   }
 
-  // Matches discord_voice setLocalMute(userId, mute)
   setLocalMute(peerId, mute) {
     const conn = this.connections.get(peerId);
     if (!conn) return;
@@ -300,6 +486,7 @@ export class WebRTCVoiceEngine {
     if (conn.audioEl) {
       conn.audioEl.muted = this.selfDeafen || conn.muted;
     }
+    this.setLocalVolume(peerId, conn.volume);
   }
 
   async setVideoInputDevice(deviceId, resolutionKey = this.cameraResolution) {
@@ -321,6 +508,7 @@ export class WebRTCVoiceEngine {
         this.localVideoStream.getTracks().forEach((t) => t.stop());
         this.localVideoStream = null;
       }
+      this.updateFrameRelayLoop();
       await this.syncTracksWithPeers();
       return null;
     }
@@ -345,6 +533,7 @@ export class WebRTCVoiceEngine {
         video: videoConstraints,
         audio: false,
       });
+      this.updateFrameRelayLoop();
       await this.syncTracksWithPeers();
       return this.localVideoStream;
     } catch (err) {
@@ -361,7 +550,6 @@ export class WebRTCVoiceEngine {
       this.screenFrameRate = Number(frameRate);
     }
 
-    // If screen sharing is active, apply new constraints or re-open desktop source
     if (this.localScreenStream) {
       const res = SCREEN_RESOLUTIONS[this.screenResolution] || SCREEN_RESOLUTIONS["1080p"];
       const fps = this.screenFrameRate || 30;
@@ -386,7 +574,6 @@ export class WebRTCVoiceEngine {
     return this.localScreenStream;
   }
 
-  // Matches discord_voice setDesktopSourceWithOptions / Go Live Screen Share
   async setDesktopSource(sourceId = null, options = {}) {
     if (!sourceId) {
       this.activeDesktopSourceId = null;
@@ -394,6 +581,7 @@ export class WebRTCVoiceEngine {
         this.localScreenStream.getTracks().forEach((t) => t.stop());
         this.localScreenStream = null;
       }
+      this.updateFrameRelayLoop();
       await this.syncTracksWithPeers();
       return null;
     }
@@ -415,18 +603,33 @@ export class WebRTCVoiceEngine {
 
     try {
       if (sourceId !== "browser-display" && window.DiscordNative?.isRenderer) {
-        this.localScreenStream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            mandatory: {
-              chromeMediaSource: "desktop",
-              chromeMediaSourceId: sourceId,
-              maxWidth: res.width,
-              maxHeight: res.height,
-              maxFrameRate: fps,
+        const mandatoryVideo = {
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: sourceId,
+          maxWidth: res.width,
+          maxHeight: res.height,
+          maxFrameRate: fps,
+        };
+        // Try capturing desktop video + system loopback audio first; fallback to video-only if audio capture fails
+        try {
+          this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              mandatory: {
+                chromeMediaSource: "desktop",
+              },
             },
-          },
-        });
+            video: {
+              mandatory: mandatoryVideo,
+            },
+          });
+        } catch {
+          this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              mandatory: mandatoryVideo,
+            },
+          });
+        }
       } else {
         this.localScreenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
@@ -444,10 +647,13 @@ export class WebRTCVoiceEngine {
         videoTrack.onended = () => {
           this.localScreenStream = null;
           this.activeDesktopSourceId = null;
+          this.updateFrameRelayLoop();
           this.syncTracksWithPeers();
         };
       }
 
+      this.updateFrameRelayLoop();
+      this.attachScreenAudioToMixer();
       await this.syncTracksWithPeers();
       return this.localScreenStream;
     } catch (err) {
@@ -456,46 +662,262 @@ export class WebRTCVoiceEngine {
     }
   }
 
-  createPeerConnection(peerId, isInitiator = false) {
-    if (this.connections.has(peerId)) {
-      return this.connections.get(peerId);
+  // Lightweight P2P Frame Relay fallback so receivers ALWAYS see live screen/camera even while WebRTC negotiates or across strict firewalls
+  updateFrameRelayLoop() {
+    const hasCamera = Boolean(this.localVideoStream?.getVideoTracks()?.[0]);
+    const hasScreen = Boolean(this.localScreenStream?.getVideoTracks()?.[0]);
+
+    if (!hasCamera && !hasScreen) {
+      if (this.frameRelayInterval) {
+        clearInterval(this.frameRelayInterval);
+        this.frameRelayInterval = null;
+      }
+      if (this.relayCamVideoEl) {
+        this.relayCamVideoEl.srcObject = null;
+        this.relayCamVideoEl = null;
+      }
+      if (this.relayScrVideoEl) {
+        this.relayScrVideoEl.srcObject = null;
+        this.relayScrVideoEl = null;
+      }
+      return;
     }
 
-    // Host/LAN candidates work with zero STUN server; public STUN fallback included for NAT
+    if (hasCamera) {
+      if (!this.relayCamVideoEl) {
+        this.relayCamVideoEl = document.createElement("video");
+        this.relayCamVideoEl.muted = true;
+        this.relayCamVideoEl.playsInline = true;
+      }
+      if (this.relayCamVideoEl.srcObject !== this.localVideoStream) {
+        this.relayCamVideoEl.srcObject = this.localVideoStream;
+        this.relayCamVideoEl.play().catch(() => {});
+      }
+    }
+
+    if (hasScreen) {
+      if (!this.relayScrVideoEl) {
+        this.relayScrVideoEl = document.createElement("video");
+        this.relayScrVideoEl.muted = true;
+        this.relayScrVideoEl.playsInline = true;
+      }
+      if (this.relayScrVideoEl.srcObject !== this.localScreenStream) {
+        this.relayScrVideoEl.srcObject = this.localScreenStream;
+        this.relayScrVideoEl.play().catch(() => {});
+      }
+    }
+
+    if (!this.relayCanvas) {
+      this.relayCanvas = document.createElement("canvas");
+    }
+
+    if (!this.frameRelayInterval) {
+      this.frameRelayInterval = setInterval(() => {
+        if (!this.onFrameSend) return;
+
+        // Send screen frame if active
+        if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {
+          try {
+            const vw = this.relayScrVideoEl.videoWidth;
+            const vh = this.relayScrVideoEl.videoHeight;
+            const targetW = Math.min(1280, vw);
+            const targetH = Math.round((vh / vw) * targetW);
+            this.relayCanvas.width = targetW;
+            this.relayCanvas.height = targetH;
+            const ctx = this.relayCanvas.getContext("2d");
+            ctx.drawImage(this.relayScrVideoEl, 0, 0, targetW, targetH);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.62);
+            this.onFrameSend({
+              kind: "screen",
+              dataUrl,
+              timestamp: Date.now(),
+            });
+          } catch {}
+        }
+
+        // Send camera frame if active
+        if (this.localVideoStream && this.relayCamVideoEl && this.relayCamVideoEl.videoWidth > 0) {
+          try {
+            const vw = this.relayCamVideoEl.videoWidth;
+            const vh = this.relayCamVideoEl.videoHeight;
+            const targetW = Math.min(640, vw);
+            const targetH = Math.round((vh / vw) * targetW);
+            this.relayCanvas.width = targetW;
+            this.relayCanvas.height = targetH;
+            const ctx = this.relayCanvas.getContext("2d");
+            ctx.drawImage(this.relayCamVideoEl, 0, 0, targetW, targetH);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.65);
+            this.onFrameSend({
+              kind: "camera",
+              dataUrl,
+              timestamp: Date.now(),
+            });
+          } catch {}
+        }
+      }, 140);
+    }
+  }
+
+  handleIncomingMediaFrame(fromPeerId, framePacket) {
+    if (!fromPeerId || !framePacket?.kind || !framePacket?.dataUrl) return;
+    const conn = this.createPeerConnection(fromPeerId, false);
+    if (framePacket.kind === "screen") {
+      conn.remoteScreenFrameUrl = framePacket.dataUrl;
+    } else if (framePacket.kind === "camera") {
+      conn.remoteCameraFrameUrl = framePacket.dataUrl;
+    }
+    this.emitRemoteStreamState(conn);
+  }
+
+  handleIncomingAudioChunk(fromPeerId, chunkPacket) {
+    if (!fromPeerId || !chunkPacket?.pcmBase64) return;
+    const conn = this.createPeerConnection(fromPeerId, false);
+
+    // Trigger remote speaking indicator with smooth decay
+    if (!this.selfDeafen && !conn.muted) {
+      if (!conn.remoteSpeaking) {
+        conn.remoteSpeaking = true;
+        this.onSpeakingChange?.(fromPeerId, true);
+      }
+      if (conn.speakingDecayTimer) {
+        clearTimeout(conn.speakingDecayTimer);
+      }
+      conn.speakingDecayTimer = setTimeout(() => {
+        conn.remoteSpeaking = false;
+        this.onSpeakingChange?.(fromPeerId, false);
+      }, 360);
+    }
+
+    if (this.selfDeafen || conn.muted) return;
+
+    try {
+      const ctx = this.ensureAudioContext();
+      const binary = atob(chunkPacket.pcmBase64);
+      const byteLen = binary.length;
+      const bytes = new Uint8Array(byteLen);
+      for (let i = 0; i < byteLen; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const pcm16 = new Int16Array(bytes.buffer);
+      const sampleRate = Number(chunkPacket.sampleRate) || 24000;
+      const audioBuffer = ctx.createBuffer(1, pcm16.length, sampleRate);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let i = 0; i < pcm16.length; i++) {
+        channelData[i] = pcm16[i] / 32768.0;
+      }
+
+      if (!conn.pcmGainNode) {
+        conn.pcmGainNode = ctx.createGain();
+        conn.pcmGainNode.connect(ctx.destination);
+      }
+      const effectiveGain =
+        this.selfDeafen || conn.muted
+          ? 0
+          : (conn.volume / 100) * (this.masterOutputVolume / 100);
+      conn.pcmGainNode.gain.value = effectiveGain;
+
+      // Mute WebRTC <audio> element while direct PCM stream is active to prevent double-audio echo
+      conn.usingPcmAudio = true;
+      if (conn.audioEl) {
+        conn.audioEl.muted = true;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(conn.pcmGainNode);
+
+      const now = ctx.currentTime;
+      if (
+        !conn.nextPlayTime ||
+        conn.nextPlayTime < now ||
+        conn.nextPlayTime > now + 0.35
+      ) {
+        conn.nextPlayTime = now + 0.025;
+      }
+      source.start(conn.nextPlayTime);
+      conn.nextPlayTime += audioBuffer.duration;
+    } catch {}
+  }
+
+  createPeerConnection(peerId, isInitiator = false, forceReset = false) {
+    if (this.connections.has(peerId) && !forceReset) {
+      const existing = this.connections.get(peerId);
+      if (
+        existing.pc.connectionState !== "closed" &&
+        existing.pc.signalingState !== "closed"
+      ) {
+        return existing;
+      }
+    }
+
+    const oldConn = this.connections.get(peerId);
+    if (oldConn) {
+      try {
+        oldConn.pc.ontrack = null;
+        oldConn.pc.onicecandidate = null;
+        oldConn.pc.close();
+      } catch {}
+    }
+
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
     });
 
-    const remoteStream = new MediaStream();
-    const remoteCameraStream = new MediaStream();
-    const remoteScreenStream = new MediaStream();
-    const audioEl = new Audio();
+    const audioEl = oldConn?.audioEl || new Audio();
     audioEl.autoplay = true;
-    audioEl.srcObject = remoteStream;
-    audioEl.muted = this.selfDeafen;
+    audioEl.playsInline = true;
+    audioEl.muted = this.selfDeafen || Boolean(oldConn?.muted);
+    const bin = getAudioBinContainer();
+    if (bin && !bin.contains(audioEl)) {
+      bin.appendChild(audioEl);
+    }
     this.applySinkIdToElement(audioEl);
 
     const conn = {
       peerId,
       pc,
       dataChannel: null,
-      remoteStream,
-      remoteCameraStream,
-      remoteScreenStream,
-      remoteVideoTracks: new Map(), // trackId -> MediaStreamTrack
-      remoteStreamMeta: { cameraTrackId: null, screenTrackId: null },
+      remoteStream: new MediaStream(),
+      remoteAudioTracks: new Map(), // trackId -> MediaStreamTrack
+      remoteCameraStream: null,
+      remoteScreenStream: null,
+      remoteCameraFrameUrl: oldConn?.remoteCameraFrameUrl || null,
+      remoteScreenFrameUrl: oldConn?.remoteScreenFrameUrl || null,
+      remoteVideoEntries: new Map(), // trackId -> { track, streamId, mid }
+      remoteStreamMeta: oldConn?.remoteStreamMeta || {
+        hasCamera: false,
+        hasScreen: false,
+        cameraTrackId: null,
+        screenTrackId: null,
+        cameraStreamId: null,
+        screenStreamId: null,
+        cameraMid: null,
+        screenMid: null,
+      },
+      audioSender: null,
+      screenAudioSender: null,
       cameraSender: null,
       screenSender: null,
       audioEl,
       gainNode: null,
-      volume: 100,
-      muted: false,
+      pcmGainNode: oldConn?.pcmGainNode || null,
+      usingPcmAudio: Boolean(oldConn?.usingPcmAudio),
+      nextPlayTime: 0,
+      speakingDecayTimer: null,
+      analyser: null,
+      volume: oldConn?.volume ?? 100,
+      muted: oldConn?.muted ?? false,
+      hasNegotiated: false,
+      makingOffer: false,
+      needsFollowUpNegotiation: false,
+      pendingCandidates: [],
+      signalQueue: oldConn?.signalQueue || Promise.resolve(),
       stats: { rttMs: 0, bytesSent: 0, bytesReceived: 0, codec: "opus / VP8" },
     };
 
     this.connections.set(peerId, conn);
 
-    // Add existing local tracks
+    // Attach existing local tracks
     this.attachLocalTracksToConn(conn);
 
     pc.onicecandidate = (e) => {
@@ -508,27 +930,58 @@ export class WebRTCVoiceEngine {
     };
 
     pc.ontrack = (e) => {
-      const incomingTracks =
-        e.streams && e.streams[0] ? e.streams[0].getTracks() : e.track ? [e.track] : [];
+      const tracks = new Set();
+      if (e.track) tracks.add(e.track);
+      if (e.streams && e.streams[0]) {
+        for (const t of e.streams[0].getTracks()) {
+          tracks.add(t);
+        }
+      }
 
-      for (const track of incomingTracks) {
+      const streamId = e.streams?.[0]?.id || null;
+      const mid = e.transceiver?.mid || null;
+
+      for (const track of tracks) {
         if (track.kind === "audio") {
-          if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
-            remoteStream.addTrack(track);
-          }
-        } else if (track.kind === "video") {
-          conn.remoteVideoTracks.set(track.id, track);
+          conn.remoteAudioTracks.set(track.id, track);
+          const rebuildAudio = () => {
+            const liveAudioTracks = Array.from(conn.remoteAudioTracks.values()).filter(
+              (t) => t.readyState !== "ended"
+            );
+            conn.remoteStream = new MediaStream(liveAudioTracks);
+            conn.audioEl.srcObject = conn.remoteStream;
+            conn.audioEl.muted = this.selfDeafen || conn.muted;
+            const effectiveGain =
+              this.selfDeafen || conn.muted
+                ? 0
+                : (conn.volume / 100) * (this.masterOutputVolume / 100);
+            conn.audioEl.volume = Math.min(1, effectiveGain);
+            this.applySinkIdToElement(conn.audioEl);
+            conn.audioEl.play().catch(() => {});
+            this.setupRemoteAudioGraph(conn);
+          };
+          track.onunmute = rebuildAudio;
           track.onended = () => {
-            conn.remoteVideoTracks.delete(track.id);
+            conn.remoteAudioTracks.delete(track.id);
+            rebuildAudio();
+          };
+          rebuildAudio();
+        } else if (track.kind === "video") {
+          conn.remoteVideoEntries.set(track.id, {
+            track,
+            streamId,
+            mid,
+          });
+          track.onunmute = () => {
+            this.rebuildRemoteVideoStreams(conn);
+          };
+          track.onended = () => {
+            conn.remoteVideoEntries.delete(track.id);
             this.rebuildRemoteVideoStreams(conn);
           };
         }
       }
 
-      audioEl.srcObject = remoteStream;
-      this.applySinkIdToElement(audioEl);
-      audioEl.play().catch(() => {});
-      this.setupRemoteAudioGraph(conn);
       this.rebuildRemoteVideoStreams(conn);
     };
 
@@ -560,12 +1013,15 @@ export class WebRTCVoiceEngine {
 
   sendViaDataChannel(packet, targetPeerId = null) {
     const raw = JSON.stringify(packet);
+    if (raw.length > 60000) return 0; // Avoid RTCDataChannel message size limit exceptions
     let sent = 0;
     for (const [id, conn] of this.connections.entries()) {
       if (targetPeerId && id !== targetPeerId) continue;
       if (conn.dataChannel && conn.dataChannel.readyState === "open") {
-        conn.dataChannel.send(raw);
-        sent++;
+        try {
+          conn.dataChannel.send(raw);
+          sent++;
+        } catch {}
       }
     }
     return sent;
@@ -573,52 +1029,118 @@ export class WebRTCVoiceEngine {
 
   setupRemoteAudioGraph(conn) {
     try {
-      if (conn.gainNode || conn.remoteStream.getAudioTracks().length === 0) return;
+      if (conn.remoteStream.getAudioTracks().length === 0) return;
       const ctx = this.ensureAudioContext();
+      if (conn.audioSourceNode) {
+        try {
+          conn.audioSourceNode.disconnect();
+        } catch {}
+      }
       const source = ctx.createMediaStreamSource(conn.remoteStream);
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = (conn.volume / 100) * (this.masterOutputVolume / 100);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
+      source.connect(analyser);
+
+      // Only connect extra boost gain to destination when volume > 100%, because audioEl plays 0..100% reliably
+      const gainNode = ctx.createGain();
+      const effectiveGain =
+        this.selfDeafen || conn.muted
+          ? 0
+          : (conn.volume / 100) * (this.masterOutputVolume / 100);
+      gainNode.gain.value = effectiveGain > 1 ? effectiveGain - 1 : 0;
       source.connect(gainNode);
-      gainNode.connect(analyser);
       gainNode.connect(ctx.destination);
+
+      conn.audioSourceNode = source;
       conn.gainNode = gainNode;
       conn.analyser = analyser;
     } catch {}
   }
 
-  buildLocalStreamMeta() {
+  buildLocalStreamMeta(conn = null) {
+    const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
+    const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
+    let cameraMid = null;
+    let screenMid = null;
+    if (conn?.pc) {
+      try {
+        for (const tr of conn.pc.getTransceivers()) {
+          if (conn.cameraSender && tr.sender === conn.cameraSender) {
+            cameraMid = tr.mid;
+          }
+          if (conn.screenSender && tr.sender === conn.screenSender) {
+            screenMid = tr.mid;
+          }
+        }
+      } catch {}
+    }
     return {
-      cameraTrackId: this.localVideoStream?.getVideoTracks()?.[0]?.id || null,
-      screenTrackId: this.localScreenStream?.getVideoTracks()?.[0]?.id || null,
+      hasCamera: Boolean(camTrack && camTrack.readyState === "live"),
+      hasScreen: Boolean(scrTrack && scrTrack.readyState === "live"),
+      cameraTrackId: camTrack?.id || null,
+      screenTrackId: scrTrack?.id || null,
+      cameraStreamId: this.localVideoStream?.id || null,
+      screenStreamId: this.localScreenStream?.id || null,
+      cameraMid,
+      screenMid,
     };
   }
 
   rebuildRemoteVideoStreams(conn) {
-    const activeVideoTracks = Array.from(conn.remoteVideoTracks.values()).filter(
-      (t) => t.readyState !== "ended"
+    const activeEntries = Array.from(conn.remoteVideoEntries.values()).filter(
+      (entry) => entry.track && entry.track.readyState !== "ended"
     );
     const meta = conn.remoteStreamMeta || {};
 
     let camTrack = null;
     let scrTrack = null;
 
-    if (meta.cameraTrackId && conn.remoteVideoTracks.has(meta.cameraTrackId)) {
-      camTrack = conn.remoteVideoTracks.get(meta.cameraTrackId);
-    }
-    if (meta.screenTrackId && conn.remoteVideoTracks.has(meta.screenTrackId)) {
-      scrTrack = conn.remoteVideoTracks.get(meta.screenTrackId);
+    // 1. Match Screen Share track by ID, Stream ID, or Transceiver MID
+    if (meta.hasScreen !== false) {
+      for (const entry of activeEntries) {
+        if (
+          (meta.screenTrackId && entry.track.id === meta.screenTrackId) ||
+          (meta.screenStreamId && entry.streamId === meta.screenStreamId) ||
+          (meta.screenMid && entry.mid && entry.mid === meta.screenMid)
+        ) {
+          scrTrack = entry.track;
+          break;
+        }
+      }
+    } else {
+      conn.remoteScreenFrameUrl = null;
     }
 
-    // Fallback assignment if metadata hasn't arrived yet
-    for (const track of activeVideoTracks) {
+    // 2. Match Camera track by ID, Stream ID, or Transceiver MID
+    if (meta.hasCamera !== false) {
+      for (const entry of activeEntries) {
+        if (entry.track === scrTrack) continue;
+        if (
+          (meta.cameraTrackId && entry.track.id === meta.cameraTrackId) ||
+          (meta.cameraStreamId && entry.streamId === meta.cameraStreamId) ||
+          (meta.cameraMid && entry.mid && entry.mid === meta.cameraMid)
+        ) {
+          camTrack = entry.track;
+          break;
+        }
+      }
+    } else {
+      conn.remoteCameraFrameUrl = null;
+    }
+
+    // 3. Fallback matching for remaining active tracks
+    for (const entry of activeEntries) {
+      const track = entry.track;
       if (track === camTrack || track === scrTrack) continue;
-      if (!scrTrack && meta.screenTrackId) {
+      if (meta.hasScreen && !scrTrack) {
         scrTrack = track;
-      } else if (!camTrack) {
+      } else if (meta.hasCamera && !camTrack) {
         camTrack = track;
-      } else if (!scrTrack) {
+      } else if (!scrTrack && meta.screenTrackId) {
+        scrTrack = track;
+      } else if (!camTrack && meta.hasCamera !== false) {
+        camTrack = track;
+      } else if (!scrTrack && meta.hasScreen !== false) {
         scrTrack = track;
       }
     }
@@ -626,129 +1148,307 @@ export class WebRTCVoiceEngine {
     conn.remoteCameraStream = camTrack ? new MediaStream([camTrack]) : null;
     conn.remoteScreenStream = scrTrack ? new MediaStream([scrTrack]) : null;
 
+    this.emitRemoteStreamState(conn);
+  }
+
+  emitRemoteStreamState(conn) {
     this.onRemoteStream?.(conn.peerId, {
       audioStream: conn.remoteStream,
       cameraStream: conn.remoteCameraStream,
       screenStream: conn.remoteScreenStream,
-      videoTracksCount: activeVideoTracks.length,
+      cameraFrameUrl: conn.remoteCameraFrameUrl || null,
+      screenFrameUrl: conn.remoteScreenFrameUrl || null,
+      updatedAt: Date.now(),
     });
   }
 
   attachLocalTracksToConn(conn) {
     const pc = conn.pc;
-    const existingSenders = pc.getSenders();
-    if (this.localAudioStream) {
-      for (const track of this.localAudioStream.getAudioTracks()) {
-        if (!existingSenders.some((s) => s.track && s.track.id === track.id)) {
-          pc.addTrack(track, this.localAudioStream);
-        }
+    if (pc.signalingState === "closed") return false;
+    let addedNewTrack = false;
+
+    const audioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
+    if (audioTrack) {
+      if (conn.audioSender) {
+        conn.audioSender.replaceTrack(audioTrack).catch(() => {});
+      } else {
+        conn.audioSender = pc.addTrack(audioTrack, this.localAudioStream);
+        addedNewTrack = true;
       }
     }
 
+    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
+    if (screenAudioTrack) {
+      if (conn.screenAudioSender) {
+        conn.screenAudioSender.replaceTrack(screenAudioTrack).catch(() => {});
+      } else {
+        conn.screenAudioSender = pc.addTrack(screenAudioTrack, this.localScreenStream);
+        addedNewTrack = true;
+      }
+    } else if (conn.screenAudioSender) {
+      conn.screenAudioSender.replaceTrack(null).catch(() => {});
+    }
+
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
-    if (camTrack && !conn.cameraSender) {
-      conn.cameraSender = pc.addTrack(camTrack, this.localVideoStream);
+    if (camTrack) {
+      if (conn.cameraSender) {
+        conn.cameraSender.replaceTrack(camTrack).catch(() => {});
+      } else {
+        conn.cameraSender = pc.addTrack(camTrack, this.localVideoStream);
+        addedNewTrack = true;
+      }
+    } else if (conn.cameraSender) {
+      conn.cameraSender.replaceTrack(null).catch(() => {});
     }
 
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
-    if (scrTrack && !conn.screenSender) {
-      conn.screenSender = pc.addTrack(scrTrack, this.localScreenStream);
+    if (scrTrack) {
+      if (conn.screenSender) {
+        conn.screenSender.replaceTrack(scrTrack).catch(() => {});
+      } else {
+        conn.screenSender = pc.addTrack(scrTrack, this.localScreenStream);
+        addedNewTrack = true;
+      }
+    } else if (conn.screenSender) {
+      conn.screenSender.replaceTrack(null).catch(() => {});
+    }
+
+    return addedNewTrack;
+  }
+
+  hasUnsentLocalTracks(conn) {
+    const pc = conn.pc;
+    if (!pc || pc.signalingState === "closed") return false;
+    const transceivers = pc.getTransceivers ? pc.getTransceivers() : [];
+    const checkSender = (sender, track) => {
+      if (!track || !sender) return false;
+      const tr = transceivers.find((t) => t.sender === sender);
+      if (!tr) return false;
+      return tr.currentDirection !== "sendrecv" && tr.currentDirection !== "sendonly";
+    };
+
+    const audioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
+    const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
+    const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
+
+    return (
+      checkSender(conn.audioSender, audioTrack) ||
+      checkSender(conn.cameraSender, camTrack) ||
+      checkSender(conn.screenSender, scrTrack)
+    );
+  }
+
+  async flushPendingCandidates(conn) {
+    if (!conn.pc.remoteDescription || !conn.pc.remoteDescription.type) return;
+    while (conn.pendingCandidates.length > 0) {
+      const candidate = conn.pendingCandidates.shift();
+      try {
+        await conn.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {}
     }
   }
 
   async syncAudioTrackWithPeers() {
-    const activeAudioTrack = this.localAudioStream?.getAudioTracks()[0] || null;
+    const activeAudioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
     if (!activeAudioTrack) return;
     for (const [peerId, conn] of this.connections.entries()) {
-      const senders = conn.pc.getSenders();
-      const audioSender = senders.find((s) => s.track?.kind === "audio");
-      if (audioSender) {
-        await audioSender.replaceTrack(activeAudioTrack);
+      if (conn.audioSender) {
+        await conn.audioSender.replaceTrack(activeAudioTrack).catch(() => {});
       } else {
-        conn.pc.addTrack(activeAudioTrack, this.localAudioStream);
+        this.attachLocalTracksToConn(conn);
         await this.negotiateWithPeer(peerId);
       }
     }
   }
 
   async syncTracksWithPeers() {
-    const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
-    const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
-    const streamMeta = this.buildLocalStreamMeta();
-
     for (const [peerId, conn] of this.connections.entries()) {
-      let needsRenegotiation = false;
-
-      if (conn.cameraSender) {
-        await conn.cameraSender.replaceTrack(camTrack);
-      } else if (camTrack) {
-        conn.cameraSender = conn.pc.addTrack(camTrack, this.localVideoStream);
-        needsRenegotiation = true;
-      }
-
-      if (conn.screenSender) {
-        await conn.screenSender.replaceTrack(scrTrack);
-      } else if (scrTrack) {
-        conn.screenSender = conn.pc.addTrack(scrTrack, this.localScreenStream);
-        needsRenegotiation = true;
-      }
+      const addedNewTrack = this.attachLocalTracksToConn(conn);
+      const unsent = this.hasUnsentLocalTracks(conn);
+      const streamMeta = this.buildLocalStreamMeta(conn);
 
       this.onSignalSend?.(peerId, {
         signalType: "stream-meta",
         streamMeta,
       });
 
-      if (needsRenegotiation) {
+      if (addedNewTrack || unsent) {
         await this.negotiateWithPeer(peerId);
       }
     }
   }
 
   async negotiateWithPeer(peerId) {
-    await this.startLocalVoice();
+    if (!this.localAudioStream) {
+      await this.startLocalVoice();
+    }
     const conn = this.createPeerConnection(peerId, true);
-    this.attachLocalTracksToConn(conn);
-    const offer = await conn.pc.createOffer();
-    await conn.pc.setLocalDescription(offer);
-    this.onSignalSend?.(peerId, {
-      signalType: "offer",
-      sdp: conn.pc.localDescription,
-      streamMeta: this.buildLocalStreamMeta(),
-    });
+
+    conn.signalQueue = conn.signalQueue
+      .then(async () => {
+        if (conn.pc.signalingState === "closed") return;
+        this.attachLocalTracksToConn(conn);
+
+        if (conn.pc.signalingState !== "stable") {
+          conn.needsFollowUpNegotiation = true;
+          return;
+        }
+
+        try {
+          conn.makingOffer = true;
+          conn.hasNegotiated = true;
+          const offer = await conn.pc.createOffer();
+          if (conn.pc.signalingState !== "stable") {
+            conn.needsFollowUpNegotiation = true;
+            return;
+          }
+          await conn.pc.setLocalDescription(offer);
+          this.onSignalSend?.(peerId, {
+            signalType: "offer",
+            sdp: conn.pc.localDescription,
+            streamMeta: this.buildLocalStreamMeta(conn),
+          });
+        } catch (err) {
+          console.warn("[Freecord VoiceEngine] negotiateWithPeer error:", err.message);
+        } finally {
+          conn.makingOffer = false;
+        }
+      })
+      .catch(() => {});
+
+    return await conn.signalQueue;
   }
 
   async handleIncomingSignal(fromPeerId, signal) {
-    await this.startLocalVoice();
-    const conn = this.createPeerConnection(fromPeerId, false);
-    this.attachLocalTracksToConn(conn);
+    if (!fromPeerId || !signal) return;
 
-    if (signal.streamMeta) {
-      conn.remoteStreamMeta = signal.streamMeta;
-      this.rebuildRemoteVideoStreams(conn);
+    // Kick off local audio initialization without blocking urgent incoming signaling
+    if (!this.localAudioStream && !this.voiceInitPromise) {
+      this.startLocalVoice().catch(() => {});
     }
 
-    if (signal.signalType === "stream-meta") {
-      return;
-    }
+    let conn = this.createPeerConnection(fromPeerId, false);
 
-    if (signal.signalType === "offer") {
-      await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      const answer = await conn.pc.createAnswer();
-      await conn.pc.setLocalDescription(answer);
-      this.onSignalSend?.(fromPeerId, {
-        signalType: "answer",
-        sdp: conn.pc.localDescription,
-        streamMeta: this.buildLocalStreamMeta(),
+    conn.signalQueue = conn.signalQueue
+      .then(async () => {
+        if (signal.streamMeta) {
+          conn.remoteStreamMeta = {
+            ...conn.remoteStreamMeta,
+            ...signal.streamMeta,
+          };
+          this.rebuildRemoteVideoStreams(conn);
+        }
+
+        if (signal.signalType === "stream-meta") {
+          return;
+        }
+
+        if (signal.signalType === "ice-candidate" && signal.candidate) {
+          if (!conn.pc.remoteDescription || !conn.pc.remoteDescription.type) {
+            conn.pendingCandidates.push(signal.candidate);
+          } else {
+            try {
+              await conn.pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+            } catch {}
+          }
+          return;
+        }
+
+        if (signal.signalType === "offer" && signal.sdp) {
+          conn.hasNegotiated = true;
+          if (this.voiceInitPromise) {
+            await Promise.race([
+              this.voiceInitPromise,
+              new Promise((r) => setTimeout(r, 350)),
+            ]);
+          }
+
+          const isPolite =
+            !this.localPeerId || String(this.localPeerId) > String(fromPeerId);
+          const offerCollision =
+            conn.makingOffer || conn.pc.signalingState !== "stable";
+
+          if (offerCollision) {
+            if (!isPolite) {
+              // Impolite peer ignores colliding offer; polite peer will accept ours
+              return;
+            }
+            try {
+              await conn.pc.setLocalDescription({ type: "rollback" });
+            } catch {}
+          }
+
+          try {
+            await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          } catch (err) {
+            // Remote peer likely re-initialized its RTCPeerConnection (e.g. rejoined voice)
+            console.warn(
+              "[Freecord VoiceEngine] Resetting stale RTCPeerConnection on new offer:",
+              err.message
+            );
+            conn = this.createPeerConnection(fromPeerId, false, true);
+            if (signal.streamMeta) {
+              conn.remoteStreamMeta = {
+                ...conn.remoteStreamMeta,
+                ...signal.streamMeta,
+              };
+            }
+            await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          }
+
+          await this.flushPendingCandidates(conn);
+          this.attachLocalTracksToConn(conn);
+
+          const answer = await conn.pc.createAnswer();
+          await conn.pc.setLocalDescription(answer);
+
+          const localMeta = this.buildLocalStreamMeta(conn);
+          this.onSignalSend?.(fromPeerId, {
+            signalType: "answer",
+            sdp: conn.pc.localDescription,
+            streamMeta: localMeta,
+          });
+
+          this.rebuildRemoteVideoStreams(conn);
+
+          // If we have local camera/screen/audio tracks that couldn't fit in the answer SDP (because offer had no m=video), immediately send a follow-up offer!
+          if (conn.needsFollowUpNegotiation || this.hasUnsentLocalTracks(conn)) {
+            conn.needsFollowUpNegotiation = false;
+            setTimeout(() => {
+              this.negotiateWithPeer(fromPeerId);
+            }, 40);
+          }
+        } else if (signal.signalType === "answer" && signal.sdp) {
+          if (conn.pc.signalingState !== "have-local-offer") {
+            return;
+          }
+          try {
+            await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            await this.flushPendingCandidates(conn);
+            this.rebuildRemoteVideoStreams(conn);
+
+            // Re-broadcast stream-meta now that transceiver mids are finalized
+            this.onSignalSend?.(fromPeerId, {
+              signalType: "stream-meta",
+              streamMeta: this.buildLocalStreamMeta(conn),
+            });
+
+            if (conn.needsFollowUpNegotiation || this.hasUnsentLocalTracks(conn)) {
+              conn.needsFollowUpNegotiation = false;
+              setTimeout(() => {
+                this.negotiateWithPeer(fromPeerId);
+              }, 40);
+            }
+          } catch (err) {
+            console.warn("[Freecord VoiceEngine] Error setting remote answer:", err.message);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn("[Freecord VoiceEngine] Signal queue error:", err.message);
       });
-      this.rebuildRemoteVideoStreams(conn);
-    } else if (signal.signalType === "answer") {
-      await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      this.rebuildRemoteVideoStreams(conn);
-    } else if (signal.signalType === "ice-candidate" && signal.candidate) {
-      try {
-        await conn.pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-      } catch {}
-    }
+
+    return await conn.signalQueue;
   }
 
   // Serverless Manual WebRTC SDP Invite Code (for Browser-to-Browser or strict NAT without port forwarding)
@@ -818,7 +1518,6 @@ export class WebRTCVoiceEngine {
         answerCode: btoa(unescape(encodeURIComponent(JSON.stringify(answerPayload)))),
       };
     } else if (decoded.kind === "answer") {
-      // Find pending manual offer connection
       let targetConn = null;
       for (const conn of this.connections.values()) {
         if (conn.pendingManualOffer || conn.pc.signalingState === "have-local-offer") {
@@ -870,12 +1569,30 @@ export class WebRTCVoiceEngine {
       const summary = {};
       for (const [peerId, conn] of this.connections.entries()) {
         try {
+          // Check remote speaking state from analyser
+          if (conn.analyser) {
+            const data = new Uint8Array(conn.analyser.frequencyBinCount);
+            conn.analyser.getByteFrequencyData(data);
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) sum += data[i];
+            const avg = sum / data.length;
+            const isRemoteSpeaking = avg > 10 && !conn.muted && !this.selfDeafen;
+            if (conn.remoteSpeaking !== isRemoteSpeaking) {
+              conn.remoteSpeaking = isRemoteSpeaking;
+              this.onSpeakingChange?.(peerId, isRemoteSpeaking);
+            }
+          }
+
           const report = await conn.pc.getStats();
           let rttMs = conn.stats.rttMs;
           let bytesSent = 0;
           let bytesReceived = 0;
           report.forEach((stat) => {
-            if (stat.type === "candidate-pair" && stat.state === "succeeded" && stat.currentRoundTripTime != null) {
+            if (
+              stat.type === "candidate-pair" &&
+              stat.state === "succeeded" &&
+              stat.currentRoundTripTime != null
+            ) {
               rttMs = Math.round(stat.currentRoundTripTime * 1000);
             }
             if (stat.type === "outbound-rtp") {
@@ -890,19 +1607,23 @@ export class WebRTCVoiceEngine {
         } catch {}
       }
       this.onStatsUpdate?.(summary);
-    }, 2500);
+    }, 600);
   }
 
   destroyPeer(peerId) {
     const conn = this.connections.get(peerId);
     if (!conn) return;
     try {
+      conn.pc.ontrack = null;
+      conn.pc.onicecandidate = null;
       conn.pc.close();
     } catch {}
     if (conn.audioEl) {
       conn.audioEl.srcObject = null;
+      conn.audioEl.remove();
     }
     this.connections.delete(peerId);
+    this.updateFrameRelayLoop();
   }
 
   destroyAll() {
@@ -922,6 +1643,7 @@ export class WebRTCVoiceEngine {
       this.localScreenStream = null;
     }
     this.activeDesktopSourceId = null;
+    this.updateFrameRelayLoop();
     if (this.vadInterval) {
       clearInterval(this.vadInterval);
       this.vadInterval = null;

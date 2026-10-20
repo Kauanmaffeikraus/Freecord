@@ -15,6 +15,13 @@ if (instanceId !== "1") {
   app.setPath("userData", customUserData);
 }
 
+// Ensure WebRTC direct local IPv4 candidates, background media streaming, and zero-gesture autoplay
+app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
+app.commandLine.appendSwitch("enable-usermedia-screen-capturing");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+
 // Reconstructed from DiscordPTB core.asar settings endpoints (REA Evidence ev_63237e0ecd1017fdd2315f484417c1cd369dec71535fc38c4967c3899b0de011)
 const DEFAULT_SETTINGS = {
   MIN_WIDTH: 940,
@@ -73,6 +80,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -253,6 +261,11 @@ function registerIpcHandlers() {
 }
 
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionCheckHandler(() => true);
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(true);
+  });
+
   // Configure DisplayMedia handler so navigator.mediaDevices.getDisplayMedia works natively in Electron
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
     try {

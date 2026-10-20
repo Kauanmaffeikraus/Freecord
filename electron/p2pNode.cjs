@@ -65,6 +65,14 @@ class P2PNode extends EventEmitter {
 
     // Voice channel presence: Map<channelId, Set<peerId>>
     this.voicePresence = new Map();
+    this.currentVoiceChannelId = null;
+    this.currentVoiceState = {
+      muted: false,
+      deafened: false,
+      speaking: false,
+      screenSharing: false,
+      videoEnabled: false,
+    };
   }
 
   loadInitialProfile() {
@@ -366,6 +374,7 @@ class P2PNode extends EventEmitter {
       tcpPort: this.tcpPort,
       addresses: getLocalIPv4Addresses().map((a) => a.address),
       voiceChannelId: this.currentVoiceChannelId || null,
+      voiceState: this.currentVoiceState || {},
       timestamp: Date.now(),
     });
 
@@ -467,6 +476,13 @@ class P2PNode extends EventEmitter {
           rttMs: Math.max(1, Date.now() - (packet.timestamp || Date.now())),
           fingerprint,
           voiceChannelId: packet.voiceChannelId || null,
+          voiceState: packet.voiceState || {
+            muted: false,
+            deafened: false,
+            speaking: false,
+            screenSharing: false,
+            videoEnabled: false,
+          },
         };
 
         this.peers.set(remotePeerId, peerEntry);
@@ -549,7 +565,10 @@ class P2PNode extends EventEmitter {
       case "TYPING_STATE":
       case "ROOM_SYNC":
       case "VOICE_STATE":
-      case "WEBRTC_SIGNAL": {
+      case "VOICE_SPEAKING":
+      case "WEBRTC_SIGNAL":
+      case "MEDIA_FRAME":
+      case "AUDIO_CHUNK": {
         const senderId = ctx.getAssociatedPeerId();
         if (!senderId) return;
         if (packet.type === "VOICE_STATE") {
@@ -558,6 +577,11 @@ class P2PNode extends EventEmitter {
             peer.voiceChannelId = packet.channelId || null;
             peer.voiceState = packet.voiceState || {};
             this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "VOICE_SPEAKING") {
+          const peer = this.peers.get(senderId);
+          if (peer) {
+            peer.voiceState = { ...(peer.voiceState || {}), speaking: Boolean(packet.speaking) };
           }
         }
         this.emit("p2p-event", {
@@ -604,10 +628,11 @@ class P2PNode extends EventEmitter {
 
   setVoiceChannelState(channelId, voiceState = {}) {
     this.currentVoiceChannelId = channelId || null;
+    this.currentVoiceState = voiceState || {};
     this.broadcast({
       type: "VOICE_STATE",
       channelId: this.currentVoiceChannelId,
-      voiceState,
+      voiceState: this.currentVoiceState,
     });
   }
 
