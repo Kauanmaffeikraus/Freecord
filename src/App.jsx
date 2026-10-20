@@ -2174,6 +2174,8 @@ export default function App() {
       const peerName = peer.displayName || peer.username;
 
       if (hasRemoteScreen) {
+        const remoteRes = (isMediaBundle && peerMedia.screenResolution) || "1080p";
+        const remoteFps = (isMediaBundle && peerMedia.screenFrameRate) || 30;
         tiles.push({
           id: `${peer.peerId}_screen`,
           peerId: peer.peerId,
@@ -2186,7 +2188,7 @@ export default function App() {
           frameUrl: peerScreenFrameUrl,
           profile: peer,
           label: peerName,
-          badge: t.screenBadge,
+          badge: `${t.screenBadge} • ${String(remoteRes).toUpperCase()} ${remoteFps}FPS`,
           speaking: false,
         });
       }

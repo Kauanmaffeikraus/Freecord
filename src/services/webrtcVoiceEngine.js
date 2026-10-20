@@ -315,8 +315,8 @@ export class WebRTCVoiceEngine {
       const freqData = new Uint8Array(analyser.frequencyBinCount);
       const timeData = new Float32Array(analyser.fftSize);
 
-      // ScriptProcessor for real-time 24kHz P2P PCM voice streaming
-      const processor = ctx.createScriptProcessor(2048, 1, 1);
+      // ScriptProcessor (4096 samples = ~85ms at 48kHz) runs on WebAudio hardware clock (immune to background/minimized timer throttling)
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
       const zeroGain = ctx.createGain();
       zeroGain.gain.value = 0;
       mixNode.connect(processor);
@@ -326,19 +326,61 @@ export class WebRTCVoiceEngine {
 
       let hangoverBuffers = 0;
       processor.onaudioprocess = (e) => {
-        if (!this.onAudioChunkSend) return;
-        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
-        if ((this.selfMute || this.selfDeafen) && !hasScreenAudio) return;
+        if (this.audioContext && this.audioContext.state === "suspended") {
+          this.audioContext.resume().catch(() => {});
+        }
 
+        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
         const input = e.inputBuffer.getChannelData(0);
+
+        if (this.selfMute || this.selfDeafen) {
+          this.onInputLevelChange?.(0);
+          if (this.localSpeaking) {
+            this.localSpeaking = false;
+            this.onSpeakingChange?.("self", false);
+          }
+          if (!hasScreenAudio) return;
+        }
+
         let sumSq = 0;
+        let peak = 0;
         for (let i = 0; i < input.length; i++) {
-          sumSq += input[i] * input[i];
+          const v = input[i];
+          sumSq += v * v;
+          const abs = v < 0 ? -v : v;
+          if (abs > peak) peak = abs;
         }
         const rms = Math.sqrt(sumSq / input.length);
-        if (rms > 0.004 || this.localSpeaking || hasScreenAudio) {
-          if (rms > 0.004 || this.localSpeaking) {
-            hangoverBuffers = 6; // Keep transmitting ~250ms after speech trailing edge
+
+        if (!this.selfMute && !this.selfDeafen) {
+          analyser.getByteFrequencyData(freqData);
+          let freqSum = 0;
+          for (let i = 0; i < freqData.length; i++) freqSum += freqData[i];
+          const avgFreq = freqSum / freqData.length;
+
+          const levelPercent = Math.min(
+            100,
+            Math.max(Math.round((avgFreq / 52) * 100), Math.round(rms * 380))
+          );
+          this.onInputLevelChange?.(levelPercent);
+
+          const now = Date.now();
+          const voiceDetected = avgFreq > 7 || rms > 0.006 || peak > 0.03;
+          if (voiceDetected) {
+            this.speakingHoldUntil = now + 380;
+          }
+          const speaking = voiceDetected || now < this.speakingHoldUntil;
+          if (speaking !== this.localSpeaking) {
+            this.localSpeaking = speaking;
+            this.onSpeakingChange?.("self", speaking);
+          }
+        }
+
+        if (!this.onAudioChunkSend) return;
+
+        if (rms > 0.003 || this.localSpeaking || hasScreenAudio) {
+          if (rms > 0.003 || this.localSpeaking) {
+            hangoverBuffers = 5; // Keep transmitting ~420ms after speech trailing edge for smooth endings
           }
         } else if (hangoverBuffers > 0) {
           hangoverBuffers--;
@@ -356,9 +398,13 @@ export class WebRTCVoiceEngine {
         }
 
         const bytes = new Uint8Array(pcm16.buffer);
+        const CHUNK_STEP = 0x4000;
         let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) {
-          binary += String.fromCharCode(bytes[i]);
+        for (let i = 0; i < bytes.byteLength; i += CHUNK_STEP) {
+          binary += String.fromCharCode.apply(
+            null,
+            bytes.subarray(i, Math.min(i + CHUNK_STEP, bytes.byteLength))
+          );
         }
         const pcmBase64 = btoa(binary);
         this.onAudioChunkSend({
@@ -367,44 +413,10 @@ export class WebRTCVoiceEngine {
         });
       };
 
-      if (this.vadInterval) clearInterval(this.vadInterval);
-      this.vadInterval = setInterval(() => {
-        if (this.selfMute || this.selfDeafen) {
-          this.onInputLevelChange?.(0);
-          if (this.localSpeaking) {
-            this.localSpeaking = false;
-            this.onSpeakingChange?.("self", false);
-          }
-          return;
-        }
-        analyser.getByteFrequencyData(freqData);
-        analyser.getFloatTimeDomainData(timeData);
-
-        let sum = 0;
-        for (let i = 0; i < freqData.length; i++) sum += freqData[i];
-        const avgFreq = sum / freqData.length;
-
-        let sumSq = 0;
-        for (let i = 0; i < timeData.length; i++) sumSq += timeData[i] * timeData[i];
-        const rms = Math.sqrt(sumSq / timeData.length);
-
-        const levelPercent = Math.min(
-          100,
-          Math.max(Math.round((avgFreq / 55) * 100), Math.round(rms * 360))
-        );
-        this.onInputLevelChange?.(levelPercent);
-
-        const now = Date.now();
-        const voiceDetected = avgFreq > 8 || rms > 0.008;
-        if (voiceDetected) {
-          this.speakingHoldUntil = now + 320;
-        }
-        const speaking = voiceDetected || now < this.speakingHoldUntil;
-        if (speaking !== this.localSpeaking) {
-          this.localSpeaking = speaking;
-          this.onSpeakingChange?.("self", speaking);
-        }
-      }, 85);
+      if (this.vadInterval) {
+        clearInterval(this.vadInterval);
+        this.vadInterval = null;
+      }
     } catch {}
   }
 
@@ -520,9 +532,9 @@ export class WebRTCVoiceEngine {
 
     const res = CAMERA_RESOLUTIONS[this.cameraResolution] || CAMERA_RESOLUTIONS["720p"];
     const videoConstraints = {
-      width: { ideal: res.width },
-      height: { ideal: res.height },
-      frameRate: { ideal: 30 },
+      width: { min: Math.min(640, res.width), ideal: res.width, max: res.width },
+      height: { min: Math.min(360, res.height), ideal: res.height, max: res.height },
+      frameRate: { ideal: 30, max: 30 },
     };
     if (this.videoInputDeviceId && this.videoInputDeviceId !== "default") {
       videoConstraints.deviceId = { exact: this.videoInputDeviceId };
@@ -533,8 +545,13 @@ export class WebRTCVoiceEngine {
         video: videoConstraints,
         audio: false,
       });
+      const [camTrack] = this.localVideoStream.getVideoTracks();
+      if (camTrack && "contentHint" in camTrack) {
+        camTrack.contentHint = "motion";
+      }
       this.updateFrameRelayLoop();
       await this.syncTracksWithPeers();
+      await this.configureAllPeerVideoSenders();
       return this.localVideoStream;
     } catch (err) {
       console.warn("[Freecord VoiceEngine] Camera error:", err.message);
@@ -553,22 +570,23 @@ export class WebRTCVoiceEngine {
     if (this.localScreenStream) {
       const res = SCREEN_RESOLUTIONS[this.screenResolution] || SCREEN_RESOLUTIONS["1080p"];
       const fps = this.screenFrameRate || 30;
-      const [videoTrack] = this.localScreenStream.getVideoTracks();
-      if (videoTrack && typeof videoTrack.applyConstraints === "function") {
-        try {
-          await videoTrack.applyConstraints({
-            width: { ideal: res.width, max: res.width },
-            height: { ideal: res.height, max: res.height },
-            frameRate: { ideal: fps, max: fps },
-          });
-          return this.localScreenStream;
-        } catch {}
-      }
       if (this.activeDesktopSourceId && this.activeDesktopSourceId !== "browser-display") {
         return await this.setDesktopSource(this.activeDesktopSourceId, {
           resolution: this.screenResolution,
           frameRate: this.screenFrameRate,
         });
+      }
+      const [videoTrack] = this.localScreenStream.getVideoTracks();
+      if (videoTrack && typeof videoTrack.applyConstraints === "function") {
+        try {
+          await videoTrack.applyConstraints({
+            width: { min: res.width, ideal: res.width, max: res.width },
+            height: { min: res.height, ideal: res.height, max: res.height },
+            frameRate: { ideal: fps, max: fps },
+          });
+          await this.configureAllPeerVideoSenders();
+          return this.localScreenStream;
+        } catch {}
       }
     }
     return this.localScreenStream;
@@ -603,14 +621,24 @@ export class WebRTCVoiceEngine {
 
     try {
       if (sourceId !== "browser-display" && window.DiscordNative?.isRenderer) {
-        const mandatoryVideo = {
+        const strictMandatoryVideo = {
+          chromeMediaSource: "desktop",
+          chromeMediaSourceId: sourceId,
+          minWidth: res.width,
+          maxWidth: res.width,
+          minHeight: res.height,
+          maxHeight: res.height,
+          minFrameRate: Math.min(15, fps),
+          maxFrameRate: fps,
+        };
+        const flexibleMandatoryVideo = {
           chromeMediaSource: "desktop",
           chromeMediaSourceId: sourceId,
           maxWidth: res.width,
           maxHeight: res.height,
           maxFrameRate: fps,
         };
-        // Try capturing desktop video + system loopback audio first; fallback to video-only if audio capture fails
+        // Try capturing at exact target preset with system audio first, then fallback cleanly
         try {
           this.localScreenStream = await navigator.mediaDevices.getUserMedia({
             audio: {
@@ -619,16 +647,25 @@ export class WebRTCVoiceEngine {
               },
             },
             video: {
-              mandatory: mandatoryVideo,
+              mandatory: strictMandatoryVideo,
             },
           });
         } catch {
-          this.localScreenStream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: {
-              mandatory: mandatoryVideo,
-            },
-          });
+          try {
+            this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                mandatory: strictMandatoryVideo,
+              },
+            });
+          } catch {
+            this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                mandatory: flexibleMandatoryVideo,
+              },
+            });
+          }
         }
       } else {
         this.localScreenStream = await navigator.mediaDevices.getDisplayMedia({
@@ -644,6 +681,9 @@ export class WebRTCVoiceEngine {
       this.activeDesktopSourceId = sourceId;
       const [videoTrack] = this.localScreenStream.getVideoTracks();
       if (videoTrack) {
+        if ("contentHint" in videoTrack) {
+          videoTrack.contentHint = fps >= 60 ? "motion" : "detail";
+        }
         videoTrack.onended = () => {
           this.localScreenStream = null;
           this.activeDesktopSourceId = null;
@@ -655,11 +695,73 @@ export class WebRTCVoiceEngine {
       this.updateFrameRelayLoop();
       this.attachScreenAudioToMixer();
       await this.syncTracksWithPeers();
+      await this.configureAllPeerVideoSenders();
       return this.localScreenStream;
     } catch (err) {
       console.warn("[Freecord VoiceEngine] Desktop source capture failed:", err.message);
       throw err;
     }
+  }
+
+  async configureVideoSenderParameters(sender, kind = "screen") {
+    if (!sender || !sender.track || typeof sender.getParameters !== "function") return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.degradationPreference = "maintain-resolution";
+      if (kind === "screen") {
+        const bitrates = {
+          "720p": 5_000_000,
+          "1080p": 12_000_000,
+          "1440p": 20_000_000,
+          "4k": 35_000_000,
+        };
+        params.encodings[0].maxBitrate = bitrates[this.screenResolution] || 12_000_000;
+        params.encodings[0].maxFramerate = Number(this.screenFrameRate) || 30;
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.encodings[0].priority = "high";
+        params.encodings[0].networkPriority = "high";
+      } else {
+        const camBitrates = {
+          "480p": 1_800_000,
+          "720p": 4_000_000,
+          "1080p": 8_000_000,
+        };
+        params.encodings[0].maxBitrate = camBitrates[this.cameraResolution] || 4_000_000;
+        params.encodings[0].maxFramerate = 30;
+        params.encodings[0].scaleResolutionDownBy = 1.0;
+      }
+      await sender.setParameters(params);
+    } catch {}
+  }
+
+  async configureAllPeerVideoSenders() {
+    for (const conn of this.connections.values()) {
+      if (conn.screenSender) {
+        await this.configureVideoSenderParameters(conn.screenSender, "screen");
+      }
+      if (conn.cameraSender) {
+        await this.configureVideoSenderParameters(conn.cameraSender, "camera");
+      }
+    }
+  }
+
+  enhanceSdpBitrate(sdpDescription) {
+    if (!sdpDescription || !sdpDescription.sdp) return sdpDescription;
+    // Boost initial and maximum video bitrate in SDP so WebRTC does not start at blurry 300kbps
+    const lines = sdpDescription.sdp.split("\r\n");
+    const enhanced = lines.map((line) => {
+      if (line.startsWith("a=fmtp:") && !line.includes("x-google-max-bitrate")) {
+        return `${line};x-google-min-bitrate=4000;x-google-start-bitrate=10000;x-google-max-bitrate=35000`;
+      }
+      return line;
+    });
+    return {
+      type: sdpDescription.type,
+      sdp: enhanced.join("\r\n"),
+    };
   }
 
   // Lightweight P2P Frame Relay fallback so receivers ALWAYS see live screen/camera even while WebRTC negotiates or across strict firewalls
@@ -715,18 +817,31 @@ export class WebRTCVoiceEngine {
       this.frameRelayInterval = setInterval(() => {
         if (!this.onFrameSend) return;
 
-        // Send screen frame if active
+        // Only send fallback TCP frames if at least one peer's WebRTC connection isn't fully connected yet
+        let needsFallbackRelay = this.connections.size === 0;
+        for (const conn of this.connections.values()) {
+          if (conn.pc.connectionState !== "connected" || this.hasUnsentLocalTracks(conn)) {
+            needsFallbackRelay = true;
+            break;
+          }
+        }
+        if (!needsFallbackRelay) return;
+
+        // Send screen frame if active (respecting selected resolution preset)
         if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {
           try {
+            const preset = SCREEN_RESOLUTIONS[this.screenResolution] || SCREEN_RESOLUTIONS["1080p"];
             const vw = this.relayScrVideoEl.videoWidth;
             const vh = this.relayScrVideoEl.videoHeight;
-            const targetW = Math.min(1280, vw);
+            const targetW = Math.min(preset.width, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
             ctx.drawImage(this.relayScrVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.62);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.86);
             this.onFrameSend({
               kind: "screen",
               dataUrl,
@@ -735,18 +850,21 @@ export class WebRTCVoiceEngine {
           } catch {}
         }
 
-        // Send camera frame if active
+        // Send camera frame if active (respecting selected camera resolution preset)
         if (this.localVideoStream && this.relayCamVideoEl && this.relayCamVideoEl.videoWidth > 0) {
           try {
+            const camPreset = CAMERA_RESOLUTIONS[this.cameraResolution] || CAMERA_RESOLUTIONS["720p"];
             const vw = this.relayCamVideoEl.videoWidth;
             const vh = this.relayCamVideoEl.videoHeight;
-            const targetW = Math.min(640, vw);
+            const targetW = Math.min(camPreset.width, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
             ctx.drawImage(this.relayCamVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.65);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.85);
             this.onFrameSend({
               kind: "camera",
               dataUrl,
@@ -754,7 +872,7 @@ export class WebRTCVoiceEngine {
             });
           } catch {}
         }
-      }, 140);
+      }, 150);
     }
   }
 
@@ -763,10 +881,16 @@ export class WebRTCVoiceEngine {
     const conn = this.createPeerConnection(fromPeerId, false);
     if (framePacket.kind === "screen") {
       conn.remoteScreenFrameUrl = framePacket.dataUrl;
+      // Only re-emit if native WebRTC screen stream isn't already active
+      if (!conn.remoteScreenStream) {
+        this.emitRemoteStreamState(conn);
+      }
     } else if (framePacket.kind === "camera") {
       conn.remoteCameraFrameUrl = framePacket.dataUrl;
+      if (!conn.remoteCameraStream) {
+        this.emitRemoteStreamState(conn);
+      }
     }
-    this.emitRemoteStreamState(conn);
   }
 
   handleIncomingAudioChunk(fromPeerId, chunkPacket) {
@@ -785,7 +909,7 @@ export class WebRTCVoiceEngine {
       conn.speakingDecayTimer = setTimeout(() => {
         conn.remoteSpeaking = false;
         this.onSpeakingChange?.(fromPeerId, false);
-      }, 360);
+      }, 480);
     }
 
     if (this.selfDeafen || conn.muted) return;
@@ -802,8 +926,21 @@ export class WebRTCVoiceEngine {
       const sampleRate = Number(chunkPacket.sampleRate) || 24000;
       const audioBuffer = ctx.createBuffer(1, pcm16.length, sampleRate);
       const channelData = audioBuffer.getChannelData(0);
+
+      const now = ctx.currentTime;
+      const isUnderrun =
+        !conn.nextPlayTime ||
+        conn.nextPlayTime < now ||
+        conn.nextPlayTime > now + 0.65;
+
+      const fadeSamples = 24;
       for (let i = 0; i < pcm16.length; i++) {
-        channelData[i] = pcm16[i] / 32768.0;
+        let sample = pcm16[i] / 32768.0;
+        // Apply tiny anti-click micro-fade on the leading edge after silence
+        if (isUnderrun && i < fadeSamples) {
+          sample *= i / fadeSamples;
+        }
+        channelData[i] = sample;
       }
 
       if (!conn.pcmGainNode) {
@@ -826,13 +963,8 @@ export class WebRTCVoiceEngine {
       source.buffer = audioBuffer;
       source.connect(conn.pcmGainNode);
 
-      const now = ctx.currentTime;
-      if (
-        !conn.nextPlayTime ||
-        conn.nextPlayTime < now ||
-        conn.nextPlayTime > now + 0.35
-      ) {
-        conn.nextPlayTime = now + 0.025;
+      if (isUnderrun) {
+        conn.nextPlayTime = now + 0.075; // 75ms jitter cushion prevents chopping when minimized/unfocused
       }
       source.start(conn.nextPlayTime);
       conn.nextPlayTime += audioBuffer.duration;
@@ -922,9 +1054,18 @@ export class WebRTCVoiceEngine {
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
+        const plainCandidate =
+          typeof e.candidate.toJSON === "function"
+            ? e.candidate.toJSON()
+            : {
+                candidate: e.candidate.candidate,
+                sdpMid: e.candidate.sdpMid,
+                sdpMLineIndex: e.candidate.sdpMLineIndex,
+                usernameFragment: e.candidate.usernameFragment,
+              };
         this.onSignalSend?.(peerId, {
           signalType: "ice-candidate",
-          candidate: e.candidate,
+          candidate: plainCandidate,
         });
       }
     };
@@ -971,6 +1112,7 @@ export class WebRTCVoiceEngine {
             track,
             streamId,
             mid,
+            transceiver: e.transceiver || null,
           });
           track.onunmute = () => {
             this.rebuildRemoteVideoStreams(conn);
@@ -1083,6 +1225,9 @@ export class WebRTCVoiceEngine {
       screenStreamId: this.localScreenStream?.id || null,
       cameraMid,
       screenMid,
+      screenResolution: this.screenResolution,
+      screenFrameRate: this.screenFrameRate,
+      cameraResolution: this.cameraResolution,
     };
   }
 
@@ -1098,10 +1243,11 @@ export class WebRTCVoiceEngine {
     // 1. Match Screen Share track by ID, Stream ID, or Transceiver MID
     if (meta.hasScreen !== false) {
       for (const entry of activeEntries) {
+        const entryMid = entry.transceiver?.mid || entry.mid;
         if (
           (meta.screenTrackId && entry.track.id === meta.screenTrackId) ||
           (meta.screenStreamId && entry.streamId === meta.screenStreamId) ||
-          (meta.screenMid && entry.mid && entry.mid === meta.screenMid)
+          (meta.screenMid && entryMid && entryMid === meta.screenMid)
         ) {
           scrTrack = entry.track;
           break;
@@ -1115,10 +1261,11 @@ export class WebRTCVoiceEngine {
     if (meta.hasCamera !== false) {
       for (const entry of activeEntries) {
         if (entry.track === scrTrack) continue;
+        const entryMid = entry.transceiver?.mid || entry.mid;
         if (
           (meta.cameraTrackId && entry.track.id === meta.cameraTrackId) ||
           (meta.cameraStreamId && entry.streamId === meta.cameraStreamId) ||
-          (meta.cameraMid && entry.mid && entry.mid === meta.cameraMid)
+          (meta.cameraMid && entryMid && entryMid === meta.cameraMid)
         ) {
           camTrack = entry.track;
           break;
@@ -1145,8 +1292,27 @@ export class WebRTCVoiceEngine {
       }
     }
 
-    conn.remoteCameraStream = camTrack ? new MediaStream([camTrack]) : null;
-    conn.remoteScreenStream = scrTrack ? new MediaStream([scrTrack]) : null;
+    if (camTrack) {
+      if (
+        !conn.remoteCameraStream ||
+        conn.remoteCameraStream.getVideoTracks()[0]?.id !== camTrack.id
+      ) {
+        conn.remoteCameraStream = new MediaStream([camTrack]);
+      }
+    } else {
+      conn.remoteCameraStream = null;
+    }
+
+    if (scrTrack) {
+      if (
+        !conn.remoteScreenStream ||
+        conn.remoteScreenStream.getVideoTracks()[0]?.id !== scrTrack.id
+      ) {
+        conn.remoteScreenStream = new MediaStream([scrTrack]);
+      }
+    } else {
+      conn.remoteScreenStream = null;
+    }
 
     this.emitRemoteStreamState(conn);
   }
@@ -1158,6 +1324,9 @@ export class WebRTCVoiceEngine {
       screenStream: conn.remoteScreenStream,
       cameraFrameUrl: conn.remoteCameraFrameUrl || null,
       screenFrameUrl: conn.remoteScreenFrameUrl || null,
+      screenResolution: conn.remoteStreamMeta?.screenResolution || "1080p",
+      screenFrameRate: conn.remoteStreamMeta?.screenFrameRate || 30,
+      cameraResolution: conn.remoteStreamMeta?.cameraResolution || "720p",
       updatedAt: Date.now(),
     });
   }
@@ -1303,9 +1472,10 @@ export class WebRTCVoiceEngine {
             return;
           }
           await conn.pc.setLocalDescription(offer);
+          await this.configureAllPeerVideoSenders();
           this.onSignalSend?.(peerId, {
             signalType: "offer",
-            sdp: conn.pc.localDescription,
+            sdp: this.enhanceSdpBitrate(conn.pc.localDescription),
             streamMeta: this.buildLocalStreamMeta(conn),
           });
         } catch (err) {
@@ -1401,11 +1571,12 @@ export class WebRTCVoiceEngine {
 
           const answer = await conn.pc.createAnswer();
           await conn.pc.setLocalDescription(answer);
+          await this.configureAllPeerVideoSenders();
 
           const localMeta = this.buildLocalStreamMeta(conn);
           this.onSignalSend?.(fromPeerId, {
             signalType: "answer",
-            sdp: conn.pc.localDescription,
+            sdp: this.enhanceSdpBitrate(conn.pc.localDescription),
             streamMeta: localMeta,
           });
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, powerSaveBlocker } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -17,10 +17,15 @@ if (instanceId !== "1") {
 
 // Ensure WebRTC direct local IPv4 candidates, background media streaming, and zero-gesture autoplay
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
-app.commandLine.appendSwitch("disable-features", "WebRtcHideLocalIpsWithMdns");
+app.commandLine.appendSwitch(
+  "disable-features",
+  "WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,AudioServiceOutOfProcess"
+);
 app.commandLine.appendSwitch("enable-usermedia-screen-capturing");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("webrtc-max-cpu-consumption-percentage", "100");
 
 // Reconstructed from DiscordPTB core.asar settings endpoints (REA Evidence ev_63237e0ecd1017fdd2315f484417c1cd369dec71535fc38c4967c3899b0de011)
 const DEFAULT_SETTINGS = {
@@ -87,6 +92,9 @@ function createMainWindow() {
   if (appSettings.IS_MAXIMIZED) {
     mainWindow.maximize();
   }
+
+  mainWindow.webContents.setBackgroundThrottling(false);
+  mainWindow.webContents.setAudioMuted(false);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
@@ -261,6 +269,11 @@ function registerIpcHandlers() {
 }
 
 app.whenReady().then(async () => {
+  // Prevent Windows EcoQoS / background process throttling when Freecord is minimized or unfocused
+  try {
+    powerSaveBlocker.start("prevent-app-suspension");
+  } catch {}
+
   session.defaultSession.setPermissionCheckHandler(() => true);
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
     callback(true);
