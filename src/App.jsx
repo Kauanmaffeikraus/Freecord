@@ -798,8 +798,48 @@ function ProfileCard({ profile, isSelf, t, onEditProfile, onQuickDm }) {
 export default function App() {
   const isElectron = Boolean(window.DiscordNative?.isRenderer);
 
-  const [lang, setLang] = useState("en");
+  const [lang, setLang] = useState(() => {
+    try {
+      const saved = localStorage.getItem("freecord_lang");
+      if (saved === "pt" || saved === "en") return saved;
+    } catch {}
+    return "en";
+  });
   const t = I18N[lang] || I18N.en;
+
+  // Load persisted language from Electron settings.json on mount & persist changes
+  useEffect(() => {
+    let mounted = true;
+    if (window.DiscordNative?.settings?.get) {
+      Promise.resolve(window.DiscordNative.settings.get("freecord_lang", null))
+        .then((savedNativeLang) => {
+          if (!mounted) return;
+          if (savedNativeLang === "pt" || savedNativeLang === "en") {
+            setLang(savedNativeLang);
+            try {
+              localStorage.setItem("freecord_lang", savedNativeLang);
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleToggleLanguage = () => {
+    setLang((prev) => {
+      const next = prev === "en" ? "pt" : "en";
+      try {
+        localStorage.setItem("freecord_lang", next);
+      } catch {}
+      try {
+        window.DiscordNative?.settings?.set?.("freecord_lang", next);
+      } catch {}
+      return next;
+    });
+  };
 
   // Node & Profile State
   const [nodeStatus, setNodeStatus] = useState({
@@ -961,6 +1001,8 @@ export default function App() {
 
   const voiceEngineRef = useRef(null);
   const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
+  const activeVoiceChannelIdRef = useRef(activeVoiceChannelId);
+  const connectedPeersRef = useRef(connectedPeers);
   const handleIncomingP2PEventRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -974,6 +1016,14 @@ export default function App() {
     selfPeerIdRef.current = nodeStatus.profile.peerId;
     voiceEngineRef.current?.setLocalPeerId(nodeStatus.profile.peerId);
   }, [nodeStatus.profile.peerId]);
+
+  useEffect(() => {
+    activeVoiceChannelIdRef.current = activeVoiceChannelId;
+  }, [activeVoiceChannelId]);
+
+  useEffect(() => {
+    connectedPeersRef.current = connectedPeers;
+  }, [connectedPeers]);
 
   const refreshMediaDevices = async () => {
     const enumerated = await WebRTCVoiceEngine.enumerateDevices();
@@ -1018,10 +1068,12 @@ export default function App() {
     const engine = new WebRTCVoiceEngine({
       localPeerId: selfPeerIdRef.current,
       onSignalSend: (targetPeerId, signal) => {
+        if (!activeVoiceChannelIdRef.current) return;
         if (window.DiscordNative?.p2p) {
           window.DiscordNative.p2p.send(
             {
               type: "WEBRTC_SIGNAL",
+              voiceChannelId: activeVoiceChannelIdRef.current,
               signal,
             },
             targetPeerId
@@ -1029,30 +1081,49 @@ export default function App() {
         }
       },
       onFrameSend: (framePacket) => {
-        if (window.DiscordNative?.p2p) {
-          window.DiscordNative.p2p.send({
-            type: "MEDIA_FRAME",
-            ...framePacket,
-          });
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !window.DiscordNative?.p2p) return;
+        for (const p of connectedPeersRef.current) {
+          if (p.voiceChannelId === activeCh) {
+            window.DiscordNative.p2p.send(
+              {
+                type: "MEDIA_FRAME",
+                voiceChannelId: activeCh,
+                ...framePacket,
+              },
+              p.peerId
+            );
+          }
         }
       },
       onAudioChunkSend: (chunkPacket) => {
-        if (window.DiscordNative?.p2p) {
-          window.DiscordNative.p2p.send({
-            type: "AUDIO_CHUNK",
-            ...chunkPacket,
-          });
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !window.DiscordNative?.p2p) return;
+        for (const p of connectedPeersRef.current) {
+          if (p.voiceChannelId === activeCh) {
+            window.DiscordNative.p2p.send(
+              {
+                type: "AUDIO_CHUNK",
+                voiceChannelId: activeCh,
+                ...chunkPacket,
+              },
+              p.peerId
+            );
+          }
         }
       },
       onRemoteStream: (peerId, stream) => {
+        if (!activeVoiceChannelIdRef.current && !String(peerId).startsWith("webrtc_")) return;
         setRemoteStreams((prev) => ({ ...prev, [peerId]: { ...stream } }));
       },
       onSpeakingChange: (who, isSpeaking) => {
         const key = who === "self" ? selfPeerIdRef.current : who;
+        if (!activeVoiceChannelIdRef.current && who !== "self") return;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
-        if (who === "self") {
+        if (who === "self" && activeVoiceChannelIdRef.current) {
           window.DiscordNative?.p2p?.send({
             type: "VOICE_SPEAKING",
+            voiceChannelId: activeVoiceChannelIdRef.current,
             speaking: Boolean(isSpeaking),
           });
         }
@@ -1306,9 +1377,14 @@ export default function App() {
       }
 
       case "WEBRTC_SIGNAL": {
-        if (event.fromPeerId && event.signal) {
-          voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !event.fromPeerId || !event.signal) break;
+        if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
+        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
+        if (senderPeer && senderPeer.voiceChannelId && senderPeer.voiceChannelId !== activeCh) {
+          break;
         }
+        voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
         break;
       }
 
@@ -1323,16 +1399,22 @@ export default function App() {
       }
 
       case "MEDIA_FRAME": {
-        if (event.fromPeerId && event.kind && event.dataUrl) {
-          voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
-        }
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !event.fromPeerId || !event.kind || !event.dataUrl) break;
+        if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
+        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
+        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
+        voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
         break;
       }
 
       case "AUDIO_CHUNK": {
-        if (event.fromPeerId && event.pcmBase64) {
-          voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
-        }
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !event.fromPeerId || !event.pcmBase64) break;
+        if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
+        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
+        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
+        voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
         break;
       }
     }
@@ -1340,9 +1422,35 @@ export default function App() {
   handleIncomingP2PEventRef.current = handleIncomingP2PEvent;
 
   // Automatically negotiate WebRTC with any peer in the same active voice channel
+  // AND immediately destroy peer connections for peers who left the voice channel!
   useEffect(() => {
-    if (!activeVoiceChannelId || !voiceEngineRef.current) return;
     const engine = voiceEngineRef.current;
+    if (!engine) return;
+    if (!activeVoiceChannelId) {
+      engine.setInVoiceChannel(false);
+      return;
+    }
+    engine.setInVoiceChannel(true);
+
+    // Tear down any peer who is no longer in our activeVoiceChannelId
+    for (const existingPeerId of Array.from(engine.connections.keys())) {
+      if (String(existingPeerId).startsWith("webrtc_")) continue;
+      const peerObj = connectedPeers.find((p) => p.peerId === existingPeerId);
+      if (!peerObj || peerObj.voiceChannelId !== activeVoiceChannelId) {
+        engine.destroyPeer(existingPeerId);
+        setRemoteStreams((prev) => {
+          if (!(existingPeerId in prev)) return prev;
+          const next = { ...prev };
+          delete next[existingPeerId];
+          return next;
+        });
+        setSpeakingMap((prev) => {
+          if (!prev[existingPeerId]) return prev;
+          return { ...prev, [existingPeerId]: false };
+        });
+      }
+    }
+
     for (const peer of connectedPeers) {
       if (peer.voiceChannelId === activeVoiceChannelId) {
         const existing = engine.connections.get(peer.peerId);
@@ -1534,8 +1642,19 @@ export default function App() {
     const engine = voiceEngineRef.current;
     if (!engine) return;
 
-    await engine.startLocalVoice();
+    if (activeVoiceChannelId && activeVoiceChannelId !== voiceChannel.id) {
+      for (const peerId of Array.from(engine.connections.keys())) {
+        if (!String(peerId).startsWith("webrtc_")) {
+          engine.destroyPeer(peerId);
+        }
+      }
+      setRemoteStreams({});
+    }
+
+    activeVoiceChannelIdRef.current = voiceChannel.id;
+    engine.setInVoiceChannel(true);
     setActiveVoiceChannelId(voiceChannel.id);
+    await engine.startLocalVoice();
 
     const vState = {
       muted: selfMute,
@@ -1546,12 +1665,16 @@ export default function App() {
     window.DiscordNative?.p2p?.setVoiceState(voiceChannel.id, vState);
 
     for (const peer of connectedPeers) {
-      await engine.negotiateWithPeer(peer.peerId);
+      if (peer.voiceChannelId === voiceChannel.id) {
+        await engine.negotiateWithPeer(peer.peerId);
+      }
     }
   };
 
   const handleLeaveVoiceChannel = () => {
+    activeVoiceChannelIdRef.current = null;
     const engine = voiceEngineRef.current;
+    engine?.setInVoiceChannel(false);
     engine?.destroyAll();
     setActiveVoiceChannelId(null);
     setVideoEnabled(false);
@@ -1560,7 +1683,10 @@ export default function App() {
     setLocalScreenStream(null);
     setSpotlightTileId(null);
     setRemoteStreams({});
-    window.DiscordNative?.p2p?.setVoiceState(null, {});
+    setSpeakingMap({});
+    setMicInputLevel(0);
+    window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+    window.DiscordNative?.p2p?.setVoiceState(null, { speaking: false });
   };
 
   const toggleSelfMute = () => {
@@ -2483,7 +2609,7 @@ export default function App() {
               borderColor: "rgba(255, 255, 255, 0.2)",
               color: "#f2f3f5",
             }}
-            onClick={() => setLang((prev) => (prev === "en" ? "pt" : "en"))}
+            onClick={handleToggleLanguage}
             title="Switch Language (EN / PT-BR)"
           >
             <Globe size={10} />
