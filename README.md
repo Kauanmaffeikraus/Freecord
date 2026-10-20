@@ -5,80 +5,158 @@
 <h1 align="center">Freecord PTB — Serverless P2P Communication</h1>
 
 <p align="center">
-  <strong>Freecord PTB</strong> is a desktop and web communication platform inspired by <strong>DiscordPTB</strong>, engineered to run <strong>100% Peer-to-Peer (Serverless)</strong> — interconnecting computers directly without relying on any central server.
+  <strong>Freecord PTB</strong> is a free, open-source desktop communication platform inspired by <strong>DiscordPTB (v1.0.1225)</strong>, engineered to operate <strong>100% Peer-to-Peer (Serverless)</strong> — interconnecting computers directly without relying on any central server, cloud database, or mandatory accounts.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/Architecture-P2P%20Mesh%20%2B%20WebRTC-success.svg" alt="P2P Mesh + WebRTC" />
+  <img src="https://img.shields.io/badge/Electron-33.x-47848F.svg" alt="Electron 33.x" />
+  <img src="https://img.shields.io/badge/React-18-61DAFB.svg" alt="React 18" />
+  <img src="https://img.shields.io/badge/Servers-0%20(100%25%20Decentralized)-orange.svg" alt="Zero Servers" />
 </p>
 
 ---
 
-## Key Features
+## 🌟 Key Features
 
-- **Direct P2P Mesh Network (TCP + Gossip Protocol)**:
-  - Computers connect directly to one another via `IP:Port` over persistent TCP sockets.
-  - Automatic mesh peer exchange (`PEER_EXCHANGE`): connecting to one peer automatically introduces and connects you to other peers in the mesh.
-- **Zero-Config LAN & VPN Auto-Discovery (UDP Broadcast & Multicast)**:
-  - Automatically discovers and interconnects computers running Freecord on the same Wi-Fi, Ethernet LAN, or virtual LAN VPN (Tailscale, ZeroTier, Radmin VPN, Hamachi) via UDP broadcast (`255.255.255.255:49150`) and multicast (`239.255.42.99:49150`).
-- **Full Profile Customization Studio (P2P-Synchronized)**:
-  - Customize your **Display Name**, **Username & Tag (`#0001`)**, **Pronouns**, **About Me Bio**, **Presence Status** (`Online`, `Idle`, `Do Not Disturb`, `Invisible`), and **Custom Status Emoji + Text**.
-  - Upload custom **Avatar** and **Profile Banner** images (automatically compressed and broadcast directly peer-to-peer with zero central storage).
-  - Personalize **2-Tone Profile Theme Gradient Colors** (Primary & Accent) and toggle **Profile Badges** (`P2P Mesh Pioneer`, `Serverless Node`, `E2EE Verified`, `Open Source Builder`, `Voice Mesh Host`, `Zero-Latency Peer`) with a live interactive Profile Card preview.
-- **Real-Time Voice, Video & Go Live Screen Sharing (WebRTC P2P Mesh)**:
-  - Low-latency Opus voice chat with real-time Voice Activity Detection (speaking green ring indicator), Self Mute, Self Deafen, and per-peer local volume control (`0%–200%`).
-  - **Complete Audio, Camera & Screen Share Studio**:
-    - Select your **Audio Output Device** (Speaker / Headset via `setSinkId`) with Master Output Volume (`0%–200%`) and built-in audio chime tester.
-    - Select your **Microphone Input Device** with a real-time VU input level meter and toggles for **Echo Cancellation**, **Noise Suppression**, and **Automatic Gain Control (AGC)**.
-    - Select your **Camera Device** and capture resolution (`480p`, `720p HD`, `1080p Full HD`) with live video preview.
-    - Choose your **Go Live Screen Share Resolution** (`720p HD`, `1080p Full HD`, `1440p QHD`, `4K Ultra HD`) and **Frame Rate** (`15 FPS`, `30 FPS`, `60 FPS`).
-  - Native desktop/window screen sharing (**Go Live**) powered by Electron's `desktopCapturer` and `getDisplayMedia`.
-  - **Serverless WebRTC SDP Invite Codes**: Connect two computers across the internet or strict NATs by exchanging compact Base64 SDP Offer/Answer tokens without port forwarding or signaling servers.
-- **Cryptographic Pairwise Fingerprints**:
-  - Generates deterministic SHA-256 MLS-style pairwise fingerprints between connected peers.
-- **Synchronized P2P Rooms, Channels, Direct Messages & File Sharing**:
-  - Create rooms, text channels, and voice channels that synchronize across connected peers (`ROOM_SYNC`).
-  - Send inline images and files (up to 15 MB) directly peer-to-peer, with real-time emoji reactions and typing indicators.
-- **Multi-Language Support (English & Portuguese)**:
-  - Built-in `EN` / `PT-BR` language switcher in the titlebar and user settings.
+### 🖧 100% Serverless & Decentralized Mesh Architecture
+- **Direct TCP Mesh & Gossip Protocol**: Computers connect directly via `IP:Port` over persistent TCP sockets with automatic peer gossip exchange (`PEER_EXCHANGE`).
+- **Zero-Config LAN & VPN Auto-Discovery**: Automatically discovers and interconnects peers on the same local Wi-Fi, Ethernet, or virtual private LAN (Tailscale, ZeroTier, Radmin VPN, Hamachi) via UDP broadcast (`255.255.255.255:49150`) and multicast (`239.255.42.99:49150`).
+- **Serverless WebRTC SDP Invite Codes**: Connect computers across strict NATs or the internet by exchanging compact Base64 SDP Offer/Answer tokens without port forwarding or central signaling servers.
+- **Cryptographic Pairwise Fingerprints**: Generates deterministic SHA-256 MLS-style pairwise identity fingerprints between connected nodes.
+
+### 🎙️ Opus Voice, Video & 60 FPS Go Live Screen Sharing
+- **Simultaneous Webcam + Screen Share Stage**: View remote/local webcams and screen broadcasts at the same time.
+- **Interactive Stage Modes**: Resizable stage height (drag handle), Spotlight/Focus mode, Theater mode, Grid view, Stage fullscreen, Video tile fullscreen, and native Picture-in-Picture (PiP).
+- **Floating Webcam PiP Overlay**: Displays the presenter's camera in a draggable/resizable picture-in-picture overlay on top of screen streams.
+- **Fit vs. Fill & Zoom**: Toggle between aspect fit (`contain`) or fill (`cover`) and apply digital zoom (`100%`, `125%`, `150%`, `200%`) on any incoming stream.
+- **Go Live Quality Selector**: Stream desktop displays or specific windows at resolutions from `720p` up to `4K` at `15`, `30`, or `60 FPS`.
+- **Low-Latency Voice Engine**: Opus audio pipeline with real-time Voice Activity Detection (VAD) and speaking green-ring animation.
+
+### 🎚️ Separate Voice & Stream Audio Mixers
+- **Independent Dual Audio Pipeline**: Each remote peer has dedicated audio gain elements for their **Microphone Voice (`🎙️`)** and **Game/Screen Share Audio (`🖥️`)**.
+- Individual volume control (`0%–200%`) for voice and stream sound without altering each other.
+
+### 📞 Private 1-on-1 DM Calls (Voice & Video)
+- **Direct Calling in DMs**: Start a private voice or video call with any connected peer with 1 click from the DM list, DM conversation header, or user profile card.
+- **Full P2P Signaling**: Handled entirely through P2P packets (`DM_CALL_RING`, `DM_CALL_ACCEPT`, `DM_CALL_REJECT`, `DM_CALL_END`).
+- **Incoming Call Modal & Audio Ringtone**: Displays an animated pulsing avatar modal with real-time synthesized ringtone audio loop and options to **Accept Voice**, **Accept Video**, or **Decline**.
+- **Outgoing Call Ringing Banner**: Shows calling status with a 1-click **Cancel Call** button.
+- **Clean Disconnect**: Prevents audio bleed or dangling connections when hanging up or switching channels.
+
+### 🏰 P2P Server Customization Studio
+- **Full Visual Customization**: Customize server name, acronym/icon emoji, server tag badge (`✦ P2P`, `✦ SQUAD`, `✦ MESH`), description/topic, custom icon image, banner image, 2-tone gradient theme colors, and sidebar background color.
+- **Channel Management**: Create, edit, and organize multiple text and voice channels per server.
+- **P2P Synchronization**: Server configurations and channels sync across connected peers via `ROOM_SYNC`.
+
+### 📨 Server Invites & Leave Server
+- **1-Click DM Invites**: Send an instant server invite directly to a connected peer's DM chat.
+- **Rich Interactive Embed Cards**: In chat, server invites render as Discord-style interactive embed cards with server banners, icons, description, and a **"Join Server"** (or **"Joined ✓ — Open Server"**) button.
+- **Shareable Invite Codes (`fc-srv://...`)**: Generate and copy base64-encoded server invite codes containing the server snapshot and host endpoint, allowing peers to join by pasting the code.
+- **Leave Server**: Leave servers at any time with persistent client-side tracking (`localStorage: freecord_left_rooms_v1`), ensuring passive `ROOM_SYNC` never re-adds servers you intentionally left.
+
+### 🔔 Notifications & Synthesized WebAudio Effects
+- **Unread Badges**: Red notification counters on the DM Hub icon, server icons (left rail), channels, and individual DM peer items.
+- **Clickable Toast Notifications**: Non-intrusive top-right notification stack for messages and invites; clicking directly navigates to the conversation and focuses the app.
+- **WebAudio Sound Synthesizer**: Built-in sound effects (no external audio files required) for incoming messages, server invites, incoming call ringtones, outgoing ringback tones, and call connect/disconnect.
+- **Mute Toggle**: Quick-access notification toggle (`Bell` / `BellOff`) in the titlebar.
+- **Native OS & Taskbar Integration**: Electron window taskbar flash (`flashFrame`) and native OS notifications when the window is in the background or minimized.
+
+### 👤 Profile Customization & Media Device Studio
+- **Profile Studio**: Set Display Name, Username, `#Tag`, Pronouns, About Me Bio, Presence Status (`Online`, `Idle`, `Do Not Disturb`, `Invisible`), Custom Status Emoji + Text, Avatar, Profile Banner, theme colors, and profile badges.
+- **Audio Output Device**: Select specific speaker/headset device (`setSinkId`) with Master Volume control and test sound playback.
+- **Microphone Input Device**: Real-time VU input meter with toggles for Echo Cancellation, Noise Suppression, and Automatic Gain Control (AGC).
+- **Camera Device & Resolution**: Camera device selector (`480p`, `720p`, `1080p`) with live video preview.
+
+### 📎 Direct P2P File Transfers
+- Send images, screenshots, and files up to 15 MB directly computer-to-computer.
+- Inline media preview and direct download without cloud hosting.
+
+### 🌐 Bilingual Interface (EN / PT-BR)
+- Instant one-click toggle between **English** and **Portuguese (PT-BR)** with persisted preferences in `localStorage` and `settings.json`.
 
 ---
 
-## Architecture Overview
+## 🏗️ Architecture Overview
 
-| Layer | File | Description |
+```
+                      +-----------------------------+
+                      |   Electron Main Process     |
+                      |     (electron/main.cjs)     |
+                      +--------------+--------------+
+                                     | (IPC Bridge)
+                      +--------------v--------------+
+                      |   Preload Context Bridge    |
+                      |   (window.DiscordNative)    |
+                      +--------------+--------------+
+                                     |
+         +---------------------------+---------------------------+
+         |                                                       |
++--------v-------------------+                 +-----------------v-------------------+
+|    P2P Network Node        |                 |   WebRTC Voice & Media Engine       |
+|  (electron/p2pNode.cjs)    |                 | (src/services/webrtcVoiceEngine.js) |
++----------------------------+                 +-------------------------------------+
+| • TCP Mesh Sockets         |                 | • RTCPeerConnection Mesh            |
+| • UDP LAN/VPN Discovery    |                 | • Dual Audio Mixers (Voice/Stream)  |
+| • Peer Gossip Exchange     |                 | • Opus Voice + VAD Detection        |
+| • Signaling & Event Router |                 | • Desktop & Window Capture (GoLive) |
+| • SHA-256 MLS Fingerprints |                 | • Camera & Screen Media Bundles     |
++----------------------------+                 +-------------------------------------+
+                                     |
+                      +--------------v--------------+
+                      |    React + Vite Client UI   |
+                      |      (src/App.jsx, CSS)     |
+                      +-----------------------------+
+```
+
+| Component | Path | Description |
 | :--- | :--- | :--- |
-| **Native P2P Engine** | `electron/p2pNode.cjs` | Node.js TCP mesh server/client, UDP broadcast/multicast discovery beacon, peer gossip (`PEER_EXCHANGE`), RTT ping/pong, and SHA-256 pairwise fingerprint generator. |
-| **Electron Main** | `electron/main.cjs` | Frameless window management, persistent window bounds/settings (`settings.json`), `desktopCapturer` screen-share source enumeration, and multi-instance launcher (`--peer-instance=<id>`). |
-| **Preload Bridge** | `electron/preload.cjs` | `contextBridge` surface (`window.DiscordNative`) exposing window controls, settings, desktop capture, and P2P IPC channels. |
-| **WebRTC Voice Engine** | `src/services/webrtcVoiceEngine.js` | `RTCPeerConnection` + `RTCDataChannel` mesh manager, Web Audio API Voice Activity Detection, per-peer gain control, camera & Go Live screen tracks, and manual SDP invite token generator. |
-| **Desktop/Web UI** | `src/App.jsx`, `src/styles.css` | DiscordPTB-styled interface with bilingual (`EN` / `PT-BR`) support. |
+| **P2P Node Engine** | `electron/p2pNode.cjs` | TCP mesh server/client, UDP broadcast/multicast LAN discovery, peer gossip, RTT ping, SHA-256 identity fingerprinting. |
+| **Electron Main** | `electron/main.cjs` | Frameless window manager, multi-instance launcher (`--peer-instance=<id>`), `desktopCapturer` source provider, `flashFrame`. |
+| **Preload Bridge** | `electron/preload.cjs` | `contextBridge` exposing `window.DiscordNative` (window controls, P2P APIs, settings persistence, screen capture). |
+| **WebRTC Media Engine** | `src/services/webrtcVoiceEngine.js` | WebRTC mesh manager, separate Voice and Screen Share gain nodes / mixers, Web Audio VAD, device enumeration, SDP token exchange. |
+| **User Interface** | `src/App.jsx`, `src/styles.css` | DiscordPTB-inspired responsive UI, stage manager, profile/server studios, notification manager, bilingual support. |
 
 ---
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
-- **Node.js** `>= 20` (recommended `v22+`)
-- **npm**
+- **Node.js**: `>= 20.0.0` (Recommended: `v22+`)
+- **npm**: `>= 10.0.0`
 
-### Install & Run
+### Installation & Run
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/Kauanmaffeikraus/Freecord.git
+cd Freecord
+
+# 2. Install dependencies
 npm install
+
+# 3. Start Freecord in development mode
 npm start
 ```
 
-Or on Windows, double-click **`Start-Freecord.bat`** (or `Iniciar-Freecord.bat`).
-
-### Testing Multi-Peer P2P on a Single Computer
-
-You can launch a second independent peer instance on the same computer to test automatic discovery, chat, file transfer, voice, and Go Live screen sharing immediately:
-
-```bash
-npm run peer2
-```
-
-Or click **"Spawn 2nd Local Peer"** (`Abrir 2º Peer Local`) directly in the Freecord top titlebar.
+*On Windows, you can also launch the app by double-clicking **`Start-Freecord.bat`** (or `Iniciar-Freecord.bat`).*
 
 ---
 
-## License
+## 🧪 Testing Multi-Peer P2P on a Single Computer
 
-MIT
+You can test full real-time P2P chat, file transfers, private DM calls, voice chat, and Go Live screen sharing on a single machine:
+
+1. Click **"Spawn 2nd Local Peer"** (`Abrir 2º Peer Local`) in the Freecord titlebar, or run:
+   ```bash
+   npm run peer2
+   ```
+2. A second independent Freecord window will launch with an isolated profile, storage, and port.
+3. Both instances will automatically discover and connect to each other via UDP LAN discovery.
+
+---
+
+## 📜 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
