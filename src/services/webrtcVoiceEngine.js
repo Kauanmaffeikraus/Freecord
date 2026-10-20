@@ -63,6 +63,7 @@ export class WebRTCVoiceEngine {
     this.selfMute = false;
     this.selfDeafen = false;
     this.localSpeaking = false;
+    this.inVoiceChannel = false;
 
     // Media Device & Quality Preferences
     this.audioInputDeviceId = "default";
@@ -84,6 +85,8 @@ export class WebRTCVoiceEngine {
     this.relayScrVideoEl = null;
     this.relayCanvas = null;
     this.txProcessorNode = null;
+    this.txZeroGainNode = null;
+    this.txAnalyser = null;
     this.txSourceNode = null;
     this.txScreenAudioSourceNode = null;
     this.txMixNode = null;
@@ -94,6 +97,66 @@ export class WebRTCVoiceEngine {
     if (peerId) {
       this.localPeerId = String(peerId);
     }
+  }
+
+  setInVoiceChannel(active) {
+    const next = Boolean(active);
+    this.inVoiceChannel = next;
+    if (!next) {
+      this.destroyAll();
+    }
+  }
+
+  isWebRTCPeerConnected(conn) {
+    if (!conn || !conn.pc) return false;
+    const connState = conn.pc.connectionState;
+    const iceState = conn.pc.iceConnectionState;
+    return (
+      connState === "connected" ||
+      iceState === "connected" ||
+      iceState === "completed"
+    );
+  }
+
+  isWebRTCAudioActive(conn) {
+    if (!this.isWebRTCPeerConnected(conn)) return false;
+    if (!conn.remoteAudioTracks || conn.remoteAudioTracks.size === 0) return false;
+    for (const track of conn.remoteAudioTracks.values()) {
+      if (track.readyState === "live") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  updateFallbackProcessorState() {
+    // Disconnect main-thread ScriptProcessorNode as soon as all peers are connected via native C++ WebRTC
+    // so WebAudio never synchronizes with the main UI thread during high-res screen sharing!
+    let needsFallbackPcm = false;
+    if (this.inVoiceChannel && this.connections.size > 0) {
+      for (const conn of this.connections.values()) {
+        if (!this.isWebRTCPeerConnected(conn)) {
+          needsFallbackPcm = true;
+          break;
+        }
+      }
+    }
+    if (!this.txProcessorNode || !this.txMixNode || !this.txZeroGainNode || !this.audioContext) {
+      return;
+    }
+    try {
+      if (needsFallbackPcm && !this.txProcessorAttached) {
+        this.txMixNode.connect(this.txProcessorNode);
+        this.txProcessorNode.connect(this.txZeroGainNode);
+        this.txZeroGainNode.connect(this.audioContext.destination);
+        this.txProcessorAttached = true;
+      } else if (!needsFallbackPcm && this.txProcessorAttached) {
+        this.txMixNode.disconnect(this.txProcessorNode);
+        this.txProcessorNode.disconnect();
+        this.txZeroGainNode.disconnect();
+        this.txProcessorAttached = false;
+      }
+    } catch {}
   }
 
   static async enumerateDevices() {
@@ -113,9 +176,9 @@ export class WebRTCVoiceEngine {
   }
 
   ensureAudioContext() {
-    if (!this.audioContext) {
+    if (!this.audioContext || this.audioContext.state === "closed") {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.audioContext = new AudioCtx();
+      this.audioContext = new AudioCtx({ latencyHint: "interactive" });
       this.applySinkIdToAudioContext();
     }
     if (this.audioContext.state === "suspended") {
@@ -297,6 +360,17 @@ export class WebRTCVoiceEngine {
         try {
           this.txProcessorNode.disconnect();
         } catch {}
+        this.txProcessorAttached = false;
+      }
+      if (this.txZeroGainNode) {
+        try {
+          this.txZeroGainNode.disconnect();
+        } catch {}
+      }
+
+      const [micTrack] = stream.getAudioTracks();
+      if (micTrack && "contentHint" in micTrack) {
+        micTrack.contentHint = "speech";
       }
 
       const source = ctx.createMediaStreamSource(stream);
@@ -311,76 +385,106 @@ export class WebRTCVoiceEngine {
 
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.25;
       source.connect(analyser);
+      this.txAnalyser = analyser;
       const freqData = new Uint8Array(analyser.frequencyBinCount);
       const timeData = new Float32Array(analyser.fftSize);
 
-      // ScriptProcessor (4096 samples = ~85ms at 48kHz) runs on WebAudio hardware clock (immune to background/minimized timer throttling)
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      const zeroGain = ctx.createGain();
-      zeroGain.gain.value = 0;
-      mixNode.connect(processor);
-      processor.connect(zeroGain);
-      zeroGain.connect(ctx.destination);
-      this.txProcessorNode = processor;
-
-      let hangoverBuffers = 0;
-      processor.onaudioprocess = (e) => {
+      // Lock-free AnalyserNode VAD loop (never blocks WebAudio rendering or main UI thread during screen share)
+      if (this.vadInterval) {
+        clearInterval(this.vadInterval);
+      }
+      this.vadInterval = setInterval(() => {
         if (this.audioContext && this.audioContext.state === "suspended") {
           this.audioContext.resume().catch(() => {});
         }
-
-        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
-        const input = e.inputBuffer.getChannelData(0);
-
-        if (this.selfMute || this.selfDeafen) {
+        if (this.selfMute || this.selfDeafen || !this.localAudioStream) {
           this.onInputLevelChange?.(0);
           if (this.localSpeaking) {
             this.localSpeaking = false;
             this.onSpeakingChange?.("self", false);
           }
-          if (!hasScreenAudio) return;
+          return;
         }
+
+        analyser.getByteFrequencyData(freqData);
+        analyser.getFloatTimeDomainData(timeData);
+
+        let freqSum = 0;
+        for (let i = 0; i < freqData.length; i++) freqSum += freqData[i];
+        const avgFreq = freqSum / freqData.length;
 
         let sumSq = 0;
         let peak = 0;
-        for (let i = 0; i < input.length; i++) {
-          const v = input[i];
+        for (let i = 0; i < timeData.length; i++) {
+          const v = timeData[i];
           sumSq += v * v;
           const abs = v < 0 ? -v : v;
           if (abs > peak) peak = abs;
         }
-        const rms = Math.sqrt(sumSq / input.length);
+        const rms = Math.sqrt(sumSq / timeData.length);
 
-        if (!this.selfMute && !this.selfDeafen) {
-          analyser.getByteFrequencyData(freqData);
-          let freqSum = 0;
-          for (let i = 0; i < freqData.length; i++) freqSum += freqData[i];
-          const avgFreq = freqSum / freqData.length;
+        const levelPercent = Math.min(
+          100,
+          Math.max(Math.round((avgFreq / 52) * 100), Math.round(rms * 380))
+        );
+        this.onInputLevelChange?.(levelPercent);
 
-          const levelPercent = Math.min(
-            100,
-            Math.max(Math.round((avgFreq / 52) * 100), Math.round(rms * 380))
-          );
-          this.onInputLevelChange?.(levelPercent);
+        const now = Date.now();
+        const voiceDetected = avgFreq > 7 || rms > 0.006 || peak > 0.03;
+        if (voiceDetected) {
+          this.speakingHoldUntil = now + 380;
+        }
+        const speaking = voiceDetected || now < this.speakingHoldUntil;
+        if (speaking !== this.localSpeaking) {
+          this.localSpeaking = speaking;
+          this.onSpeakingChange?.("self", speaking);
+        }
+      }, 45);
 
-          const now = Date.now();
-          const voiceDetected = avgFreq > 7 || rms > 0.006 || peak > 0.03;
-          if (voiceDetected) {
-            this.speakingHoldUntil = now + 380;
-          }
-          const speaking = voiceDetected || now < this.speakingHoldUntil;
-          if (speaking !== this.localSpeaking) {
-            this.localSpeaking = speaking;
-            this.onSpeakingChange?.("self", speaking);
-          }
+      // Fallback PCM processor ONLY attached while a peer's WebRTC connection is still shaking hands
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const zeroGain = ctx.createGain();
+      zeroGain.gain.value = 0;
+      this.txProcessorNode = processor;
+      this.txZeroGainNode = zeroGain;
+      this.txProcessorAttached = false;
+      this.updateFallbackProcessorState();
+
+      let hangoverBuffers = 0;
+      processor.onaudioprocess = (e) => {
+        if (!this.inVoiceChannel || !this.onAudioChunkSend || this.connections.size === 0) {
+          return;
         }
 
-        if (!this.onAudioChunkSend) return;
+        // Skip fallback PCM completely if all peers are already connected via native C++ WebRTC
+        let anyUnconnectedPeer = false;
+        for (const conn of this.connections.values()) {
+          if (!this.isWebRTCPeerConnected(conn)) {
+            anyUnconnectedPeer = true;
+            break;
+          }
+        }
+        if (!anyUnconnectedPeer) {
+          this.updateFallbackProcessorState();
+          return;
+        }
+
+        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
+        if ((this.selfMute || this.selfDeafen) && !hasScreenAudio) return;
+
+        const input = e.inputBuffer.getChannelData(0);
+        let sumSq = 0;
+        for (let i = 0; i < input.length; i++) {
+          const v = input[i];
+          sumSq += v * v;
+        }
+        const rms = Math.sqrt(sumSq / input.length);
 
         if (rms > 0.003 || this.localSpeaking || hasScreenAudio) {
           if (rms > 0.003 || this.localSpeaking) {
-            hangoverBuffers = 5; // Keep transmitting ~420ms after speech trailing edge for smooth endings
+            hangoverBuffers = 5;
           }
         } else if (hangoverBuffers > 0) {
           hangoverBuffers--;
@@ -388,7 +492,6 @@ export class WebRTCVoiceEngine {
           return;
         }
 
-        // Downsample 2x (e.g. 48000 Hz -> 24000 Hz) into Int16 PCM
         const outLen = Math.floor(input.length / 2);
         const pcm16 = new Int16Array(outLen);
         for (let i = 0; i < outLen; i++) {
@@ -412,11 +515,6 @@ export class WebRTCVoiceEngine {
           sampleRate: Math.round(ctx.sampleRate / 2),
         });
       };
-
-      if (this.vadInterval) {
-        clearInterval(this.vadInterval);
-        this.vadInterval = null;
-      }
     } catch {}
   }
 
@@ -450,7 +548,11 @@ export class WebRTCVoiceEngine {
     this.applyMuteState();
     for (const [peerId, conn] of this.connections.entries()) {
       if (conn.audioEl) {
-        conn.audioEl.muted = this.selfDeafen || conn.muted || Boolean(conn.usingPcmAudio);
+        const shouldMuteWebRTC =
+          this.selfDeafen ||
+          conn.muted ||
+          (Boolean(conn.usingPcmAudio) && !this.isWebRTCAudioActive(conn));
+        conn.audioEl.muted = shouldMuteWebRTC;
       }
       this.setLocalVolume(peerId, conn.volume);
     }
@@ -703,6 +805,21 @@ export class WebRTCVoiceEngine {
     }
   }
 
+  async configureAudioSenderParameters(sender) {
+    if (!sender || !sender.track || typeof sender.getParameters !== "function") return;
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      params.encodings[0].maxBitrate = 128_000;
+      params.encodings[0].priority = "high";
+      params.encodings[0].networkPriority = "high";
+      params.encodings[0].dtx = "disabled";
+      await sender.setParameters(params);
+    } catch {}
+  }
+
   async configureVideoSenderParameters(sender, kind = "screen") {
     if (!sender || !sender.track || typeof sender.getParameters !== "function") return;
     try {
@@ -713,25 +830,28 @@ export class WebRTCVoiceEngine {
       params.degradationPreference = "maintain-resolution";
       if (kind === "screen") {
         const bitrates = {
-          "720p": 5_000_000,
-          "1080p": 12_000_000,
-          "1440p": 20_000_000,
-          "4k": 35_000_000,
+          "720p": 4_500_000,
+          "1080p": 10_000_000,
+          "1440p": 18_000_000,
+          "4k": 28_000_000,
         };
-        params.encodings[0].maxBitrate = bitrates[this.screenResolution] || 12_000_000;
+        params.encodings[0].maxBitrate = bitrates[this.screenResolution] || 10_000_000;
         params.encodings[0].maxFramerate = Number(this.screenFrameRate) || 30;
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        params.encodings[0].priority = "high";
-        params.encodings[0].networkPriority = "high";
+        // Keep video networkPriority at medium so voice audio (high) is NEVER starved by screen frames!
+        params.encodings[0].priority = "medium";
+        params.encodings[0].networkPriority = "medium";
       } else {
         const camBitrates = {
-          "480p": 1_800_000,
-          "720p": 4_000_000,
-          "1080p": 8_000_000,
+          "480p": 1_500_000,
+          "720p": 3_500_000,
+          "1080p": 7_000_000,
         };
-        params.encodings[0].maxBitrate = camBitrates[this.cameraResolution] || 4_000_000;
+        params.encodings[0].maxBitrate = camBitrates[this.cameraResolution] || 3_500_000;
         params.encodings[0].maxFramerate = 30;
         params.encodings[0].scaleResolutionDownBy = 1.0;
+        params.encodings[0].priority = "low";
+        params.encodings[0].networkPriority = "low";
       }
       await sender.setParameters(params);
     } catch {}
@@ -739,6 +859,12 @@ export class WebRTCVoiceEngine {
 
   async configureAllPeerVideoSenders() {
     for (const conn of this.connections.values()) {
+      if (conn.audioSender) {
+        await this.configureAudioSenderParameters(conn.audioSender);
+      }
+      if (conn.screenAudioSender) {
+        await this.configureAudioSenderParameters(conn.screenAudioSender);
+      }
       if (conn.screenSender) {
         await this.configureVideoSenderParameters(conn.screenSender, "screen");
       }
@@ -750,11 +876,20 @@ export class WebRTCVoiceEngine {
 
   enhanceSdpBitrate(sdpDescription) {
     if (!sdpDescription || !sdpDescription.sdp) return sdpDescription;
-    // Boost initial and maximum video bitrate in SDP so WebRTC does not start at blurry 300kbps
+    // Configure Opus for constant-bitrate FEC zero-drop voice, and boost video bitrate separately
     const lines = sdpDescription.sdp.split("\r\n");
     const enhanced = lines.map((line) => {
-      if (line.startsWith("a=fmtp:") && !line.includes("x-google-max-bitrate")) {
-        return `${line};x-google-min-bitrate=4000;x-google-start-bitrate=10000;x-google-max-bitrate=35000`;
+      if (line.startsWith("a=fmtp:")) {
+        if (line.includes("minptime=10")) {
+          let opusLine = line;
+          if (!opusLine.includes("maxaveragebitrate")) {
+            opusLine += ";maxaveragebitrate=128000;stereo=1;sprop-stereo=1;usedtx=0;cbr=1";
+          }
+          return opusLine;
+        }
+        if (!line.includes("x-google-max-bitrate")) {
+          return `${line};x-google-min-bitrate=2500;x-google-start-bitrate=6000;x-google-max-bitrate=28000`;
+        }
       }
       return line;
     });
@@ -769,7 +904,7 @@ export class WebRTCVoiceEngine {
     const hasCamera = Boolean(this.localVideoStream?.getVideoTracks()?.[0]);
     const hasScreen = Boolean(this.localScreenStream?.getVideoTracks()?.[0]);
 
-    if (!hasCamera && !hasScreen) {
+    if (!this.inVoiceChannel || (!hasCamera && !hasScreen)) {
       if (this.frameRelayInterval) {
         clearInterval(this.frameRelayInterval);
         this.frameRelayInterval = null;
@@ -815,33 +950,30 @@ export class WebRTCVoiceEngine {
 
     if (!this.frameRelayInterval) {
       this.frameRelayInterval = setInterval(() => {
-        if (!this.onFrameSend) return;
+        if (!this.inVoiceChannel || !this.onFrameSend || this.connections.size === 0) return;
 
-        // Only send fallback TCP frames if at least one peer's WebRTC connection isn't fully connected yet
-        let needsFallbackRelay = this.connections.size === 0;
+        // Only send fallback TCP frames if at least one peer's WebRTC connection isn't connected yet
+        let needsFallbackRelay = false;
         for (const conn of this.connections.values()) {
-          if (conn.pc.connectionState !== "connected" || this.hasUnsentLocalTracks(conn)) {
+          if (!this.isWebRTCPeerConnected(conn) || this.hasUnsentLocalTracks(conn)) {
             needsFallbackRelay = true;
             break;
           }
         }
         if (!needsFallbackRelay) return;
 
-        // Send screen frame if active (respecting selected resolution preset)
+        // Send lightweight preview frame only while WebRTC handshake is still in progress
         if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {
           try {
-            const preset = SCREEN_RESOLUTIONS[this.screenResolution] || SCREEN_RESOLUTIONS["1080p"];
             const vw = this.relayScrVideoEl.videoWidth;
             const vh = this.relayScrVideoEl.videoHeight;
-            const targetW = Math.min(preset.width, vw);
+            const targetW = Math.min(960, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = "high";
             ctx.drawImage(this.relayScrVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.86);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.72);
             this.onFrameSend({
               kind: "screen",
               dataUrl,
@@ -850,21 +982,17 @@ export class WebRTCVoiceEngine {
           } catch {}
         }
 
-        // Send camera frame if active (respecting selected camera resolution preset)
         if (this.localVideoStream && this.relayCamVideoEl && this.relayCamVideoEl.videoWidth > 0) {
           try {
-            const camPreset = CAMERA_RESOLUTIONS[this.cameraResolution] || CAMERA_RESOLUTIONS["720p"];
             const vw = this.relayCamVideoEl.videoWidth;
             const vh = this.relayCamVideoEl.videoHeight;
-            const targetW = Math.min(camPreset.width, vw);
+            const targetW = Math.min(640, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = "high";
             ctx.drawImage(this.relayCamVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.85);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.72);
             this.onFrameSend({
               kind: "camera",
               dataUrl,
@@ -872,12 +1000,12 @@ export class WebRTCVoiceEngine {
             });
           } catch {}
         }
-      }, 150);
+      }, 220);
     }
   }
 
   handleIncomingMediaFrame(fromPeerId, framePacket) {
-    if (!fromPeerId || !framePacket?.kind || !framePacket?.dataUrl) return;
+    if (!this.inVoiceChannel || !fromPeerId || !framePacket?.kind || !framePacket?.dataUrl) return;
     const conn = this.createPeerConnection(fromPeerId, false);
     if (framePacket.kind === "screen") {
       conn.remoteScreenFrameUrl = framePacket.dataUrl;
@@ -894,7 +1022,7 @@ export class WebRTCVoiceEngine {
   }
 
   handleIncomingAudioChunk(fromPeerId, chunkPacket) {
-    if (!fromPeerId || !chunkPacket?.pcmBase64) return;
+    if (!this.inVoiceChannel || !fromPeerId || !chunkPacket?.pcmBase64) return;
     const conn = this.createPeerConnection(fromPeerId, false);
 
     // Trigger remote speaking indicator with smooth decay
@@ -914,6 +1042,22 @@ export class WebRTCVoiceEngine {
 
     if (this.selfDeafen || conn.muted) return;
 
+    // CRITICAL: If native C++ WebRTC audio is already connected and live, NEVER mute conn.audioEl
+    // and never play redundant main-thread PCM buffers (which stutter when unfocused during screen share).
+    if (this.isWebRTCAudioActive(conn)) {
+      conn.usingPcmAudio = false;
+      if (conn.pcmGainNode) {
+        conn.pcmGainNode.gain.value = 0;
+      }
+      if (conn.audioEl) {
+        conn.audioEl.muted = this.selfDeafen || conn.muted;
+        if (conn.audioEl.paused) {
+          conn.audioEl.play().catch(() => {});
+        }
+      }
+      return;
+    }
+
     try {
       const ctx = this.ensureAudioContext();
       const binary = atob(chunkPacket.pcmBase64);
@@ -931,12 +1075,11 @@ export class WebRTCVoiceEngine {
       const isUnderrun =
         !conn.nextPlayTime ||
         conn.nextPlayTime < now ||
-        conn.nextPlayTime > now + 0.65;
+        conn.nextPlayTime > now + 0.85;
 
       const fadeSamples = 24;
       for (let i = 0; i < pcm16.length; i++) {
         let sample = pcm16[i] / 32768.0;
-        // Apply tiny anti-click micro-fade on the leading edge after silence
         if (isUnderrun && i < fadeSamples) {
           sample *= i / fadeSamples;
         }
@@ -953,7 +1096,6 @@ export class WebRTCVoiceEngine {
           : (conn.volume / 100) * (this.masterOutputVolume / 100);
       conn.pcmGainNode.gain.value = effectiveGain;
 
-      // Mute WebRTC <audio> element while direct PCM stream is active to prevent double-audio echo
       conn.usingPcmAudio = true;
       if (conn.audioEl) {
         conn.audioEl.muted = true;
@@ -964,7 +1106,7 @@ export class WebRTCVoiceEngine {
       source.connect(conn.pcmGainNode);
 
       if (isUnderrun) {
-        conn.nextPlayTime = now + 0.075; // 75ms jitter cushion prevents chopping when minimized/unfocused
+        conn.nextPlayTime = now + 0.16; // 160ms (~2 buffers) jitter cushion for pre-WebRTC fallback
       }
       source.start(conn.nextPlayTime);
       conn.nextPlayTime += audioBuffer.duration;
@@ -1048,9 +1190,30 @@ export class WebRTCVoiceEngine {
     };
 
     this.connections.set(peerId, conn);
+    this.updateFallbackProcessorState();
 
     // Attach existing local tracks
     this.attachLocalTracksToConn(conn);
+
+    const onRtcStateChange = () => {
+      if (this.isWebRTCPeerConnected(conn)) {
+        conn.usingPcmAudio = false;
+        if (conn.pcmGainNode) {
+          try {
+            conn.pcmGainNode.gain.value = 0;
+            conn.pcmGainNode.disconnect();
+          } catch {}
+          conn.pcmGainNode = null;
+        }
+        if (conn.audioEl && conn.remoteAudioTracks.size > 0) {
+          conn.audioEl.muted = this.selfDeafen || conn.muted;
+          conn.audioEl.play().catch(() => {});
+        }
+      }
+      this.updateFallbackProcessorState();
+    };
+    pc.onconnectionstatechange = onRtcStateChange;
+    pc.oniceconnectionstatechange = onRtcStateChange;
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -1071,6 +1234,7 @@ export class WebRTCVoiceEngine {
     };
 
     pc.ontrack = (e) => {
+      if (!this.inVoiceChannel && !conn.pendingManualOffer && !conn.manualProfile) return;
       const tracks = new Set();
       if (e.track) tracks.add(e.track);
       if (e.streams && e.streams[0]) {
@@ -1086,9 +1250,18 @@ export class WebRTCVoiceEngine {
         if (track.kind === "audio") {
           conn.remoteAudioTracks.set(track.id, track);
           const rebuildAudio = () => {
+            if (!this.connections.has(peerId)) return;
             const liveAudioTracks = Array.from(conn.remoteAudioTracks.values()).filter(
               (t) => t.readyState !== "ended"
             );
+            conn.usingPcmAudio = false;
+            if (conn.pcmGainNode) {
+              try {
+                conn.pcmGainNode.gain.value = 0;
+                conn.pcmGainNode.disconnect();
+              } catch {}
+              conn.pcmGainNode = null;
+            }
             conn.remoteStream = new MediaStream(liveAudioTracks);
             conn.audioEl.srcObject = conn.remoteStream;
             conn.audioEl.muted = this.selfDeafen || conn.muted;
@@ -1100,6 +1273,7 @@ export class WebRTCVoiceEngine {
             this.applySinkIdToElement(conn.audioEl);
             conn.audioEl.play().catch(() => {});
             this.setupRemoteAudioGraph(conn);
+            this.updateFallbackProcessorState();
           };
           track.onunmute = rebuildAudio;
           track.onended = () => {
@@ -1448,6 +1622,7 @@ export class WebRTCVoiceEngine {
   }
 
   async negotiateWithPeer(peerId) {
+    if (!this.inVoiceChannel) return;
     if (!this.localAudioStream) {
       await this.startLocalVoice();
     }
@@ -1455,7 +1630,7 @@ export class WebRTCVoiceEngine {
 
     conn.signalQueue = conn.signalQueue
       .then(async () => {
-        if (conn.pc.signalingState === "closed") return;
+        if (!this.inVoiceChannel || conn.pc.signalingState === "closed") return;
         this.attachLocalTracksToConn(conn);
 
         if (conn.pc.signalingState !== "stable") {
@@ -1490,7 +1665,7 @@ export class WebRTCVoiceEngine {
   }
 
   async handleIncomingSignal(fromPeerId, signal) {
-    if (!fromPeerId || !signal) return;
+    if (!this.inVoiceChannel || !fromPeerId || !signal) return;
 
     // Kick off local audio initialization without blocking urgent incoming signaling
     if (!this.localAudioStream && !this.voiceInitPromise) {
@@ -1501,6 +1676,7 @@ export class WebRTCVoiceEngine {
 
     conn.signalQueue = conn.signalQueue
       .then(async () => {
+        if (!this.inVoiceChannel) return;
         if (signal.streamMeta) {
           conn.remoteStreamMeta = {
             ...conn.remoteStreamMeta,
@@ -1624,6 +1800,7 @@ export class WebRTCVoiceEngine {
 
   // Serverless Manual WebRTC SDP Invite Code (for Browser-to-Browser or strict NAT without port forwarding)
   async createManualInviteOffer(localProfile) {
+    this.inVoiceChannel = true;
     await this.startLocalVoice();
     const tempPeerId = `webrtc_${Math.random().toString(36).slice(2, 8)}`;
     const conn = this.createPeerConnection(tempPeerId, true);
@@ -1656,6 +1833,7 @@ export class WebRTCVoiceEngine {
       throw new Error("Invalid P2P invite code.");
     }
 
+    this.inVoiceChannel = true;
     await this.startLocalVoice();
 
     if (decoded.kind === "offer") {
@@ -1784,22 +1962,120 @@ export class WebRTCVoiceEngine {
   destroyPeer(peerId) {
     const conn = this.connections.get(peerId);
     if (!conn) return;
+    if (conn.speakingDecayTimer) {
+      clearTimeout(conn.speakingDecayTimer);
+      conn.speakingDecayTimer = null;
+    }
+    if (conn.pcmGainNode) {
+      try {
+        conn.pcmGainNode.gain.value = 0;
+        conn.pcmGainNode.disconnect();
+      } catch {}
+      conn.pcmGainNode = null;
+    }
+    if (conn.gainNode) {
+      try {
+        conn.gainNode.gain.value = 0;
+        conn.gainNode.disconnect();
+      } catch {}
+      conn.gainNode = null;
+    }
+    if (conn.audioSourceNode) {
+      try {
+        conn.audioSourceNode.disconnect();
+      } catch {}
+      conn.audioSourceNode = null;
+    }
+    if (conn.remoteStream) {
+      try {
+        conn.remoteStream.getTracks().forEach((t) => t.stop());
+      } catch {}
+    }
     try {
       conn.pc.ontrack = null;
       conn.pc.onicecandidate = null;
+      conn.pc.onconnectionstatechange = null;
+      conn.pc.oniceconnectionstatechange = null;
       conn.pc.close();
     } catch {}
     if (conn.audioEl) {
-      conn.audioEl.srcObject = null;
-      conn.audioEl.remove();
+      try {
+        conn.audioEl.pause();
+        conn.audioEl.muted = true;
+        conn.audioEl.srcObject = null;
+        conn.audioEl.removeAttribute("src");
+        conn.audioEl.load();
+        conn.audioEl.remove();
+      } catch {}
     }
     this.connections.delete(peerId);
+    this.updateFallbackProcessorState();
     this.updateFrameRelayLoop();
   }
 
   destroyAll() {
+    this.inVoiceChannel = false;
     for (const peerId of Array.from(this.connections.keys())) {
       this.destroyPeer(peerId);
+    }
+    const bin = getAudioBinContainer();
+    if (bin) {
+      bin.querySelectorAll("audio").forEach((el) => {
+        try {
+          el.pause();
+          el.muted = true;
+          el.srcObject = null;
+          el.removeAttribute("src");
+          el.load();
+          el.remove();
+        } catch {}
+      });
+    }
+    if (this.vadInterval) {
+      clearInterval(this.vadInterval);
+      this.vadInterval = null;
+    }
+    if (this.statsInterval) {
+      clearInterval(this.statsInterval);
+      this.statsInterval = null;
+    }
+    if (this.txProcessorNode) {
+      try {
+        this.txProcessorNode.onaudioprocess = null;
+        this.txProcessorNode.disconnect();
+      } catch {}
+      this.txProcessorNode = null;
+      this.txProcessorAttached = false;
+    }
+    if (this.txZeroGainNode) {
+      try {
+        this.txZeroGainNode.disconnect();
+      } catch {}
+      this.txZeroGainNode = null;
+    }
+    if (this.txAnalyser) {
+      try {
+        this.txAnalyser.disconnect();
+      } catch {}
+      this.txAnalyser = null;
+    }
+    if (this.txSourceNode) {
+      try {
+        this.txSourceNode.disconnect();
+      } catch {}
+      this.txSourceNode = null;
+    }
+    if (this.txScreenAudioSourceNode) {
+      try {
+        this.txScreenAudioSourceNode.disconnect();
+      } catch {}
+      this.txScreenAudioSourceNode = null;
+    }
+    if (this.txMixNode) {
+      try {
+        this.txMixNode.disconnect();
+      } catch {}
+      this.txMixNode = null;
     }
     if (this.localAudioStream) {
       this.localAudioStream.getTracks().forEach((t) => t.stop());
@@ -1813,15 +2089,14 @@ export class WebRTCVoiceEngine {
       this.localScreenStream.getTracks().forEach((t) => t.stop());
       this.localScreenStream = null;
     }
+    if (this.audioContext) {
+      try {
+        this.audioContext.close().catch(() => {});
+      } catch {}
+      this.audioContext = null;
+    }
+    this.localSpeaking = false;
     this.activeDesktopSourceId = null;
     this.updateFrameRelayLoop();
-    if (this.vadInterval) {
-      clearInterval(this.vadInterval);
-      this.vadInterval = null;
-    }
-    if (this.statsInterval) {
-      clearInterval(this.statsInterval);
-      this.statsInterval = null;
-    }
   }
 }

@@ -19,7 +19,7 @@ if (instanceId !== "1") {
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch(
   "disable-features",
-  "WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,AudioServiceOutOfProcess"
+  "WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,ThrottleDisplayNoneAndVisibilityHiddenCrossOriginIframes"
 );
 app.commandLine.appendSwitch("enable-usermedia-screen-capturing");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
@@ -95,6 +95,14 @@ function createMainWindow() {
 
   mainWindow.webContents.setBackgroundThrottling(false);
   mainWindow.webContents.setAudioMuted(false);
+
+  mainWindow.on("blur", () => {
+    mainWindow?.webContents.setBackgroundThrottling(false);
+  });
+
+  mainWindow.on("minimize", () => {
+    mainWindow?.webContents.setBackgroundThrottling(false);
+  });
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
