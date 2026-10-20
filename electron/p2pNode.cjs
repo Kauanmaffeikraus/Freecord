@@ -565,6 +565,7 @@ class P2PNode extends EventEmitter {
       case "TYPING_STATE":
       case "ROOM_SYNC":
       case "VOICE_STATE":
+      case "VOICE_SPEAKING":
       case "WEBRTC_SIGNAL":
       case "MEDIA_FRAME":
       case "AUDIO_CHUNK": {
@@ -576,6 +577,11 @@ class P2PNode extends EventEmitter {
             peer.voiceChannelId = packet.channelId || null;
             peer.voiceState = packet.voiceState || {};
             this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "VOICE_SPEAKING") {
+          const peer = this.peers.get(senderId);
+          if (peer) {
+            peer.voiceState = { ...(peer.voiceState || {}), speaking: Boolean(packet.speaking) };
           }
         }
         this.emit("p2p-event", {

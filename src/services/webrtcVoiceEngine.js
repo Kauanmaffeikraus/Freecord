@@ -33,6 +33,7 @@ export class WebRTCVoiceEngine {
     localPeerId = null,
     onSignalSend,
     onFrameSend,
+    onAudioChunkSend,
     onRemoteStream,
     onSpeakingChange,
     onInputLevelChange,
@@ -43,6 +44,7 @@ export class WebRTCVoiceEngine {
     this.localPeerId = localPeerId;
     this.onSignalSend = onSignalSend;
     this.onFrameSend = onFrameSend;
+    this.onAudioChunkSend = onAudioChunkSend;
     this.onRemoteStream = onRemoteStream;
     this.onSpeakingChange = onSpeakingChange;
     this.onInputLevelChange = onInputLevelChange;
@@ -81,6 +83,11 @@ export class WebRTCVoiceEngine {
     this.relayCamVideoEl = null;
     this.relayScrVideoEl = null;
     this.relayCanvas = null;
+    this.txProcessorNode = null;
+    this.txSourceNode = null;
+    this.txScreenAudioSourceNode = null;
+    this.txMixNode = null;
+    this.speakingHoldUntil = 0;
   }
 
   setLocalPeerId(peerId) {
@@ -193,9 +200,7 @@ export class WebRTCVoiceEngine {
         });
         this.applyMuteState();
         this.startVoiceActivityDetector(this.localAudioStream);
-        if (forceRestart) {
-          await this.syncAudioTrackWithPeers();
-        }
+        await this.syncAudioTrackWithPeers();
         return this.localAudioStream;
       } catch (err) {
         if (this.audioInputDeviceId !== "default") {
@@ -207,9 +212,7 @@ export class WebRTCVoiceEngine {
             });
             this.applyMuteState();
             this.startVoiceActivityDetector(this.localAudioStream);
-            if (forceRestart) {
-              await this.syncAudioTrackWithPeers();
-            }
+            await this.syncAudioTrackWithPeers();
             return this.localAudioStream;
           } catch {}
         }
@@ -218,6 +221,7 @@ export class WebRTCVoiceEngine {
           err.message
         );
         this.localAudioStream = this.createSilentFallbackAudioStream();
+        await this.syncAudioTrackWithPeers();
         return this.localAudioStream;
       } finally {
         this.voiceInitPromise = null;
@@ -283,11 +287,85 @@ export class WebRTCVoiceEngine {
   startVoiceActivityDetector(stream) {
     try {
       const ctx = this.ensureAudioContext();
+
+      if (this.txSourceNode) {
+        try {
+          this.txSourceNode.disconnect();
+        } catch {}
+      }
+      if (this.txProcessorNode) {
+        try {
+          this.txProcessorNode.disconnect();
+        } catch {}
+      }
+
       const source = ctx.createMediaStreamSource(stream);
+      this.txSourceNode = source;
+
+      const mixNode = ctx.createGain();
+      mixNode.gain.value = 1;
+      this.txMixNode = mixNode;
+      source.connect(mixNode);
+
+      this.attachScreenAudioToMixer();
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       source.connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+      const timeData = new Float32Array(analyser.fftSize);
+
+      // ScriptProcessor for real-time 24kHz P2P PCM voice streaming
+      const processor = ctx.createScriptProcessor(2048, 1, 1);
+      const zeroGain = ctx.createGain();
+      zeroGain.gain.value = 0;
+      mixNode.connect(processor);
+      processor.connect(zeroGain);
+      zeroGain.connect(ctx.destination);
+      this.txProcessorNode = processor;
+
+      let hangoverBuffers = 0;
+      processor.onaudioprocess = (e) => {
+        if (!this.onAudioChunkSend) return;
+        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
+        if ((this.selfMute || this.selfDeafen) && !hasScreenAudio) return;
+
+        const input = e.inputBuffer.getChannelData(0);
+        let sumSq = 0;
+        for (let i = 0; i < input.length; i++) {
+          sumSq += input[i] * input[i];
+        }
+        const rms = Math.sqrt(sumSq / input.length);
+        if (rms > 0.004 || this.localSpeaking || hasScreenAudio) {
+          if (rms > 0.004 || this.localSpeaking) {
+            hangoverBuffers = 6; // Keep transmitting ~250ms after speech trailing edge
+          }
+        } else if (hangoverBuffers > 0) {
+          hangoverBuffers--;
+        } else {
+          return;
+        }
+
+        // Downsample 2x (e.g. 48000 Hz -> 24000 Hz) into Int16 PCM
+        const outLen = Math.floor(input.length / 2);
+        const pcm16 = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const sample = (input[i * 2] + input[i * 2 + 1]) * 0.5;
+          const clamped = Math.max(-1, Math.min(1, sample));
+          pcm16[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+        }
+
+        const bytes = new Uint8Array(pcm16.buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const pcmBase64 = btoa(binary);
+        this.onAudioChunkSend({
+          pcmBase64,
+          sampleRate: Math.round(ctx.sampleRate / 2),
+        });
+      };
 
       if (this.vadInterval) clearInterval(this.vadInterval);
       this.vadInterval = setInterval(() => {
@@ -299,18 +377,51 @@ export class WebRTCVoiceEngine {
           }
           return;
         }
-        analyser.getByteFrequencyData(data);
+        analyser.getByteFrequencyData(freqData);
+        analyser.getFloatTimeDomainData(timeData);
+
         let sum = 0;
-        for (let i = 0; i < data.length; i++) sum += data[i];
-        const avg = sum / data.length;
-        const levelPercent = Math.min(100, Math.round((avg / 65) * 100));
+        for (let i = 0; i < freqData.length; i++) sum += freqData[i];
+        const avgFreq = sum / freqData.length;
+
+        let sumSq = 0;
+        for (let i = 0; i < timeData.length; i++) sumSq += timeData[i] * timeData[i];
+        const rms = Math.sqrt(sumSq / timeData.length);
+
+        const levelPercent = Math.min(
+          100,
+          Math.max(Math.round((avgFreq / 55) * 100), Math.round(rms * 360))
+        );
         this.onInputLevelChange?.(levelPercent);
-        const speaking = avg > 12;
+
+        const now = Date.now();
+        const voiceDetected = avgFreq > 8 || rms > 0.008;
+        if (voiceDetected) {
+          this.speakingHoldUntil = now + 320;
+        }
+        const speaking = voiceDetected || now < this.speakingHoldUntil;
         if (speaking !== this.localSpeaking) {
           this.localSpeaking = speaking;
           this.onSpeakingChange?.("self", speaking);
         }
-      }, 100);
+      }, 85);
+    } catch {}
+  }
+
+  attachScreenAudioToMixer() {
+    try {
+      if (this.txScreenAudioSourceNode) {
+        try {
+          this.txScreenAudioSourceNode.disconnect();
+        } catch {}
+        this.txScreenAudioSourceNode = null;
+      }
+      if (!this.txMixNode || !this.localScreenStream) return;
+      if (this.localScreenStream.getAudioTracks().length === 0) return;
+      const ctx = this.ensureAudioContext();
+      const scrSource = ctx.createMediaStreamSource(this.localScreenStream);
+      scrSource.connect(this.txMixNode);
+      this.txScreenAudioSourceNode = scrSource;
     } catch {}
   }
 
@@ -325,17 +436,11 @@ export class WebRTCVoiceEngine {
       this.selfMute = true;
     }
     this.applyMuteState();
-    for (const conn of this.connections.values()) {
+    for (const [peerId, conn] of this.connections.entries()) {
       if (conn.audioEl) {
-        conn.audioEl.muted = this.selfDeafen || conn.muted;
+        conn.audioEl.muted = this.selfDeafen || conn.muted || Boolean(conn.usingPcmAudio);
       }
-      if (conn.gainNode) {
-        const effectiveGain =
-          this.selfDeafen || conn.muted
-            ? 0
-            : (conn.volume / 100) * (this.masterOutputVolume / 100);
-        conn.gainNode.gain.value = effectiveGain;
-      }
+      this.setLocalVolume(peerId, conn.volume);
     }
   }
 
@@ -343,6 +448,15 @@ export class WebRTCVoiceEngine {
     if (!this.localAudioStream) return;
     for (const track of this.localAudioStream.getAudioTracks()) {
       track.enabled = !this.selfMute && !this.selfDeafen;
+    }
+    if (this.txSourceNode && this.txMixNode) {
+      try {
+        if (this.selfMute || this.selfDeafen) {
+          this.txSourceNode.disconnect(this.txMixNode);
+        } else {
+          this.txSourceNode.connect(this.txMixNode);
+        }
+      } catch {}
     }
   }
 
@@ -359,6 +473,9 @@ export class WebRTCVoiceEngine {
     }
     if (conn.gainNode) {
       conn.gainNode.gain.value = effectiveGain > 1 ? effectiveGain - 1 : 0;
+    }
+    if (conn.pcmGainNode) {
+      conn.pcmGainNode.gain.value = effectiveGain;
     }
   }
 
@@ -536,6 +653,7 @@ export class WebRTCVoiceEngine {
       }
 
       this.updateFrameRelayLoop();
+      this.attachScreenAudioToMixer();
       await this.syncTracksWithPeers();
       return this.localScreenStream;
     } catch (err) {
@@ -595,7 +713,7 @@ export class WebRTCVoiceEngine {
 
     if (!this.frameRelayInterval) {
       this.frameRelayInterval = setInterval(() => {
-        if (!this.onFrameSend || this.connections.size === 0) return;
+        if (!this.onFrameSend) return;
 
         // Send screen frame if active
         if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {
@@ -649,6 +767,76 @@ export class WebRTCVoiceEngine {
       conn.remoteCameraFrameUrl = framePacket.dataUrl;
     }
     this.emitRemoteStreamState(conn);
+  }
+
+  handleIncomingAudioChunk(fromPeerId, chunkPacket) {
+    if (!fromPeerId || !chunkPacket?.pcmBase64) return;
+    const conn = this.createPeerConnection(fromPeerId, false);
+
+    // Trigger remote speaking indicator with smooth decay
+    if (!this.selfDeafen && !conn.muted) {
+      if (!conn.remoteSpeaking) {
+        conn.remoteSpeaking = true;
+        this.onSpeakingChange?.(fromPeerId, true);
+      }
+      if (conn.speakingDecayTimer) {
+        clearTimeout(conn.speakingDecayTimer);
+      }
+      conn.speakingDecayTimer = setTimeout(() => {
+        conn.remoteSpeaking = false;
+        this.onSpeakingChange?.(fromPeerId, false);
+      }, 360);
+    }
+
+    if (this.selfDeafen || conn.muted) return;
+
+    try {
+      const ctx = this.ensureAudioContext();
+      const binary = atob(chunkPacket.pcmBase64);
+      const byteLen = binary.length;
+      const bytes = new Uint8Array(byteLen);
+      for (let i = 0; i < byteLen; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const pcm16 = new Int16Array(bytes.buffer);
+      const sampleRate = Number(chunkPacket.sampleRate) || 24000;
+      const audioBuffer = ctx.createBuffer(1, pcm16.length, sampleRate);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let i = 0; i < pcm16.length; i++) {
+        channelData[i] = pcm16[i] / 32768.0;
+      }
+
+      if (!conn.pcmGainNode) {
+        conn.pcmGainNode = ctx.createGain();
+        conn.pcmGainNode.connect(ctx.destination);
+      }
+      const effectiveGain =
+        this.selfDeafen || conn.muted
+          ? 0
+          : (conn.volume / 100) * (this.masterOutputVolume / 100);
+      conn.pcmGainNode.gain.value = effectiveGain;
+
+      // Mute WebRTC <audio> element while direct PCM stream is active to prevent double-audio echo
+      conn.usingPcmAudio = true;
+      if (conn.audioEl) {
+        conn.audioEl.muted = true;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(conn.pcmGainNode);
+
+      const now = ctx.currentTime;
+      if (
+        !conn.nextPlayTime ||
+        conn.nextPlayTime < now ||
+        conn.nextPlayTime > now + 0.35
+      ) {
+        conn.nextPlayTime = now + 0.025;
+      }
+      source.start(conn.nextPlayTime);
+      conn.nextPlayTime += audioBuffer.duration;
+    } catch {}
   }
 
   createPeerConnection(peerId, isInitiator = false, forceReset = false) {
@@ -712,9 +900,14 @@ export class WebRTCVoiceEngine {
       screenSender: null,
       audioEl,
       gainNode: null,
+      pcmGainNode: oldConn?.pcmGainNode || null,
+      usingPcmAudio: Boolean(oldConn?.usingPcmAudio),
+      nextPlayTime: 0,
+      speakingDecayTimer: null,
       analyser: null,
       volume: oldConn?.volume ?? 100,
       muted: oldConn?.muted ?? false,
+      hasNegotiated: false,
       makingOffer: false,
       needsFollowUpNegotiation: false,
       pendingCandidates: [],
@@ -1103,6 +1296,7 @@ export class WebRTCVoiceEngine {
 
         try {
           conn.makingOffer = true;
+          conn.hasNegotiated = true;
           const offer = await conn.pc.createOffer();
           if (conn.pc.signalingState !== "stable") {
             conn.needsFollowUpNegotiation = true;
@@ -1161,6 +1355,7 @@ export class WebRTCVoiceEngine {
         }
 
         if (signal.signalType === "offer" && signal.sdp) {
+          conn.hasNegotiated = true;
           if (this.voiceInitPromise) {
             await Promise.race([
               this.voiceInitPromise,

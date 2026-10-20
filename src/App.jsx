@@ -1036,12 +1036,26 @@ export default function App() {
           });
         }
       },
+      onAudioChunkSend: (chunkPacket) => {
+        if (window.DiscordNative?.p2p) {
+          window.DiscordNative.p2p.send({
+            type: "AUDIO_CHUNK",
+            ...chunkPacket,
+          });
+        }
+      },
       onRemoteStream: (peerId, stream) => {
         setRemoteStreams((prev) => ({ ...prev, [peerId]: { ...stream } }));
       },
       onSpeakingChange: (who, isSpeaking) => {
         const key = who === "self" ? selfPeerIdRef.current : who;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
+        if (who === "self") {
+          window.DiscordNative?.p2p?.send({
+            type: "VOICE_SPEAKING",
+            speaking: Boolean(isSpeaking),
+          });
+        }
       },
       onInputLevelChange: (level) => {
         setMicInputLevel(level);
@@ -1134,6 +1148,17 @@ export default function App() {
 
     const unsubPeers = p2p.onPeersUpdated((peers) => {
       setConnectedPeers(peers || []);
+      if (Array.isArray(peers)) {
+        setSpeakingMap((prev) => {
+          const next = { ...prev };
+          for (const p of peers) {
+            if (p.voiceState && typeof p.voiceState.speaking === "boolean") {
+              next[p.peerId] = p.voiceState.speaking;
+            }
+          }
+          return next;
+        });
+      }
     });
 
     const unsubLan = p2p.onLanPeersUpdated((lan) => {
@@ -1287,9 +1312,26 @@ export default function App() {
         break;
       }
 
+      case "VOICE_SPEAKING": {
+        if (event.fromPeerId) {
+          setSpeakingMap((prev) => ({
+            ...prev,
+            [event.fromPeerId]: Boolean(event.speaking),
+          }));
+        }
+        break;
+      }
+
       case "MEDIA_FRAME": {
         if (event.fromPeerId && event.kind && event.dataUrl) {
           voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
+        }
+        break;
+      }
+
+      case "AUDIO_CHUNK": {
+        if (event.fromPeerId && event.pcmBase64) {
+          voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
         }
         break;
       }
@@ -1306,6 +1348,7 @@ export default function App() {
         const existing = engine.connections.get(peer.peerId);
         if (
           !existing ||
+          !existing.hasNegotiated ||
           existing.pc.connectionState === "failed" ||
           existing.pc.connectionState === "closed"
         ) {
@@ -1524,12 +1567,17 @@ export default function App() {
     const next = !selfMute;
     setSelfMute(next);
     voiceEngineRef.current?.setSelfMute(next);
+    if (next) {
+      setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
+      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+    }
     if (activeVoiceChannelId) {
       window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
         muted: next,
         deafened: selfDeafen,
         videoEnabled,
         screenSharing,
+        speaking: false,
       });
     }
   };
@@ -1537,7 +1585,11 @@ export default function App() {
   const toggleSelfDeafen = () => {
     const next = !selfDeafen;
     setSelfDeafen(next);
-    if (next) setSelfMute(true);
+    if (next) {
+      setSelfMute(true);
+      setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
+      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+    }
     voiceEngineRef.current?.setSelfDeafen(next);
     if (activeVoiceChannelId) {
       window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
@@ -1545,6 +1597,7 @@ export default function App() {
         deafened: next,
         videoEnabled,
         screenSharing,
+        speaking: false,
       });
     }
   };
