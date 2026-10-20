@@ -467,6 +467,8 @@ export class WebRTCVoiceEngine {
     });
 
     const remoteStream = new MediaStream();
+    const remoteCameraStream = new MediaStream();
+    const remoteScreenStream = new MediaStream();
     const audioEl = new Audio();
     audioEl.autoplay = true;
     audioEl.srcObject = remoteStream;
@@ -478,6 +480,12 @@ export class WebRTCVoiceEngine {
       pc,
       dataChannel: null,
       remoteStream,
+      remoteCameraStream,
+      remoteScreenStream,
+      remoteVideoTracks: new Map(), // trackId -> MediaStreamTrack
+      remoteStreamMeta: { cameraTrackId: null, screenTrackId: null },
+      cameraSender: null,
+      screenSender: null,
       audioEl,
       gainNode: null,
       volume: 100,
@@ -488,7 +496,7 @@ export class WebRTCVoiceEngine {
     this.connections.set(peerId, conn);
 
     // Add existing local tracks
-    this.attachLocalTracksToPc(pc);
+    this.attachLocalTracksToConn(conn);
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -500,20 +508,28 @@ export class WebRTCVoiceEngine {
     };
 
     pc.ontrack = (e) => {
-      if (e.streams && e.streams[0]) {
-        for (const track of e.streams[0].getTracks()) {
+      const incomingTracks =
+        e.streams && e.streams[0] ? e.streams[0].getTracks() : e.track ? [e.track] : [];
+
+      for (const track of incomingTracks) {
+        if (track.kind === "audio") {
           if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
             remoteStream.addTrack(track);
           }
+        } else if (track.kind === "video") {
+          conn.remoteVideoTracks.set(track.id, track);
+          track.onended = () => {
+            conn.remoteVideoTracks.delete(track.id);
+            this.rebuildRemoteVideoStreams(conn);
+          };
         }
-      } else if (e.track) {
-        remoteStream.addTrack(e.track);
       }
+
       audioEl.srcObject = remoteStream;
       this.applySinkIdToElement(audioEl);
       audioEl.play().catch(() => {});
       this.setupRemoteAudioGraph(conn);
-      this.onRemoteStream?.(peerId, remoteStream);
+      this.rebuildRemoteVideoStreams(conn);
     };
 
     if (isInitiator) {
@@ -572,18 +588,72 @@ export class WebRTCVoiceEngine {
     } catch {}
   }
 
-  attachLocalTracksToPc(pc) {
+  buildLocalStreamMeta() {
+    return {
+      cameraTrackId: this.localVideoStream?.getVideoTracks()?.[0]?.id || null,
+      screenTrackId: this.localScreenStream?.getVideoTracks()?.[0]?.id || null,
+    };
+  }
+
+  rebuildRemoteVideoStreams(conn) {
+    const activeVideoTracks = Array.from(conn.remoteVideoTracks.values()).filter(
+      (t) => t.readyState !== "ended"
+    );
+    const meta = conn.remoteStreamMeta || {};
+
+    let camTrack = null;
+    let scrTrack = null;
+
+    if (meta.cameraTrackId && conn.remoteVideoTracks.has(meta.cameraTrackId)) {
+      camTrack = conn.remoteVideoTracks.get(meta.cameraTrackId);
+    }
+    if (meta.screenTrackId && conn.remoteVideoTracks.has(meta.screenTrackId)) {
+      scrTrack = conn.remoteVideoTracks.get(meta.screenTrackId);
+    }
+
+    // Fallback assignment if metadata hasn't arrived yet
+    for (const track of activeVideoTracks) {
+      if (track === camTrack || track === scrTrack) continue;
+      if (!scrTrack && meta.screenTrackId) {
+        scrTrack = track;
+      } else if (!camTrack) {
+        camTrack = track;
+      } else if (!scrTrack) {
+        scrTrack = track;
+      }
+    }
+
+    conn.remoteCameraStream = camTrack ? new MediaStream([camTrack]) : null;
+    conn.remoteScreenStream = scrTrack ? new MediaStream([scrTrack]) : null;
+
+    this.onRemoteStream?.(conn.peerId, {
+      audioStream: conn.remoteStream,
+      cameraStream: conn.remoteCameraStream,
+      screenStream: conn.remoteScreenStream,
+      videoTracksCount: activeVideoTracks.length,
+    });
+  }
+
+  attachLocalTracksToConn(conn) {
+    const pc = conn.pc;
     const existingSenders = pc.getSenders();
-    const addStreamTracks = (stream) => {
-      if (!stream) return;
-      for (const track of stream.getTracks()) {
+    if (this.localAudioStream) {
+      for (const track of this.localAudioStream.getAudioTracks()) {
         if (!existingSenders.some((s) => s.track && s.track.id === track.id)) {
-          pc.addTrack(track, stream);
+          pc.addTrack(track, this.localAudioStream);
         }
       }
-    };
-    addStreamTracks(this.localAudioStream);
-    addStreamTracks(this.localScreenStream || this.localVideoStream);
+    }
+
+    const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
+    if (camTrack && !conn.cameraSender) {
+      conn.cameraSender = pc.addTrack(camTrack, this.localVideoStream);
+    }
+
+    const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
+    if (scrTrack && !conn.screenSender) {
+      conn.screenSender = pc.addTrack(scrTrack, this.localScreenStream);
+    }
   }
 
   async syncAudioTrackWithPeers() {
@@ -602,21 +672,33 @@ export class WebRTCVoiceEngine {
   }
 
   async syncTracksWithPeers() {
-    for (const [peerId, conn] of this.connections.entries()) {
-      const senders = conn.pc.getSenders();
-      const activeVideoTrack =
-        this.localScreenStream?.getVideoTracks()[0] ||
-        this.localVideoStream?.getVideoTracks()[0] ||
-        null;
+    const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
+    const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
+    const streamMeta = this.buildLocalStreamMeta();
 
-      const videoSender = senders.find((s) => s.track?.kind === "video");
-      if (videoSender) {
-        await videoSender.replaceTrack(activeVideoTrack);
-      } else if (activeVideoTrack) {
-        conn.pc.addTrack(
-          activeVideoTrack,
-          this.localScreenStream || this.localVideoStream
-        );
+    for (const [peerId, conn] of this.connections.entries()) {
+      let needsRenegotiation = false;
+
+      if (conn.cameraSender) {
+        await conn.cameraSender.replaceTrack(camTrack);
+      } else if (camTrack) {
+        conn.cameraSender = conn.pc.addTrack(camTrack, this.localVideoStream);
+        needsRenegotiation = true;
+      }
+
+      if (conn.screenSender) {
+        await conn.screenSender.replaceTrack(scrTrack);
+      } else if (scrTrack) {
+        conn.screenSender = conn.pc.addTrack(scrTrack, this.localScreenStream);
+        needsRenegotiation = true;
+      }
+
+      this.onSignalSend?.(peerId, {
+        signalType: "stream-meta",
+        streamMeta,
+      });
+
+      if (needsRenegotiation) {
         await this.negotiateWithPeer(peerId);
       }
     }
@@ -625,19 +707,29 @@ export class WebRTCVoiceEngine {
   async negotiateWithPeer(peerId) {
     await this.startLocalVoice();
     const conn = this.createPeerConnection(peerId, true);
-    this.attachLocalTracksToPc(conn.pc);
+    this.attachLocalTracksToConn(conn);
     const offer = await conn.pc.createOffer();
     await conn.pc.setLocalDescription(offer);
     this.onSignalSend?.(peerId, {
       signalType: "offer",
       sdp: conn.pc.localDescription,
+      streamMeta: this.buildLocalStreamMeta(),
     });
   }
 
   async handleIncomingSignal(fromPeerId, signal) {
     await this.startLocalVoice();
     const conn = this.createPeerConnection(fromPeerId, false);
-    this.attachLocalTracksToPc(conn.pc);
+    this.attachLocalTracksToConn(conn);
+
+    if (signal.streamMeta) {
+      conn.remoteStreamMeta = signal.streamMeta;
+      this.rebuildRemoteVideoStreams(conn);
+    }
+
+    if (signal.signalType === "stream-meta") {
+      return;
+    }
 
     if (signal.signalType === "offer") {
       await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
@@ -646,9 +738,12 @@ export class WebRTCVoiceEngine {
       this.onSignalSend?.(fromPeerId, {
         signalType: "answer",
         sdp: conn.pc.localDescription,
+        streamMeta: this.buildLocalStreamMeta(),
       });
+      this.rebuildRemoteVideoStreams(conn);
     } else if (signal.signalType === "answer") {
       await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      this.rebuildRemoteVideoStreams(conn);
     } else if (signal.signalType === "ice-candidate" && signal.candidate) {
       try {
         await conn.pc.addIceCandidate(new RTCIceCandidate(signal.candidate));

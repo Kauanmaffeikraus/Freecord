@@ -28,6 +28,12 @@ import {
   Upload,
   Trash2,
   Sparkles,
+  Maximize2,
+  Minimize2,
+  ZoomIn,
+  ZoomOut,
+  PictureInPicture2,
+  LayoutGrid,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -221,6 +227,21 @@ const I18N = {
     screenQualitySectionTitle: "🖥️ Go Live Screen Share Resolution & Frame Rate",
     screenResLabel: "Screen Share Resolution",
     screenFpsLabel: "Frame Rate (FPS)",
+    tileSizeLabel: "Size",
+    gridModeBtn: "Grid View",
+    spotlightBtn: "Focus / Enlarge",
+    unspotlightBtn: "Exit Focus",
+    theaterModeBtn: "Theater Mode",
+    exitTheaterBtn: "Exit Theater",
+    stageFullscreenBtn: "Stage Fullscreen",
+    tileFullscreenBtn: "Fullscreen",
+    pipBtn: "Popout PiP",
+    webcamPipToggle: "Webcam PiP Overlay",
+    fitContainBtn: "Fit",
+    fitCoverBtn: "Fill",
+    cameraBadge: "WEBCAM",
+    screenBadge: "GO LIVE SCREEN",
+    dragResizeHint: "Drag to resize stage height",
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -367,6 +388,21 @@ const I18N = {
     screenQualitySectionTitle: "🖥️ Resolução e Taxa de Quadros da Transmissão de Tela (Go Live)",
     screenResLabel: "Resolução da Transmissão de Tela",
     screenFpsLabel: "Taxa de Quadros (FPS)",
+    tileSizeLabel: "Tamanho",
+    gridModeBtn: "Modo Grade",
+    spotlightBtn: "Ampliar / Focar",
+    unspotlightBtn: "Sair do Foco",
+    theaterModeBtn: "Modo Teatro",
+    exitTheaterBtn: "Sair do Teatro",
+    stageFullscreenBtn: "Palco em Tela Cheia",
+    tileFullscreenBtn: "Tela Cheia",
+    pipBtn: "Janela PiP",
+    webcamPipToggle: "Webcam PiP Flutuante",
+    fitContainBtn: "Ajustar",
+    fitCoverBtn: "Preencher",
+    cameraBadge: "WEBCAM",
+    screenBadge: "TELA GO LIVE",
+    dragResizeHint: "Arraste para redimensionar a altura do palco",
   },
 };
 
@@ -444,7 +480,7 @@ const INITIAL_REA_MESSAGES = [
   },
 ];
 
-function VideoStreamView({ stream, muted = false }) {
+function VideoStreamView({ stream, muted = false, fitMode = "contain", zoom = 1, videoId }) {
   const videoRef = useRef(null);
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -453,7 +489,17 @@ function VideoStreamView({ stream, muted = false }) {
     }
   }, [stream]);
 
-  return <video ref={videoRef} autoPlay playsInline muted={muted} />;
+  return (
+    <video
+      id={videoId}
+      ref={videoRef}
+      autoPlay
+      playsInline
+      muted={muted}
+      className={fitMode === "cover" ? "fit-cover" : ""}
+      style={zoom !== 1 ? { transform: `scale(${zoom})` } : undefined}
+    />
+  );
 }
 
 function UserAvatar({
@@ -674,17 +720,29 @@ export default function App() {
   const [chatInput, setChatInput] = useState("");
   const [typingPeers, setTypingPeers] = useState({});
 
-  // Voice & Video State
+  // Voice, Simultaneous Webcam + Screen Share & Resizable Stage State
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState(null);
   const [selfMute, setSelfMute] = useState(false);
   const [selfDeafen, setSelfDeafen] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [speakingMap, setSpeakingMap] = useState({});
-  const [localMediaStream, setLocalMediaStream] = useState(null);
+  const [localCameraStream, setLocalCameraStream] = useState(null);
+  const [localScreenStream, setLocalScreenStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [peerVolumes, setPeerVolumes] = useState({});
   const [rtcStats, setRtcStats] = useState({});
+
+  // Stage Resize, Spotlight, Theater, Fullscreen & PiP State
+  const [stageHeight, setStageHeight] = useState(440);
+  const [stageTheaterMode, setStageTheaterMode] = useState(false);
+  const [tileMinWidth, setTileMinWidth] = useState(340);
+  const [spotlightTileId, setSpotlightTileId] = useState(null);
+  const [tileFitMap, setTileFitMap] = useState({});
+  const [tileZoomMap, setTileZoomMap] = useState({});
+  const [showWebcamPipOverlay, setShowWebcamPipOverlay] = useState(true);
+  const [webcamPipWidth, setWebcamPipWidth] = useState(230);
+  const stageContainerRef = useRef(null);
 
   // Modals
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -1211,8 +1269,7 @@ export default function App() {
     const engine = voiceEngineRef.current;
     if (!engine) return;
 
-    const audioStream = await engine.startLocalVoice();
-    setLocalMediaStream(audioStream);
+    await engine.startLocalVoice();
     setActiveVoiceChannelId(voiceChannel.id);
 
     const vState = {
@@ -1234,7 +1291,9 @@ export default function App() {
     setActiveVoiceChannelId(null);
     setVideoEnabled(false);
     setScreenSharing(false);
-    setLocalMediaStream(null);
+    setLocalCameraStream(null);
+    setLocalScreenStream(null);
+    setSpotlightTileId(null);
     setRemoteStreams({});
     window.DiscordNative?.p2p?.setVoiceState(null, {});
   };
@@ -1275,11 +1334,14 @@ export default function App() {
       if (videoEnabled) {
         await engine.setVideoBroadcast(false);
         setVideoEnabled(false);
-        setLocalMediaStream(engine.localScreenStream || engine.localAudioStream);
+        setLocalCameraStream(null);
+        if (spotlightTileId === "self_camera") {
+          setSpotlightTileId(screenSharing ? "self_screen" : null);
+        }
       } else {
         const camStream = await engine.setVideoBroadcast(true);
         setVideoEnabled(true);
-        setLocalMediaStream(camStream);
+        setLocalCameraStream(camStream);
       }
       if (activeVoiceChannelId) {
         window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
@@ -1298,7 +1360,10 @@ export default function App() {
     if (screenSharing) {
       await voiceEngineRef.current?.setDesktopSource(null);
       setScreenSharing(false);
-      setLocalMediaStream(voiceEngineRef.current?.localVideoStream || voiceEngineRef.current?.localAudioStream);
+      setLocalScreenStream(null);
+      if (spotlightTileId === "self_screen") {
+        setSpotlightTileId(null);
+      }
       if (activeVoiceChannelId) {
         window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
           muted: selfMute,
@@ -1347,7 +1412,7 @@ export default function App() {
     persistMediaPrefs({ cameraId: deviceId });
     const updatedStream = await voiceEngineRef.current?.setVideoInputDevice(deviceId, cameraResolution);
     if (updatedStream && videoEnabled) {
-      setLocalMediaStream(updatedStream);
+      setLocalCameraStream(updatedStream);
     }
     if (cameraTestStream) {
       await toggleCameraPreview(true, deviceId, cameraResolution);
@@ -1360,7 +1425,7 @@ export default function App() {
     persistMediaPrefs({ cameraResolution: resKey });
     const updatedStream = await voiceEngineRef.current?.setVideoInputDevice(selectedCameraId, resKey);
     if (updatedStream && videoEnabled) {
-      setLocalMediaStream(updatedStream);
+      setLocalCameraStream(updatedStream);
     }
     if (cameraTestStream) {
       await toggleCameraPreview(true, selectedCameraId, resKey);
@@ -1375,7 +1440,7 @@ export default function App() {
     persistMediaPrefs({ screenResolution: nextRes, screenFps: nextFps });
     const updatedStream = await voiceEngineRef.current?.setScreenShareQuality(nextRes, nextFps);
     if (updatedStream && screenSharing) {
-      setLocalMediaStream(updatedStream);
+      setLocalScreenStream(updatedStream);
     }
   };
 
@@ -1418,7 +1483,8 @@ export default function App() {
       });
       if (stream) {
         setScreenSharing(true);
-        setLocalMediaStream(stream);
+        setLocalScreenStream(stream);
+        setSpotlightTileId("self_screen");
         setShowScreenPicker(false);
         if (activeVoiceChannelId) {
           window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
@@ -1432,6 +1498,43 @@ export default function App() {
     } catch {
       setShowScreenPicker(false);
     }
+  };
+
+  const startStageHeightDrag = (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = stageHeight;
+    const onMove = (moveEvent) => {
+      const delta = moveEvent.clientY - startY;
+      setStageHeight(Math.max(220, Math.min(860, startH + delta)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const toggleElementFullscreen = (el) => {
+    if (!el) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    } else {
+      el.requestFullscreen?.().catch(() => {});
+    }
+  };
+
+  const toggleVideoPiP = async (videoId) => {
+    try {
+      const videoEl = document.getElementById(videoId);
+      if (!videoEl) return;
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (typeof videoEl.requestPictureInPicture === "function") {
+        await videoEl.requestPictureInPicture();
+      }
+    } catch {}
   };
 
   const handleConnectByIp = async (e) => {
@@ -1595,6 +1698,302 @@ export default function App() {
 
   const activeTyping = typingPeers[effectiveChannelId];
   const selfDisplayName = nodeStatus.profile.displayName || nodeStatus.profile.username;
+
+  // Build simultaneous stage tiles: separate tiles for Screen Share and Webcam so both can be viewed at once
+  const stageTiles = useMemo(() => {
+    const tiles = [];
+
+    // 1. Local Go Live Screen Share Tile (if active)
+    if (screenSharing && localScreenStream) {
+      tiles.push({
+        id: "self_screen",
+        peerId: nodeStatus.profile.peerId,
+        isSelf: true,
+        kind: "screen",
+        stream: localScreenStream,
+        profile: nodeStatus.profile,
+        label: `${selfDisplayName} ${t.youSuffix}`,
+        badge: `${t.screenBadge} • ${screenResolution.toUpperCase()} ${screenFps}FPS`,
+        speaking: false,
+      });
+    }
+
+    // 2. Local Webcam / Avatar Tile (always separate from Screen Share so both show simultaneously)
+    tiles.push({
+      id: "self_camera",
+      peerId: nodeStatus.profile.peerId,
+      isSelf: true,
+      kind: "camera",
+      stream: videoEnabled ? localCameraStream : null,
+      profile: nodeStatus.profile,
+      label: `${selfDisplayName} ${t.youSuffix}`,
+      badge: videoEnabled ? t.cameraBadge : null,
+      speaking: Boolean(speakingMap[nodeStatus.profile.peerId]),
+    });
+
+    // 3. Remote Connected Peers (separate Screen Share tile + Webcam/Avatar tile per peer)
+    for (const peer of connectedPeers) {
+      const peerMedia = remoteStreams[peer.peerId];
+      const isMediaBundle =
+        peerMedia &&
+        typeof peerMedia === "object" &&
+        !(peerMedia instanceof MediaStream);
+
+      const peerScreenStream = isMediaBundle
+        ? peerMedia.screenStream
+        : peer.voiceState?.screenSharing && peerMedia instanceof MediaStream
+        ? peerMedia
+        : null;
+
+      const peerCameraStream = isMediaBundle
+        ? peerMedia.cameraStream
+        : !peer.voiceState?.screenSharing &&
+          peerMedia instanceof MediaStream &&
+          peerMedia.getVideoTracks().length > 0
+        ? peerMedia
+        : null;
+
+      const peerName = peer.displayName || peer.username;
+
+      if (peerScreenStream && peerScreenStream.getVideoTracks().length > 0) {
+        tiles.push({
+          id: `${peer.peerId}_screen`,
+          peerId: peer.peerId,
+          isSelf: false,
+          kind: "screen",
+          stream: peerScreenStream,
+          profile: peer,
+          label: peerName,
+          badge: t.screenBadge,
+          speaking: false,
+        });
+      }
+
+      tiles.push({
+        id: `${peer.peerId}_camera`,
+        peerId: peer.peerId,
+        isSelf: false,
+        kind: "camera",
+        stream:
+          peerCameraStream && peerCameraStream.getVideoTracks().length > 0
+            ? peerCameraStream
+            : null,
+        profile: peer,
+        label: peerName,
+        badge:
+          peerCameraStream && peerCameraStream.getVideoTracks().length > 0
+            ? t.cameraBadge
+            : peer.voiceState?.screenSharing && !peerScreenStream
+            ? t.liveBadge
+            : null,
+        speaking: Boolean(speakingMap[peer.peerId]),
+      });
+    }
+
+    return tiles;
+  }, [
+    screenSharing,
+    localScreenStream,
+    videoEnabled,
+    localCameraStream,
+    nodeStatus.profile,
+    selfDisplayName,
+    screenResolution,
+    screenFps,
+    speakingMap,
+    connectedPeers,
+    remoteStreams,
+    lang,
+  ]);
+
+  const activeSpotlightTile = useMemo(
+    () => stageTiles.find((tile) => tile.id === spotlightTileId) || null,
+    [stageTiles, spotlightTileId]
+  );
+
+  // Find an active webcam stream to display in the floating PiP overlay when a Screen Share is spotlighted
+  const activeWebcamTileForPip = useMemo(() => {
+    if (!activeSpotlightTile || activeSpotlightTile.kind !== "screen") return null;
+    // Prefer the webcam of the same user who is sharing their screen, or any active webcam
+    const samePeerCam = stageTiles.find(
+      (tItem) =>
+        tItem.kind === "camera" &&
+        tItem.peerId === activeSpotlightTile.peerId &&
+        tItem.stream
+    );
+    if (samePeerCam) return samePeerCam;
+    return stageTiles.find((tItem) => tItem.kind === "camera" && tItem.stream) || null;
+  }, [activeSpotlightTile, stageTiles]);
+
+  const renderStageTile = (tile, isSpotlight = false) => {
+    const fitMode = tileFitMap[tile.id] || "contain";
+    const zoom = tileZoomMap[tile.id] || 1;
+    const videoDomId = `freecord_video_${tile.id}`;
+    const vol = peerVolumes[tile.peerId] ?? 100;
+
+    return (
+      <div
+        key={tile.id}
+        id={`tile_box_${tile.id}`}
+        className={`video-tile ${tile.speaking ? "speaking" : ""} ${
+          isSpotlight ? "spotlight-tile" : ""
+        }`}
+        onDoubleClick={() =>
+          setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+        }
+      >
+        {tile.stream ? (
+          <VideoStreamView
+            videoId={videoDomId}
+            stream={tile.stream}
+            muted={tile.isSelf || selfDeafen}
+            fitMode={fitMode}
+            zoom={zoom}
+          />
+        ) : (
+          <UserAvatar
+            profile={tile.profile}
+            speaking={tile.speaking}
+            onClick={() => setInspectedProfile(tile.profile)}
+            style={{ width: isSpotlight ? 96 : 68, height: isSpotlight ? 96 : 68, fontSize: isSpotlight ? 32 : 24 }}
+          />
+        )}
+
+        {/* Top-Right Hover Controls: Spotlight/Focus, Fit/Fill, Zoom, PiP, Fullscreen */}
+        <div className="video-tile-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className={`tile-ctrl-btn ${spotlightTileId === tile.id ? "active" : ""}`}
+            onClick={() =>
+              setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+            }
+            title={spotlightTileId === tile.id ? t.unspotlightBtn : t.spotlightBtn}
+          >
+            {spotlightTileId === tile.id ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span>{spotlightTileId === tile.id ? t.unspotlightBtn : t.spotlightBtn}</span>
+          </button>
+
+          {tile.stream && (
+            <>
+              <button
+                type="button"
+                className={`tile-ctrl-btn ${fitMode === "cover" ? "active" : ""}`}
+                onClick={() =>
+                  setTileFitMap((prev) => ({
+                    ...prev,
+                    [tile.id]: fitMode === "contain" ? "cover" : "contain",
+                  }))
+                }
+                title={`${t.fitContainBtn} / ${t.fitCoverBtn}`}
+              >
+                <span>{fitMode === "contain" ? t.fitCoverBtn : t.fitContainBtn}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`tile-ctrl-btn ${zoom > 1 ? "active" : ""}`}
+                onClick={() => {
+                  const steps = [1, 1.25, 1.5, 2];
+                  const nextZoom = steps[(steps.indexOf(zoom) + 1) % steps.length] || 1;
+                  setTileZoomMap((prev) => ({ ...prev, [tile.id]: nextZoom }));
+                }}
+                title="Zoom"
+              >
+                <ZoomIn size={12} />
+                <span>{Math.round(zoom * 100)}%</span>
+              </button>
+
+              <button
+                type="button"
+                className="tile-ctrl-btn"
+                onClick={() => toggleVideoPiP(videoDomId)}
+                title={t.pipBtn}
+              >
+                <PictureInPicture2 size={12} />
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            className="tile-ctrl-btn"
+            onClick={() =>
+              toggleElementFullscreen(document.getElementById(`tile_box_${tile.id}`))
+            }
+            title={t.tileFullscreenBtn}
+          >
+            <Maximize2 size={12} />
+          </button>
+        </div>
+
+        {/* Floating Webcam Picture-in-Picture Overlay when viewing a Screen Share in Spotlight/Fullscreen */}
+        {isSpotlight &&
+          showWebcamPipOverlay &&
+          activeWebcamTileForPip &&
+          activeWebcamTileForPip.stream && (
+            <div
+              className="floating-webcam-pip"
+              style={{ width: webcamPipWidth }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <VideoStreamView
+                stream={activeWebcamTileForPip.stream}
+                muted={true}
+                fitMode="cover"
+              />
+              <div className="floating-webcam-pip-label">
+                📷 {activeWebcamTileForPip.label}
+              </div>
+              <div
+                style={{
+                  position: "absolute",
+                  top: 4,
+                  right: 4,
+                  display: "flex",
+                  gap: 3,
+                }}
+              >
+                {[180, 240, 320].map((w, idx) => (
+                  <button
+                    key={w}
+                    type="button"
+                    className={`tile-ctrl-btn ${webcamPipWidth === w ? "active" : ""}`}
+                    style={{ padding: "2px 5px", fontSize: 9 }}
+                    onClick={() => setWebcamPipWidth(w)}
+                  >
+                    {["P", "M", "G"][idx]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+        {/* Bottom Overlay: Name, Badge & Peer Volume */}
+        <div className="video-tile-overlay" style={{ pointerEvents: "auto" }}>
+          <span className="video-tile-name">
+            {tile.label}
+            {tile.badge && <span className="live-badge">{tile.badge}</span>}
+          </span>
+
+          {!tile.isSelf && (
+            <input
+              type="range"
+              min="0"
+              max="200"
+              value={vol}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setPeerVolumes((prev) => ({ ...prev, [tile.peerId]: v }));
+                voiceEngineRef.current?.setLocalVolume(tile.peerId, v);
+              }}
+              title={t.localVolumeTooltip(tile.label, vol)}
+              style={{ width: 80, cursor: "pointer" }}
+            />
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -2001,34 +2400,102 @@ export default function App() {
 
           <div className="stage-body">
             <div className="chat-column">
-              {/* Voice / Video / Go Live Stage Grid */}
+              {/* Voice / Simultaneous Webcam + Go Live Screen Stage */}
               {activeVoiceChannelId && (
-                <div className="voice-stage-container">
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
+                <div
+                  ref={stageContainerRef}
+                  className={`voice-stage-container ${stageTheaterMode ? "theater-mode" : ""}`}
+                  style={!stageTheaterMode ? { height: stageHeight } : undefined}
+                >
+                  <div className="stage-toolbar">
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <Volume2 size={16} color="#23a55a" />
                       <strong style={{ color: "#fff", fontSize: 13 }}>
                         {t.voiceStageTitle}
                       </strong>
                     </div>
-                    <div style={{ display: "flex", gap: 8 }}>
+
+                    <div className="stage-toolbar-controls">
+                      {/* Tile Size Slider for Grid Mode */}
+                      {!activeSpotlightTile && (
+                        <div className="stage-size-pill">
+                          <span>{t.tileSizeLabel}:</span>
+                          <input
+                            type="range"
+                            min="180"
+                            max="640"
+                            step="20"
+                            value={tileMinWidth}
+                            onChange={(e) => setTileMinWidth(Number(e.target.value))}
+                            style={{ width: 78, cursor: "pointer" }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Grid vs Spotlight Toggle */}
+                      {activeSpotlightTile && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setSpotlightTileId(null)}
+                        >
+                          <LayoutGrid size={14} />
+                          <span>{t.gridModeBtn}</span>
+                        </button>
+                      )}
+
+                      {/* Floating Webcam PiP Toggle when Screen Share is Spotlighted */}
+                      {activeSpotlightTile && activeWebcamTileForPip && (
+                        <button
+                          type="button"
+                          className={showWebcamPipOverlay ? "btn-primary" : "btn-secondary"}
+                          onClick={() => setShowWebcamPipOverlay((v) => !v)}
+                        >
+                          <PictureInPicture2 size={14} />
+                          <span>{t.webcamPipToggle}</span>
+                        </button>
+                      )}
+
+                      {/* Theater Mode Toggle */}
                       <button
+                        type="button"
+                        className={stageTheaterMode ? "btn-primary" : "btn-secondary"}
+                        onClick={() => setStageTheaterMode((v) => !v)}
+                      >
+                        {stageTheaterMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                        <span>{stageTheaterMode ? t.exitTheaterBtn : t.theaterModeBtn}</span>
+                      </button>
+
+                      {/* Fullscreen Entire Stage */}
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => toggleElementFullscreen(stageContainerRef.current)}
+                        title={t.stageFullscreenBtn}
+                      >
+                        <Maximize2 size={14} />
+                        <span>{t.stageFullscreenBtn}</span>
+                      </button>
+
+                      <button
+                        type="button"
                         className="btn-secondary"
                         onClick={() => openProfileStudio("media")}
                       >
                         <Sliders size={14} />
                         <span>{t.mediaSettingsBtn}</span>
                       </button>
-                      <button className="btn-secondary" onClick={toggleCamera}>
-                        {videoEnabled ? t.turnOffCamera : t.turnOnCamera}
+
+                      <button
+                        type="button"
+                        className={videoEnabled ? "btn-primary" : "btn-secondary"}
+                        onClick={toggleCamera}
+                      >
+                        {videoEnabled ? <Video size={14} /> : <VideoOff size={14} />}
+                        <span>{videoEnabled ? t.turnOffCamera : t.turnOnCamera}</span>
                       </button>
-                      <button className="btn-primary" onClick={openGoLivePicker}>
+
+                      <button type="button" className="btn-primary" onClick={openGoLivePicker}>
                         <Monitor size={14} />
                         <span>
                           {screenSharing
@@ -2039,74 +2506,42 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="voice-video-grid">
-                    {/* Local Tile */}
-                    <div
-                      className={`video-tile ${
-                        speakingMap[nodeStatus.profile.peerId] ? "speaking" : ""
-                      }`}
-                    >
-                      {(videoEnabled || screenSharing) && localMediaStream ? (
-                        <VideoStreamView stream={localMediaStream} muted={true} />
-                      ) : (
-                        <UserAvatar
-                          profile={nodeStatus.profile}
-                          speaking={Boolean(speakingMap[nodeStatus.profile.peerId])}
-                          style={{ width: 68, height: 68, fontSize: 24 }}
-                        />
-                      )}
-                      <div className="video-tile-overlay">
-                        <span className="video-tile-name">
-                          {selfDisplayName} {t.youSuffix}
-                          {screenSharing && <span className="live-badge">GO LIVE</span>}
-                        </span>
+                  {/* Stage Body: Spotlight Mode (Main Large Tile + Dock Strip) vs Resizable Grid Mode */}
+                  {activeSpotlightTile ? (
+                    <div className="voice-spotlight-layout">
+                      <div className="voice-spotlight-main">
+                        {renderStageTile(activeSpotlightTile, true)}
                       </div>
-                    </div>
 
-                    {/* Remote Peer Tiles */}
-                    {connectedPeers.map((peer) => {
-                      const rStream = remoteStreams[peer.peerId];
-                      const hasVideo = rStream && rStream.getVideoTracks().length > 0;
-                      const vol = peerVolumes[peer.peerId] ?? 100;
-                      return (
-                        <div
-                          key={peer.peerId}
-                          className={`video-tile ${speakingMap[peer.peerId] ? "speaking" : ""}`}
-                        >
-                          {hasVideo ? (
-                            <VideoStreamView stream={rStream} muted={selfDeafen} />
-                          ) : (
-                            <UserAvatar
-                              profile={peer}
-                              speaking={Boolean(speakingMap[peer.peerId])}
-                              style={{ width: 68, height: 68, fontSize: 24 }}
-                            />
-                          )}
-                          <div className="video-tile-overlay" style={{ pointerEvents: "auto" }}>
-                            <span className="video-tile-name">
-                              {peer.displayName || peer.username}
-                              {peer.voiceState?.screenSharing && (
-                                <span className="live-badge">{t.liveBadge}</span>
-                              )}
-                            </span>
-                            <input
-                              type="range"
-                              min="0"
-                              max="200"
-                              value={vol}
-                              onChange={(e) => {
-                                const v = Number(e.target.value);
-                                setPeerVolumes((prev) => ({ ...prev, [peer.peerId]: v }));
-                                voiceEngineRef.current?.setLocalVolume(peer.peerId, v);
-                              }}
-                              title={t.localVolumeTooltip(peer.displayName || peer.username, vol)}
-                              style={{ width: 75, cursor: "pointer" }}
-                            />
-                          </div>
+                      {stageTiles.length > 1 && (
+                        <div className="voice-spotlight-dock">
+                          {stageTiles
+                            .filter((tile) => tile.id !== activeSpotlightTile.id)
+                            .map((tile) => renderStageTile(tile, false))}
                         </div>
-                      );
-                    })}
-                  </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      className="voice-video-grid"
+                      style={{
+                        gridTemplateColumns: `repeat(auto-fit, minmax(${tileMinWidth}px, 1fr))`,
+                      }}
+                    >
+                      {stageTiles.map((tile) => renderStageTile(tile, false))}
+                    </div>
+                  )}
+
+                  {/* Bottom Drag Handle to Resize Stage Height */}
+                  {!stageTheaterMode && (
+                    <div
+                      className="stage-resize-handle"
+                      onMouseDown={startStageHeightDrag}
+                      title={t.dragResizeHint}
+                    >
+                      <div className="stage-resize-handle-bar" />
+                    </div>
+                  )}
                 </div>
               )}
 
