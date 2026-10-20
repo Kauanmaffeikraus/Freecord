@@ -617,39 +617,76 @@ function VideoStreamView({
   fitMode = "contain",
   zoom = 1,
   videoId,
+  onNeedKeyframe = null,
 }) {
   const videoRef = useRef(null);
-  const [videoReady, setVideoReady] = useState(false);
+  const [videoHasDecodedFrames, setVideoHasDecodedFrames] = useState(false);
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
     if (!stream) {
       el.srcObject = null;
-      setVideoReady(false);
+      setVideoHasDecodedFrames(false);
       return;
     }
 
+    setVideoHasDecodedFrames(false);
     el.srcObject = stream;
+
     const tryPlay = () => {
       el.play().catch(() => {});
     };
     tryPlay();
 
-    const tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
-    if (tracks.some((t) => !t.muted && t.readyState === "live")) {
-      setVideoReady(true);
-    }
+    const checkFrames = () => {
+      if (el && el.videoWidth > 0 && el.videoHeight > 0) {
+        setVideoHasDecodedFrames(true);
+      }
+    };
 
+    checkFrames();
+
+    const handleEvent = () => {
+      tryPlay();
+      checkFrames();
+    };
+
+    el.addEventListener("loadedmetadata", handleEvent);
+    el.addEventListener("loadeddata", handleEvent);
+    el.addEventListener("canplay", handleEvent);
+    el.addEventListener("playing", handleEvent);
+    el.addEventListener("resize", handleEvent);
+    el.addEventListener("timeupdate", checkFrames);
+
+    const tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
     const handleUnmute = () => {
       tryPlay();
-      setVideoReady(true);
+      checkFrames();
     };
     tracks.forEach((t) => {
       t.addEventListener?.("unmute", handleUnmute);
     });
 
+    let attempts = 0;
+    const pollInterval = setInterval(() => {
+      attempts++;
+      if (el && el.videoWidth > 0 && el.videoHeight > 0) {
+        setVideoHasDecodedFrames(true);
+        clearInterval(pollInterval);
+      } else if (attempts % 3 === 0 && onNeedKeyframe) {
+        onNeedKeyframe();
+      }
+    }, 350);
+
     return () => {
+      clearInterval(pollInterval);
+      el.removeEventListener("loadedmetadata", handleEvent);
+      el.removeEventListener("loadeddata", handleEvent);
+      el.removeEventListener("canplay", handleEvent);
+      el.removeEventListener("playing", handleEvent);
+      el.removeEventListener("resize", handleEvent);
+      el.removeEventListener("timeupdate", checkFrames);
       tracks.forEach((t) => {
         t.removeEventListener?.("unmute", handleUnmute);
       });
@@ -657,9 +694,33 @@ function VideoStreamView({
   }, [stream]);
 
   const zoomStyle = zoom !== 1 ? { transform: `scale(${zoom})` } : undefined;
+  const showFallback = Boolean(frameUrl && (!stream || !videoHasDecodedFrames));
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative", overflow: "hidden" }}>
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        position: "relative",
+        overflow: "hidden",
+        backgroundColor: "#08080a",
+      }}
+    >
+      {showFallback && (
+        <img
+          src={frameUrl}
+          alt="P2P Live Stream"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: fitMode === "cover" ? "cover" : "contain",
+            zIndex: 1,
+            ...zoomStyle,
+          }}
+        />
+      )}
       {stream && (
         <video
           id={videoId}
@@ -667,27 +728,15 @@ function VideoStreamView({
           autoPlay
           playsInline
           muted={muted}
-          onLoadedData={() => setVideoReady(true)}
-          onPlaying={() => setVideoReady(true)}
           className={fitMode === "cover" ? "fit-cover" : ""}
           style={{
             width: "100%",
             height: "100%",
             objectFit: fitMode === "cover" ? "cover" : "contain",
-            ...zoomStyle,
-          }}
-        />
-      )}
-      {frameUrl && (!stream || !videoReady) && (
-        <img
-          src={frameUrl}
-          alt="P2P Live Stream"
-          style={{
-            position: stream ? "absolute" : "relative",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            objectFit: fitMode === "cover" ? "cover" : "contain",
+            opacity: videoHasDecodedFrames ? 1 : 0,
+            transition: "opacity 0.2s ease-in-out",
+            position: "relative",
+            zIndex: videoHasDecodedFrames ? 2 : 0,
             ...zoomStyle,
           }}
         />
@@ -1204,6 +1253,7 @@ export default function App() {
   const activeVoiceChannelIdRef = useRef(activeVoiceChannelId);
   const connectedPeersRef = useRef(connectedPeers);
   const leftRoomIdsRef = useRef(leftRoomIds);
+  const outgoingDmCallRef = useRef(outgoingDmCall);
   const notificationsEnabledRef = useRef(notificationsEnabled);
   const effectiveChannelIdRef = useRef("");
   const roomsRef = useRef(rooms);
@@ -1232,6 +1282,10 @@ export default function App() {
   useEffect(() => {
     leftRoomIdsRef.current = leftRoomIds;
   }, [leftRoomIds]);
+
+  useEffect(() => {
+    outgoingDmCallRef.current = outgoingDmCall;
+  }, [outgoingDmCall]);
 
   useEffect(() => {
     notificationsEnabledRef.current = notificationsEnabled;
@@ -1333,8 +1387,9 @@ export default function App() {
       onFrameSend: (framePacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !window.DiscordNative?.p2p) return;
+        const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
-          if (p.voiceChannelId === activeCh) {
+          if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
             window.DiscordNative.p2p.send(
               {
                 type: "MEDIA_FRAME",
@@ -1349,8 +1404,9 @@ export default function App() {
       onAudioChunkSend: (chunkPacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !window.DiscordNative?.p2p) return;
+        const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
-          if (p.voiceChannelId === activeCh) {
+          if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
             window.DiscordNative.p2p.send(
               {
                 type: "AUDIO_CHUNK",
@@ -3098,6 +3154,11 @@ export default function App() {
             muted={true}
             fitMode={fitMode}
             zoom={zoom}
+            onNeedKeyframe={
+              !tile.isSelf
+                ? () => voiceEngineRef.current?.requestKeyFrame(tile.peerId, tile.kind)
+                : undefined
+            }
           />
         ) : (
           <UserAvatar
@@ -3192,6 +3253,15 @@ export default function App() {
                 frameUrl={activeWebcamTileForPip.frameUrl}
                 muted={true}
                 fitMode="cover"
+                onNeedKeyframe={
+                  !activeWebcamTileForPip.isSelf
+                    ? () =>
+                        voiceEngineRef.current?.requestKeyFrame(
+                          activeWebcamTileForPip.peerId,
+                          activeWebcamTileForPip.kind
+                        )
+                    : undefined
+                }
               />
               <div className="floating-webcam-pip-label">
                 📷 {activeWebcamTileForPip.label}
