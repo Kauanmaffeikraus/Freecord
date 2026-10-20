@@ -1644,5 +1644,285 @@ body, html, #root {
   margin-bottom: 6px;
 }
 
+/* Unread Badges */
+.unread-badge {
+  background-color: var(--status-danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 14px;
+  min-width: 18px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.4);
+}
+
+.unread-badge.rail-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: 5;
+  border: 2px solid var(--bg-tertiary);
+}
+
+.channel-item.has-unread span {
+  font-weight: 700;
+  color: #fff;
+}
+
+/* Toast Notifications Stack */
+.toast-container {
+  position: fixed;
+  top: 42px;
+  right: 18px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast-card {
+  background: rgba(30, 31, 34, 0.94);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(88, 101, 242, 0.4);
+  border-radius: 8px;
+  padding: 12px 14px;
+  width: 320px;
+  max-width: 90vw;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 0.15s ease, background 0.15s ease;
+  animation: toastSlideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-card:hover {
+  background: rgba(43, 45, 49, 0.98);
+  transform: translateY(-2px);
+}
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(40px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.toast-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.toast-body {
+  font-size: 12px;
+  color: var(--text-normal);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+/* Incoming Call Modal & Pulsing Animation */
+.incoming-call-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease;
+}
+
+.incoming-call-card {
+  background: linear-gradient(160deg, #1e1f22 0%, #2b2d31 100%);
+  border: 2px solid rgba(88, 101, 242, 0.5);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7), 0 0 40px rgba(88, 101, 242, 0.25);
+  border-radius: 16px;
+  padding: 32px 28px;
+  width: 380px;
+  max-width: 92vw;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.incoming-call-avatar-pulse {
+  position: relative;
+  margin-bottom: 18px;
+}
+
+.incoming-call-avatar-pulse::before,
+.incoming-call-avatar-pulse::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 2px solid var(--status-green);
+  animation: callPulse 1.8s infinite ease-out;
+  opacity: 0;
+}
+
+.incoming-call-avatar-pulse::after {
+  animation-delay: 0.9s;
+}
+
+@keyframes callPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+
+.incoming-call-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 6px;
+}
+
+.incoming-call-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+}
+
+.incoming-call-actions {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  justify-content: center;
+}
+
+/* Outgoing Call Ringing Banner */
+.outgoing-call-banner {
+  background: linear-gradient(90deg, rgba(88, 101, 242, 0.25), rgba(35, 165, 90, 0.2));
+  border-bottom: 1px solid rgba(88, 101, 242, 0.35);
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Server Invite Embed Card inside Chat */
+.server-invite-card {
+  margin-top: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 4px solid var(--brand-blurple);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 440px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+}
+
+.server-invite-banner {
+  height: 64px;
+  background-size: cover;
+  background-position: center;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  padding: 8px 12px;
+}
+
+.server-invite-banner::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.7) 100%);
+  pointer-events: none;
+}
+
+.server-invite-body {
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.server-invite-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.server-invite-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.server-invite-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.server-invite-meta {
+  min-width: 0;
+}
+
+.server-invite-name {
+  font-weight: 800;
+  font-size: 14px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.server-invite-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+
 
 

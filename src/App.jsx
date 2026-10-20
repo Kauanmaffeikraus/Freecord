@@ -34,6 +34,12 @@ import {
   ZoomOut,
   PictureInPicture2,
   LayoutGrid,
+  PhoneCall,
+  PhoneIncoming,
+  UserPlus,
+  LogOut,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -263,6 +269,39 @@ const I18N = {
     deleteServerBtn: "Delete Server",
     saveServerBtn: "Save & Sync P2P Server",
     serverLivePreviewLabel: "Live Server Sidebar & Banner Preview",
+    inviteServerBtn: "Invite",
+    inviteServerTitle: "📨 Invite Peers to P2P Server",
+    inviteServerSub: "Send an instant P2P server invite to connected peers or share an invite code.",
+    inviteConnectedPeersLabel: "Send Instant Invite to Connected Peers",
+    sendInviteBtn: "Send Invite",
+    inviteSentBtn: "✓ Invite Sent",
+    serverInviteCodeLabel: "Shareable Server Invite Code (IP:Port + Server Snapshot)",
+    copyInviteCodeBtn: "Copy Invite Code",
+    joinByInviteCodeLabel: "Join a Server via Invite Code",
+    joinByInvitePlaceholder: "Paste an fc-srv:// invite code here...",
+    joinServerBtn: "Join Server",
+    joinedServerBadge: "✓ Joined — Open Server",
+    serverInviteCardHeader: "P2P SERVER INVITE",
+    invitedYouToJoin: (user) => `${user} invited you to join a P2P Server`,
+    leaveServerBtn: "Leave Server",
+    leaveServerTooltip: "Leave this P2P Server",
+    startVoiceCallBtn: "Voice Call",
+    startVideoCallBtn: "Video Call",
+    endDmCallBtn: "End Call",
+    incomingCallTitle: "Incoming Private P2P Call",
+    incomingVoiceCallSub: (user) => `${user} is calling you privately (Voice)...`,
+    incomingVideoCallSub: (user) => `${user} is calling you privately (Video)...`,
+    acceptVoiceBtn: "Accept Voice",
+    acceptVideoBtn: "Accept Video",
+    declineCallBtn: "Decline",
+    outgoingCallRinging: (user) => `Calling @${user}... Waiting for answer`,
+    cancelCallBtn: "Cancel Call",
+    callRejectedToast: (user) => `${user} declined or ended the call.`,
+    notificationsOnTooltip: "Notifications & Sounds Enabled (Click to Mute)",
+    notificationsOffTooltip: "Notifications & Sounds Muted (Click to Enable)",
+    newDmToastTitle: (user) => `New DM from ${user}`,
+    newChannelMsgToastTitle: (user, ch) => `${user} in #${ch}`,
+    newServerInviteToastTitle: (user, srv) => `${user} invited you to ${srv}`,
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -445,6 +484,39 @@ const I18N = {
     deleteServerBtn: "Excluir Servidor",
     saveServerBtn: "Salvar e Sincronizar Servidor P2P",
     serverLivePreviewLabel: "Pré-visualização do Servidor & Banner",
+    inviteServerBtn: "Convidar",
+    inviteServerTitle: "📨 Convidar para o Servidor P2P",
+    inviteServerSub: "Envie um convite instantâneo no PV dos peers conectados ou compartilhe o código do servidor.",
+    inviteConnectedPeersLabel: "Convidar Peers Conectados (Envio Direto no PV)",
+    sendInviteBtn: "Convidar",
+    inviteSentBtn: "✓ Convidado",
+    serverInviteCodeLabel: "Código de Convite do Servidor (IP:Porta + Dados do Servidor)",
+    copyInviteCodeBtn: "Copiar Código do Servidor",
+    joinByInviteCodeLabel: "Entrar em um Servidor com Código de Convite",
+    joinByInvitePlaceholder: "Cole aqui um código fc-srv:// recebido...",
+    joinServerBtn: "Entrar no Servidor",
+    joinedServerBadge: "✓ No Servidor — Abrir",
+    serverInviteCardHeader: "CONVITE DE SERVIDOR P2P",
+    invitedYouToJoin: (user) => `${user} convidou você para um Servidor P2P`,
+    leaveServerBtn: "Sair do Servidor",
+    leaveServerTooltip: "Sair deste Servidor P2P",
+    startVoiceCallBtn: "Ligar no PV",
+    startVideoCallBtn: "Vídeo no PV",
+    endDmCallBtn: "Desligar",
+    incomingCallTitle: "Ligação Privada P2P Recebida",
+    incomingVoiceCallSub: (user) => `${user} está te ligando no PV (Voz)...`,
+    incomingVideoCallSub: (user) => `${user} está te ligando no PV (Vídeo)...`,
+    acceptVoiceBtn: "Atender Voz",
+    acceptVideoBtn: "Atender Vídeo",
+    declineCallBtn: "Recusar",
+    outgoingCallRinging: (user) => `Ligando para @${user}... Aguardando atender`,
+    cancelCallBtn: "Cancelar Ligação",
+    callRejectedToast: (user) => `${user} recusou ou encerrou a ligação.`,
+    notificationsOnTooltip: "Notificações e Sons Ativados (Clique para Silenciar)",
+    notificationsOffTooltip: "Notificações e Sons Silenciados (Clique para Ativar)",
+    newDmToastTitle: (user) => `Nova mensagem no PV de ${user}`,
+    newChannelMsgToastTitle: (user, ch) => `${user} em #${ch}`,
+    newServerInviteToastTitle: (user, srv) => `${user} convidou você para ${srv}`,
   },
 };
 
@@ -658,7 +730,15 @@ function UserAvatar({
   );
 }
 
-function ProfileCard({ profile, isSelf, t, onEditProfile, onQuickDm }) {
+function ProfileCard({
+  profile,
+  isSelf,
+  t,
+  onEditProfile,
+  onQuickDm,
+  onStartVoiceCall,
+  onStartVideoCall,
+}) {
   const [quickText, setQuickText] = useState("");
   const displayName = profile?.displayName || profile?.username || "Peer";
   const username = profile?.username || "peer";
@@ -772,9 +852,36 @@ function ProfileCard({ profile, isSelf, t, onEditProfile, onQuickDm }) {
           </button>
         )}
 
+        {!isSelf && (onStartVoiceCall || onStartVideoCall) && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12 }}>
+            {onStartVoiceCall && (
+              <button
+                type="button"
+                className="btn-success"
+                style={{ justifyContent: "center" }}
+                onClick={() => onStartVoiceCall(profile)}
+              >
+                <PhoneCall size={14} />
+                <span>{t.startVoiceCallBtn}</span>
+              </button>
+            )}
+            {onStartVideoCall && (
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ justifyContent: "center" }}
+                onClick={() => onStartVideoCall(profile)}
+              >
+                <Video size={14} />
+                <span>{t.startVideoCallBtn}</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {!isSelf && onQuickDm && (
           <form
-            style={{ marginTop: 12 }}
+            style={{ marginTop: 10 }}
             onSubmit={(e) => {
               e.preventDefault();
               if (!quickText.trim()) return;
@@ -793,6 +900,59 @@ function ProfileCard({ profile, isSelf, t, onEditProfile, onQuickDm }) {
       </div>
     </div>
   );
+}
+
+let sharedUiAudioCtx = null;
+function playSynthesizedUiSound(kind = "message") {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!sharedUiAudioCtx || sharedUiAudioCtx.state === "closed") {
+      sharedUiAudioCtx = new AudioCtx();
+    }
+    if (sharedUiAudioCtx.state === "suspended") {
+      sharedUiAudioCtx.resume().catch(() => {});
+    }
+    const ctx = sharedUiAudioCtx;
+    const now = ctx.currentTime;
+
+    const playNote = (freq, startOffset, duration, vol = 0.14, type = "sine") => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now + startOffset);
+      gain.gain.setValueAtTime(0.0001, now + startOffset);
+      gain.gain.exponentialRampToValueAtTime(vol, now + startOffset + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + startOffset + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + startOffset);
+      osc.stop(now + startOffset + duration + 0.02);
+    };
+
+    if (kind === "message") {
+      playNote(587.33, 0, 0.11, 0.13, "triangle");
+      playNote(880.0, 0.085, 0.18, 0.15, "sine");
+    } else if (kind === "invite") {
+      playNote(523.25, 0, 0.11, 0.13, "triangle");
+      playNote(659.25, 0.09, 0.12, 0.14, "triangle");
+      playNote(783.99, 0.18, 0.22, 0.16, "sine");
+    } else if (kind === "call_ring") {
+      playNote(659.25, 0, 0.22, 0.16, "sine");
+      playNote(880.0, 0.24, 0.28, 0.16, "sine");
+      playNote(659.25, 0.6, 0.22, 0.14, "sine");
+      playNote(880.0, 0.84, 0.32, 0.14, "sine");
+    } else if (kind === "call_out") {
+      playNote(440.0, 0, 0.35, 0.09, "sine");
+      playNote(554.37, 0, 0.35, 0.07, "sine");
+    } else if (kind === "call_join") {
+      playNote(440.0, 0, 0.1, 0.12, "sine");
+      playNote(659.25, 0.09, 0.16, 0.14, "sine");
+    } else if (kind === "call_leave") {
+      playNote(523.25, 0, 0.1, 0.12, "sine");
+      playNote(349.23, 0.09, 0.18, 0.12, "sine");
+    }
+  } catch {}
 }
 
 export default function App() {
@@ -872,10 +1032,23 @@ export default function App() {
   const [lanPeers, setLanPeers] = useState([]);
 
   // Rooms & Navigation State (with localStorage persistence)
+  const [leftRoomIds, setLeftRoomIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("freecord_left_rooms_v1") || "[]");
+      if (Array.isArray(saved)) return saved;
+    } catch {}
+    return [];
+  });
   const [rooms, setRooms] = useState(() => {
     try {
+      const savedLeft = JSON.parse(localStorage.getItem("freecord_left_rooms_v1") || "[]");
+      const leftSet = new Set(Array.isArray(savedLeft) ? savedLeft : []);
       const saved = JSON.parse(localStorage.getItem("freecord_custom_rooms_v1") || "null");
-      if (Array.isArray(saved) && saved.length > 0) return saved;
+      if (Array.isArray(saved)) {
+        const filtered = saved.filter((r) => !leftSet.has(r.id));
+        if (filtered.length > 0 || leftSet.size > 0) return filtered;
+      }
+      return INITIAL_ROOMS.filter((r) => !leftSet.has(r.id));
     } catch {}
     return INITIAL_ROOMS;
   });
@@ -888,6 +1061,32 @@ export default function App() {
       localStorage.setItem("freecord_custom_rooms_v1", JSON.stringify(rooms));
     } catch {}
   }, [rooms]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("freecord_left_rooms_v1", JSON.stringify(leftRoomIds));
+    } catch {}
+  }, [leftRoomIds]);
+
+  // Server Invite, Private DM Call & Notification State
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [inviteTargetRoom, setInviteTargetRoom] = useState(null);
+  const [sentInvitePeers, setSentInvitePeers] = useState({});
+  const [joinServerCodeInput, setJoinServerCodeInput] = useState("");
+  const [joinServerStatusMsg, setJoinServerStatusMsg] = useState(null);
+
+  const [incomingDmCall, setIncomingDmCall] = useState(null);
+  const [outgoingDmCall, setOutgoingDmCall] = useState(null);
+
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    try {
+      const saved = localStorage.getItem("freecord_notifications_v1");
+      if (saved === "false") return false;
+    } catch {}
+    return true;
+  });
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [toasts, setToasts] = useState([]);
 
   // Chat State
   const [messages, setMessages] = useState(INITIAL_REA_MESSAGES);
@@ -1004,6 +1203,10 @@ export default function App() {
   const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
   const activeVoiceChannelIdRef = useRef(activeVoiceChannelId);
   const connectedPeersRef = useRef(connectedPeers);
+  const leftRoomIdsRef = useRef(leftRoomIds);
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const effectiveChannelIdRef = useRef("");
+  const roomsRef = useRef(rooms);
   const handleIncomingP2PEventRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1025,6 +1228,52 @@ export default function App() {
   useEffect(() => {
     connectedPeersRef.current = connectedPeers;
   }, [connectedPeers]);
+
+  useEffect(() => {
+    leftRoomIdsRef.current = leftRoomIds;
+  }, [leftRoomIds]);
+
+  useEffect(() => {
+    notificationsEnabledRef.current = notificationsEnabled;
+    try {
+      localStorage.setItem("freecord_notifications_v1", String(notificationsEnabled));
+    } catch {}
+  }, [notificationsEnabled]);
+
+  useEffect(() => {
+    roomsRef.current = rooms;
+  }, [rooms]);
+
+  const pushToast = (toastObj) => {
+    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    setToasts((prev) => [...prev.slice(-3), { ...toastObj, id }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((item) => item.id !== id));
+    }, 6000);
+  };
+
+  // Ringtone / Ringback Tone Loop for Incoming & Outgoing Private DM Calls
+  useEffect(() => {
+    if (!incomingDmCall && !outgoingDmCall) return;
+    if (notificationsEnabledRef.current) {
+      playSynthesizedUiSound(incomingDmCall ? "call_ring" : "call_out");
+    }
+    const interval = setInterval(() => {
+      if (notificationsEnabledRef.current) {
+        playSynthesizedUiSound(incomingDmCall ? "call_ring" : "call_out");
+      }
+    }, 2400);
+
+    const timeout = setTimeout(() => {
+      if (incomingDmCall) setIncomingDmCall(null);
+      if (outgoingDmCall) setOutgoingDmCall(null);
+    }, 35000);
+
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [incomingDmCall, outgoingDmCall]);
 
   const refreshMediaDevices = async () => {
     const enumerated = await WebRTCVoiceEngine.enumerateDevices();
@@ -1293,10 +1542,90 @@ export default function App() {
     switch (event.type) {
       case "CHAT_MESSAGE": {
         if (!event.message || !event.message.id) return;
+        const msg = event.message;
+        let isDuplicate = false;
         setMessages((prev) => {
-          if (prev.some((m) => m.id === event.message.id)) return prev;
-          return [...prev, event.message];
+          if (prev.some((m) => m.id === msg.id)) {
+            isDuplicate = true;
+            return prev;
+          }
+          return [...prev, msg];
         });
+        if (isDuplicate) break;
+
+        const fromId = msg.author?.peerId || event.fromPeerId;
+        if (fromId && fromId !== selfPeerIdRef.current) {
+          const isDm = String(msg.channelId || "").startsWith("dm_");
+          let targetRoom = null;
+          let targetCh = null;
+          if (!isDm) {
+            for (const r of roomsRef.current || []) {
+              const found = (r.textChannels || []).find((c) => c.id === msg.channelId);
+              if (found) {
+                targetRoom = r;
+                targetCh = found;
+                break;
+              }
+            }
+            // Do not notify for servers the user has left or hasn't joined
+            if (!targetRoom) break;
+          }
+
+          const isViewingChannel =
+            effectiveChannelIdRef.current === msg.channelId && document.hasFocus();
+
+          if (effectiveChannelIdRef.current !== msg.channelId) {
+            setUnreadCounts((prev) => ({
+              ...prev,
+              [msg.channelId]: (prev[msg.channelId] || 0) + 1,
+            }));
+          }
+
+          if (!isViewingChannel && notificationsEnabledRef.current) {
+            playSynthesizedUiSound(msg.serverInvite ? "invite" : "message");
+            window.DiscordNative?.window?.flashFrame?.(true);
+
+            const senderName = msg.author?.displayName || msg.author?.username || "Peer";
+            const toastTitle = msg.serverInvite
+              ? t.newServerInviteToastTitle(senderName, msg.serverInvite.room?.name || "Server")
+              : isDm
+              ? t.newDmToastTitle(senderName)
+              : t.newChannelMsgToastTitle(senderName, targetCh?.name || "chat");
+
+            const navigateToMsg = () => {
+              window.DiscordNative?.window?.focus?.();
+              if (isDm) {
+                setSelectedRoomId("dm_hub");
+                setSelectedDmPeerId(fromId);
+              } else if (targetRoom) {
+                setSelectedRoomId(targetRoom.id);
+                setSelectedChannelId(msg.channelId);
+              }
+            };
+
+            pushToast({
+              title: toastTitle,
+              body: (msg.text || "").slice(0, 95),
+              author: msg.author,
+              isInvite: Boolean(msg.serverInvite),
+              onClick: navigateToMsg,
+            });
+
+            if (!document.hasFocus() && typeof Notification !== "undefined") {
+              try {
+                if (Notification.permission === "granted") {
+                  const n = new Notification(toastTitle, {
+                    body: (msg.text || "").slice(0, 120),
+                    silent: true,
+                  });
+                  n.onclick = () => navigateToMsg();
+                } else if (Notification.permission !== "denied") {
+                  Notification.requestPermission().catch(() => {});
+                }
+              } catch {}
+            }
+          }
+        }
         break;
       }
 
@@ -1336,12 +1665,13 @@ export default function App() {
 
       case "ROOM_SYNC": {
         if (!Array.isArray(event.rooms)) return;
+        const leftSet = new Set(leftRoomIdsRef.current || []);
         setRooms((prev) => {
           const map = new Map(prev.map((r) => [r.id, r]));
           for (const incomingRoom of event.rooms) {
-            if (!map.has(incomingRoom.id)) {
-              map.set(incomingRoom.id, incomingRoom);
-            } else {
+            if (!incomingRoom?.id || leftSet.has(incomingRoom.id)) continue;
+            // Only auto-sync rooms the user is already a member of; new rooms require an invite!
+            if (map.has(incomingRoom.id)) {
               const existing = map.get(incomingRoom.id);
               const incomingIsNewer =
                 (incomingRoom.updatedAt || 0) >= (existing.updatedAt || 0);
@@ -1374,6 +1704,81 @@ export default function App() {
           }
           return Array.from(map.values());
         });
+        break;
+      }
+
+      case "DM_CALL_RING": {
+        if (!event.fromPeerId || !event.channelId) break;
+        if (activeVoiceChannelIdRef.current === event.channelId) {
+          sendP2PPacket(
+            { type: "DM_CALL_ACCEPT", channelId: event.channelId },
+            event.fromPeerId
+          );
+          break;
+        }
+        const caller =
+          event.caller ||
+          connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId) || {
+            peerId: event.fromPeerId,
+            displayName: "Peer",
+            username: "peer",
+          };
+        setIncomingDmCall({
+          fromPeerId: event.fromPeerId,
+          caller,
+          channelId: event.channelId,
+          withVideo: Boolean(event.withVideo),
+        });
+        window.DiscordNative?.window?.flashFrame?.(true);
+        if (!document.hasFocus() && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            const callerName = caller.displayName || caller.username || "Peer";
+            const n = new Notification(t.incomingCallTitle, {
+              body: event.withVideo
+                ? t.incomingVideoCallSub(callerName)
+                : t.incomingVoiceCallSub(callerName),
+              silent: true,
+            });
+            n.onclick = () => window.DiscordNative?.window?.focus?.();
+          } catch {}
+        }
+        break;
+      }
+
+      case "DM_CALL_ACCEPT": {
+        if (!event.channelId) break;
+        setOutgoingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        if (notificationsEnabledRef.current) {
+          playSynthesizedUiSound("call_join");
+        }
+        break;
+      }
+
+      case "DM_CALL_REJECT":
+      case "DM_CALL_END": {
+        if (!event.channelId) break;
+        setIncomingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        setOutgoingDmCall((prev) => {
+          if (prev && prev.channelId === event.channelId) {
+            const peerName = prev.peer?.displayName || prev.peer?.username || "Peer";
+            pushToast({
+              title: t.endDmCallBtn,
+              body: t.callRejectedToast(peerName),
+              author: prev.peer,
+            });
+            return null;
+          }
+          return prev;
+        });
+        if (notificationsEnabledRef.current) {
+          playSynthesizedUiSound("call_leave");
+        }
+        if (
+          (event.type === "DM_CALL_END" || event.type === "DM_CALL_REJECT") &&
+          activeVoiceChannelIdRef.current === event.channelId
+        ) {
+          handleLeaveVoiceChannel();
+        }
         break;
       }
 
@@ -1504,6 +1909,23 @@ export default function App() {
     }
     return selectedChannelId;
   }, [selectedRoomId, selectedDmPeerId, selectedChannelId, nodeStatus.profile.peerId]);
+
+  useEffect(() => {
+    effectiveChannelIdRef.current = effectiveChannelId;
+    if (effectiveChannelId) {
+      setUnreadCounts((prev) => {
+        if (!prev[effectiveChannelId]) return prev;
+        const next = { ...prev };
+        delete next[effectiveChannelId];
+        return next;
+      });
+    }
+  }, [effectiveChannelId]);
+
+  const getDmCallChannelId = (peerId) => {
+    const sorted = [nodeStatus.profile.peerId, peerId].sort().join("__");
+    return `dm_call_${sorted}`;
+  };
 
   const currentChannelObj = useMemo(() => {
     if (selectedRoomId === "dm_hub") {
@@ -1673,6 +2095,11 @@ export default function App() {
   };
 
   const handleLeaveVoiceChannel = () => {
+    const prevCh = activeVoiceChannelIdRef.current;
+    if (prevCh && String(prevCh).startsWith("dm_call_")) {
+      sendP2PPacket({ type: "DM_CALL_END", channelId: prevCh });
+    }
+    setOutgoingDmCall(null);
     activeVoiceChannelIdRef.current = null;
     const engine = voiceEngineRef.current;
     engine?.setInVoiceChannel(false);
@@ -1688,6 +2115,92 @@ export default function App() {
     setMicInputLevel(0);
     window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
     window.DiscordNative?.p2p?.setVoiceState(null, { speaking: false });
+  };
+
+  const handleStartDmCall = async (peer, withVideo = false) => {
+    if (!peer?.peerId) return;
+    setInspectedProfile(null);
+    setSelectedRoomId("dm_hub");
+    setSelectedDmPeerId(peer.peerId);
+
+    const dmCallId = getDmCallChannelId(peer.peerId);
+    const peerLabel = peer.displayName || peer.username || "Peer";
+    await handleJoinVoiceChannel({
+      id: dmCallId,
+      name: `PV @${peerLabel}`,
+    });
+
+    if (withVideo && !videoEnabled) {
+      setTimeout(() => {
+        toggleCamera().catch(() => {});
+      }, 200);
+    }
+
+    const peerAlreadyInCall = connectedPeers.some(
+      (p) => p.peerId === peer.peerId && p.voiceChannelId === dmCallId
+    );
+    if (!peerAlreadyInCall) {
+      setOutgoingDmCall({
+        peer,
+        channelId: dmCallId,
+        withVideo,
+        startedAt: Date.now(),
+      });
+      sendP2PPacket(
+        {
+          type: "DM_CALL_RING",
+          channelId: dmCallId,
+          withVideo,
+          caller: buildAuthorSnapshot(),
+        },
+        peer.peerId
+      );
+    }
+  };
+
+  const handleAcceptDmCall = async (withVideo = false) => {
+    if (!incomingDmCall) return;
+    const { fromPeerId, caller, channelId } = incomingDmCall;
+    setIncomingDmCall(null);
+    setSelectedRoomId("dm_hub");
+    setSelectedDmPeerId(fromPeerId);
+
+    const callerLabel = caller?.displayName || caller?.username || "Peer";
+    await handleJoinVoiceChannel({
+      id: channelId,
+      name: `PV @${callerLabel}`,
+    });
+
+    if (withVideo && !videoEnabled) {
+      setTimeout(() => {
+        toggleCamera().catch(() => {});
+      }, 200);
+    }
+
+    sendP2PPacket({ type: "DM_CALL_ACCEPT", channelId }, fromPeerId);
+    if (notificationsEnabledRef.current) {
+      playSynthesizedUiSound("call_join");
+    }
+  };
+
+  const handleDeclineDmCall = () => {
+    if (!incomingDmCall) return;
+    sendP2PPacket(
+      { type: "DM_CALL_REJECT", channelId: incomingDmCall.channelId },
+      incomingDmCall.fromPeerId
+    );
+    setIncomingDmCall(null);
+  };
+
+  const handleCancelOutgoingDmCall = () => {
+    if (outgoingDmCall) {
+      sendP2PPacket(
+        { type: "DM_CALL_END", channelId: outgoingDmCall.channelId },
+        outgoingDmCall.peer?.peerId
+      );
+      setOutgoingDmCall(null);
+    }
+    handleLeaveVoiceChannel();
   };
 
   const toggleSelfMute = () => {
@@ -2093,15 +2606,163 @@ export default function App() {
   };
 
   const handleDeleteServer = (roomId) => {
-    if (rooms.length <= 1) return;
+    handleLeaveServer(roomId);
+  };
+
+  const handleLeaveServer = (roomId) => {
+    if (!roomId) return;
+    const target = rooms.find((r) => r.id === roomId);
+    if (
+      target &&
+      activeVoiceChannelId &&
+      (target.voiceChannels || []).some((vc) => vc.id === activeVoiceChannelId)
+    ) {
+      handleLeaveVoiceChannel();
+    }
+
+    setLeftRoomIds((prev) => (prev.includes(roomId) ? prev : [...prev, roomId]));
     const remaining = rooms.filter((r) => r.id !== roomId);
     setRooms(remaining);
-    setSelectedRoomId(remaining[0].id);
-    if (remaining[0]?.textChannels?.[0]) {
-      setSelectedChannelId(remaining[0].textChannels[0].id);
+
+    if (selectedRoomId === roomId) {
+      if (remaining[0]) {
+        setSelectedRoomId(remaining[0].id);
+        if (remaining[0].textChannels?.[0]) {
+          setSelectedChannelId(remaining[0].textChannels[0].id);
+        }
+      } else {
+        setSelectedRoomId("dm_hub");
+        setSelectedDmPeerId(null);
+      }
     }
     setShowServerStudio(false);
-    sendP2PPacket({ type: "ROOM_SYNC", rooms: remaining });
+  };
+
+  const openInviteServerModal = (targetRoom = currentRoom) => {
+    if (!targetRoom) return;
+    setInviteTargetRoom(targetRoom);
+    setSentInvitePeers({});
+    setJoinServerStatusMsg(null);
+    setShowInviteModal(true);
+  };
+
+  const buildServerInviteCode = (roomObj) => {
+    if (!roomObj) return "";
+    const endpoint =
+      nodeStatus.connectionStrings?.[0] || nodeStatus.localhostEndpoint || "";
+    const compactRoom = {
+      id: roomObj.id,
+      name: roomObj.name,
+      shortName: roomObj.shortName,
+      serverTag: roomObj.serverTag,
+      description: roomObj.description,
+      color: roomObj.color,
+      iconUrl:
+        roomObj.iconUrl && roomObj.iconUrl.length < 40000 ? roomObj.iconUrl : null,
+      bannerColor: roomObj.bannerColor,
+      bannerSecondaryColor: roomObj.bannerSecondaryColor,
+      sidebarBgColor: roomObj.sidebarBgColor,
+      textChannels: roomObj.textChannels || [],
+      voiceChannels: roomObj.voiceChannels || [],
+      updatedAt: roomObj.updatedAt || Date.now(),
+    };
+    try {
+      const payload = JSON.stringify({ endpoint, room: compactRoom });
+      return `fc-srv://${btoa(unescape(encodeURIComponent(payload)))}`;
+    } catch {
+      return "";
+    }
+  };
+
+  const handleSendServerInviteToPeer = (peer, roomObj = inviteTargetRoom || currentRoom) => {
+    if (!peer?.peerId || !roomObj) return;
+    const sorted = [nodeStatus.profile.peerId, peer.peerId].sort().join("__");
+    const dmChId = `dm_${sorted}`;
+    const hostEndpoint =
+      nodeStatus.connectionStrings?.[0] || nodeStatus.localhostEndpoint || "";
+
+    const inviteMsg = {
+      id: `msg_inv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      channelId: dmChId,
+      author: buildAuthorSnapshot(),
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      text: `🏰 **${roomObj.name}** — ${
+        lang === "pt"
+          ? `Convite para entrar no servidor P2P!`
+          : `You've been invited to join this P2P server!`
+      }`,
+      serverInvite: {
+        room: roomObj,
+        hostEndpoint,
+        inviter: buildAuthorSnapshot(),
+      },
+      reactions: {},
+    };
+
+    setMessages((prev) => [...prev, inviteMsg]);
+    sendP2PPacket({ type: "CHAT_MESSAGE", message: inviteMsg }, peer.peerId);
+    setSentInvitePeers((prev) => ({ ...prev, [peer.peerId]: true }));
+  };
+
+  const handleJoinServerRoom = async (roomSnapshot, hostEndpoint = null) => {
+    if (!roomSnapshot?.id) return;
+
+    if (hostEndpoint && window.DiscordNative?.p2p) {
+      const parts = String(hostEndpoint).split(":");
+      const host = parts[0]?.trim();
+      const port = Number(parts[1]);
+      if (host && port && port !== Number(nodeStatus.tcpPort)) {
+        try {
+          await window.DiscordNative.p2p.connect(host, port);
+        } catch {}
+      }
+    }
+
+    setLeftRoomIds((prev) => prev.filter((id) => id !== roomSnapshot.id));
+    setRooms((prev) => {
+      const exists = prev.some((r) => r.id === roomSnapshot.id);
+      const next = exists
+        ? prev.map((r) => (r.id === roomSnapshot.id ? { ...r, ...roomSnapshot } : r))
+        : [...prev, roomSnapshot];
+      sendP2PPacket({ type: "ROOM_SYNC", rooms: next });
+      return next;
+    });
+
+    setSelectedRoomId(roomSnapshot.id);
+    if (roomSnapshot.textChannels?.[0]?.id) {
+      setSelectedChannelId(roomSnapshot.textChannels[0].id);
+    }
+    setShowInviteModal(false);
+    if (notificationsEnabledRef.current) {
+      playSynthesizedUiSound("invite");
+    }
+  };
+
+  const handleRedeemServerInviteCode = async (e) => {
+    e?.preventDefault();
+    const raw = joinServerCodeInput.trim();
+    if (!raw) return;
+    try {
+      const clean = raw.replace(/^fc-srv:\/\//i, "").trim();
+      const decoded = JSON.parse(decodeURIComponent(escape(atob(clean))));
+      if (!decoded?.room?.id) {
+        throw new Error(lang === "pt" ? "Código de convite inválido." : "Invalid server invite code.");
+      }
+      await handleJoinServerRoom(decoded.room, decoded.endpoint);
+      setJoinServerCodeInput("");
+      setJoinServerStatusMsg({
+        type: "success",
+        text:
+          lang === "pt"
+            ? `Você entrou no servidor ${decoded.room.name}!`
+            : `Joined server ${decoded.room.name}!`,
+      });
+    } catch (err) {
+      setJoinServerStatusMsg({
+        type: "error",
+        text: err.message || (lang === "pt" ? "Código inválido" : "Invalid invite code"),
+      });
+    }
   };
 
   const handleCreateRoom = (e) => {
@@ -2259,7 +2920,17 @@ export default function App() {
     });
 
     // 3. Remote Connected Peers (separate Screen Share tile + Webcam/Avatar tile per peer)
-    for (const peer of connectedPeers) {
+    const activePeersOnStage = connectedPeers.filter(
+      (p) =>
+        p.voiceChannelId === activeVoiceChannelId ||
+        (outgoingDmCall && outgoingDmCall.peer?.peerId === p.peerId)
+    );
+    for (const peer of activePeersOnStage) {
+      const isCallPending =
+        outgoingDmCall &&
+        outgoingDmCall.peer?.peerId === peer.peerId &&
+        peer.voiceChannelId !== activeVoiceChannelId;
+
       const peerMedia = remoteStreams[peer.peerId];
       const isMediaBundle =
         peerMedia &&
@@ -2332,7 +3003,9 @@ export default function App() {
         frameUrl: peerCameraFrameUrl,
         profile: peer,
         label: peerName,
-        badge: hasRemoteCamera
+        badge: isCallPending
+          ? "📞 Chamando..."
+          : hasRemoteCamera
           ? t.cameraBadge
           : peer.voiceState?.screenSharing && !hasRemoteScreen
           ? t.liveBadge
@@ -2343,6 +3016,8 @@ export default function App() {
 
     return tiles;
   }, [
+    activeVoiceChannelId,
+    outgoingDmCall,
     screenSharing,
     localScreenStream,
     videoEnabled,
@@ -2671,6 +3346,14 @@ export default function App() {
     );
   };
 
+  const totalDmUnread = useMemo(() => {
+    let sum = 0;
+    for (const [k, v] of Object.entries(unreadCounts)) {
+      if (k.startsWith("dm_")) sum += v;
+    }
+    return sum;
+  }, [unreadCounts]);
+
   return (
     <>
       {/* DiscordPTB Frameless Titlebar with Official Freecord Logo */}
@@ -2717,6 +3400,24 @@ export default function App() {
             <Globe size={10} />
             <span>{lang === "en" ? "EN" : "PT-BR"}</span>
           </button>
+          <button
+            className="p2p-pill"
+            style={{
+              background: notificationsEnabled
+                ? "rgba(35, 165, 90, 0.22)"
+                : "rgba(242, 63, 67, 0.22)",
+              borderColor: notificationsEnabled
+                ? "rgba(35, 165, 90, 0.45)"
+                : "rgba(242, 63, 67, 0.45)",
+              color: notificationsEnabled ? "#86efac" : "#fca5a5",
+            }}
+            onClick={() => setNotificationsEnabled((v) => !v)}
+            title={
+              notificationsEnabled ? t.notificationsOnTooltip : t.notificationsOffTooltip
+            }
+          >
+            {notificationsEnabled ? <Bell size={11} /> : <BellOff size={11} />}
+          </button>
         </div>
 
         <div className="titlebar-controls">
@@ -2750,6 +3451,7 @@ export default function App() {
         <div className="server-rail">
           <div
             className={`server-icon home-logo ${selectedRoomId === "dm_hub" ? "active" : ""}`}
+            style={{ position: "relative" }}
             onClick={() => {
               setSelectedRoomId("dm_hub");
               setSelectedDmPeerId(null);
@@ -2757,50 +3459,68 @@ export default function App() {
             title={t.p2pHubTitle}
           >
             <img src="./logo.png" alt="Freecord Hub" />
-            {connectedPeers.length > 0 && (
+            {totalDmUnread > 0 ? (
+              <span className="unread-badge rail-badge">
+                {totalDmUnread > 99 ? "99+" : totalDmUnread}
+              </span>
+            ) : connectedPeers.length > 0 ? (
               <span className="server-badge">{connectedPeers.length}</span>
-            )}
+            ) : null}
           </div>
 
           <div className="rail-divider" />
 
-          {rooms.map((room) => (
-            <div
-              key={room.id}
-              className={`server-icon ${selectedRoomId === room.id ? "active" : ""}`}
-              style={{
-                backgroundColor:
-                  selectedRoomId === room.id
-                    ? room.color || "#5865f2"
-                    : room.iconUrl
-                    ? "#111214"
-                    : undefined,
-                padding: room.iconUrl ? 0 : undefined,
-                overflow: "hidden",
-              }}
-              onClick={() => {
-                setSelectedRoomId(room.id);
-                if (room.textChannels?.[0]) {
-                  setSelectedChannelId(room.textChannels[0].id);
-                }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                openServerStudio("edit", room);
-              }}
-              title={`${room.name} (${t.customizeServerTooltip})`}
-            >
-              {room.iconUrl ? (
-                <img
-                  src={room.iconUrl}
-                  alt={room.name}
-                  className="custom-server-icon"
-                />
-              ) : (
-                room.shortName
-              )}
-            </div>
-          ))}
+          {rooms.map((room) => {
+            const serverUnread = (room.textChannels || []).reduce(
+              (acc, ch) => acc + (unreadCounts[ch.id] || 0),
+              0
+            );
+            return (
+              <div
+                key={room.id}
+                className={`server-icon ${selectedRoomId === room.id ? "active" : ""}`}
+                style={{
+                  position: "relative",
+                  backgroundColor:
+                    selectedRoomId === room.id
+                      ? room.color || "#5865f2"
+                      : room.iconUrl
+                      ? "#111214"
+                      : undefined,
+                  padding: room.iconUrl ? 0 : undefined,
+                  overflow: "visible",
+                }}
+                onClick={() => {
+                  setSelectedRoomId(room.id);
+                  if (room.textChannels?.[0]) {
+                    setSelectedChannelId(room.textChannels[0].id);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  openServerStudio("edit", room);
+                }}
+                title={`${room.name} (${t.customizeServerTooltip})`}
+              >
+                {serverUnread > 0 && (
+                  <span className="unread-badge rail-badge">
+                    {serverUnread > 99 ? "99+" : serverUnread}
+                  </span>
+                )}
+                <div style={{ width: "100%", height: "100%", borderRadius: "inherit", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {room.iconUrl ? (
+                    <img
+                      src={room.iconUrl}
+                      alt={room.name}
+                      className="custom-server-icon"
+                    />
+                  ) : (
+                    room.shortName
+                  )}
+                </div>
+              </div>
+            );
+          })}
 
           <div
             className="server-icon action"
@@ -2859,18 +3579,51 @@ export default function App() {
                   ) : (
                     <span />
                   )}
-                  <button
-                    type="button"
-                    className="tile-ctrl-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openServerStudio("edit", currentRoom);
-                    }}
-                    title={t.customizeServerBtn}
-                  >
-                    <Settings size={12} />
-                    <span>{t.customizeServerBtn}</span>
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <button
+                      type="button"
+                      className="tile-ctrl-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openInviteServerModal(currentRoom);
+                      }}
+                      title={t.inviteServerBtn}
+                    >
+                      <UserPlus size={12} />
+                      <span>{t.inviteServerBtn}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="tile-ctrl-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openServerStudio("edit", currentRoom);
+                      }}
+                      title={t.customizeServerBtn}
+                    >
+                      <Settings size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="tile-ctrl-btn"
+                      style={{ color: "#fca5a5" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (
+                          window.confirm(
+                            lang === "pt"
+                              ? `Deseja sair do servidor ${currentRoom?.name}?`
+                              : `Leave server ${currentRoom?.name}?`
+                          )
+                        ) {
+                          handleLeaveServer(currentRoom?.id);
+                        }
+                      }}
+                      title={t.leaveServerBtn}
+                    >
+                      <LogOut size={12} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="sidebar-banner-bottom">
@@ -2958,19 +3711,67 @@ export default function App() {
                     {t.noPeersYet}
                   </div>
                 ) : (
-                  connectedPeers.map((peer) => (
-                    <div
-                      key={peer.peerId}
-                      className={`channel-item ${selectedDmPeerId === peer.peerId ? "active" : ""}`}
-                      onClick={() => setSelectedDmPeerId(peer.peerId)}
-                    >
-                      <div className="channel-item-left">
-                        <UserAvatar profile={peer} size="small" showStatus={true} />
-                        <span>{peer.displayName || peer.username}</span>
+                  connectedPeers.map((peer) => {
+                    const sorted = [nodeStatus.profile.peerId, peer.peerId].sort().join("__");
+                    const dmChId = `dm_${sorted}`;
+                    const dmUnread = unreadCounts[dmChId] || 0;
+                    const inDmCallWithPeer =
+                      activeVoiceChannelId &&
+                      activeVoiceChannelId === getDmCallChannelId(peer.peerId);
+
+                    return (
+                      <div
+                        key={peer.peerId}
+                        className={`channel-item ${selectedDmPeerId === peer.peerId ? "active" : ""}`}
+                        onClick={() => setSelectedDmPeerId(peer.peerId)}
+                      >
+                        <div className="channel-item-left">
+                          <UserAvatar profile={peer} size="small" showStatus={true} />
+                          <span style={{ fontWeight: dmUnread > 0 ? 800 : undefined, color: dmUnread > 0 ? "#fff" : undefined }}>
+                            {peer.displayName || peer.username}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          {dmUnread > 0 && (
+                            <span className="unread-badge">{dmUnread}</span>
+                          )}
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            style={{
+                              width: 24,
+                              height: 24,
+                              color: inDmCallWithPeer ? "#23a55a" : "var(--text-muted)",
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartDmCall(peer, false);
+                            }}
+                            title={t.startVoiceCallBtn}
+                          >
+                            <PhoneCall size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            style={{
+                              width: 24,
+                              height: 24,
+                              color: inDmCallWithPeer && videoEnabled ? "#5865f2" : "var(--text-muted)",
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartDmCall(peer, true);
+                            }}
+                            title={t.startVideoCallBtn}
+                          >
+                            <Video size={13} />
+                          </button>
+                          <span style={{ fontSize: 10, color: "#4ade80" }}>{peer.rttMs}ms</span>
+                        </div>
                       </div>
-                      <span style={{ fontSize: 10, color: "#4ade80" }}>{peer.rttMs}ms</span>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </>
             ) : (
@@ -2987,18 +3788,24 @@ export default function App() {
                     }}
                   />
                 </div>
-                {currentRoom?.textChannels?.map((ch) => (
-                  <div
-                    key={ch.id}
-                    className={`channel-item ${selectedChannelId === ch.id ? "active" : ""}`}
-                    onClick={() => setSelectedChannelId(ch.id)}
-                  >
-                    <div className="channel-item-left">
-                      <Hash size={18} />
-                      <span>{ch.name}</span>
+                {currentRoom?.textChannels?.map((ch) => {
+                  const chUnread = unreadCounts[ch.id] || 0;
+                  return (
+                    <div
+                      key={ch.id}
+                      className={`channel-item ${selectedChannelId === ch.id ? "active" : ""} ${chUnread > 0 ? "has-unread" : ""}`}
+                      onClick={() => setSelectedChannelId(ch.id)}
+                    >
+                      <div className="channel-item-left">
+                        <Hash size={18} />
+                        <span style={{ fontWeight: chUnread > 0 ? 800 : undefined, color: chUnread > 0 ? "#fff" : undefined }}>
+                          {ch.name}
+                        </span>
+                      </div>
+                      {chUnread > 0 && <span className="unread-badge">{chUnread}</span>}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {/* Voice Channels */}
                 <div className="channel-section-title">
@@ -3171,14 +3978,78 @@ export default function App() {
             </div>
 
             <div className="stage-header-right">
+              {selectedRoomId === "dm_hub" && selectedDmPeerId && (() => {
+                const dmCallId = getDmCallChannelId(selectedDmPeerId);
+                const isInThisDmCall = activeVoiceChannelId === dmCallId;
+                const currentDmPeer = connectedPeers.find((p) => p.peerId === selectedDmPeerId);
+                if (isInThisDmCall) {
+                  return (
+                    <button
+                      className="btn-secondary"
+                      style={{ backgroundColor: "rgba(242, 63, 67, 0.2)", color: "#fca5a5" }}
+                      onClick={handleLeaveVoiceChannel}
+                    >
+                      <PhoneOff size={14} />
+                      <span>{t.endDmCallBtn}</span>
+                    </button>
+                  );
+                }
+                return (
+                  <>
+                    <button
+                      className="btn-success"
+                      onClick={() => currentDmPeer && handleStartDmCall(currentDmPeer, false)}
+                    >
+                      <PhoneCall size={14} />
+                      <span>{t.startVoiceCallBtn}</span>
+                    </button>
+                    <button
+                      className="btn-primary"
+                      onClick={() => currentDmPeer && handleStartDmCall(currentDmPeer, true)}
+                    >
+                      <Video size={14} />
+                      <span>{t.startVideoCallBtn}</span>
+                    </button>
+                  </>
+                );
+              })()}
+
               {selectedRoomId !== "dm_hub" && currentRoom && (
-                <button
-                  className="btn-secondary"
-                  onClick={() => openServerStudio("edit", currentRoom)}
-                >
-                  <Settings size={14} />
-                  <span>{t.customizeServerBtn}</span>
-                </button>
+                <>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => openInviteServerModal(currentRoom)}
+                  >
+                    <UserPlus size={14} />
+                    <span>{t.inviteServerBtn}</span>
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => openServerStudio("edit", currentRoom)}
+                  >
+                    <Settings size={14} />
+                    <span>{t.customizeServerBtn}</span>
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={{ color: "#fca5a5" }}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          lang === "pt"
+                            ? `Deseja sair do servidor ${currentRoom.name}?`
+                            : `Leave server ${currentRoom.name}?`
+                        )
+                      ) {
+                        handleLeaveServer(currentRoom.id);
+                      }
+                    }}
+                    title={t.leaveServerBtn}
+                  >
+                    <LogOut size={14} />
+                    <span>{t.leaveServerBtn}</span>
+                  </button>
+                </>
               )}
               <button className="btn-secondary" onClick={() => openProfileStudio("media")}>
                 <Sliders size={14} />
@@ -3197,6 +4068,30 @@ export default function App() {
 
           <div className="stage-body">
             <div className="chat-column">
+              {/* Outgoing Private Call Ringing Banner */}
+              {outgoingDmCall && (
+                <div className="outgoing-call-banner">
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <UserAvatar profile={outgoingDmCall.peer} size="small" />
+                    <span>
+                      {t.outgoingCallRinging(
+                        outgoingDmCall.peer?.displayName ||
+                          outgoingDmCall.peer?.username ||
+                          "Peer"
+                      )}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ backgroundColor: "rgba(242, 63, 67, 0.25)", color: "#fca5a5" }}
+                    onClick={handleCancelOutgoingDmCall}
+                  >
+                    <PhoneOff size={13} />
+                    <span>{t.cancelCallBtn}</span>
+                  </button>
+                </div>
+              )}
               {/* Voice / Simultaneous Webcam + Go Live Screen Stage */}
               {activeVoiceChannelId && (
                 <div
@@ -3501,6 +4396,96 @@ export default function App() {
 
                           <div className="message-text">{msg.text}</div>
 
+                          {/* Interactive P2P Server Invite Card Embed */}
+                          {msg.serverInvite?.room && (() => {
+                            const invRoom = msg.serverInvite.room;
+                            const isAlreadyMember = rooms.some((r) => r.id === invRoom.id);
+                            return (
+                              <div className="server-invite-card">
+                                <div
+                                  className="server-invite-banner"
+                                  style={{
+                                    background: invRoom.bannerUrl
+                                      ? `url(${invRoom.bannerUrl}) center/cover no-repeat`
+                                      : `linear-gradient(135deg, ${
+                                          invRoom.bannerColor || invRoom.color || "#5865f2"
+                                        } 0%, ${invRoom.bannerSecondaryColor || "#9b59b6"} 100%)`,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 800,
+                                      color: "rgba(255,255,255,0.85)",
+                                      letterSpacing: 0.5,
+                                      zIndex: 2,
+                                    }}
+                                  >
+                                    {t.serverInviteCardHeader}
+                                  </span>
+                                </div>
+                                <div className="server-invite-body">
+                                  <div className="server-invite-info">
+                                    <div
+                                      className="server-invite-icon"
+                                      style={{ backgroundColor: invRoom.color || "#5865f2" }}
+                                    >
+                                      {invRoom.iconUrl ? (
+                                        <img src={invRoom.iconUrl} alt={invRoom.name} />
+                                      ) : (
+                                        invRoom.shortName || "FC"
+                                      )}
+                                    </div>
+                                    <div className="server-invite-meta">
+                                      <div className="server-invite-name">
+                                        <span>{invRoom.name}</span>
+                                        {invRoom.serverTag && (
+                                          <span className="server-tag-badge">
+                                            ✦ {invRoom.serverTag}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="server-invite-desc">
+                                        {invRoom.description ||
+                                          t.invitedYouToJoin(
+                                            msg.author?.displayName ||
+                                              msg.author?.username ||
+                                              "Peer"
+                                          )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {isAlreadyMember ? (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      onClick={() => {
+                                        setSelectedRoomId(invRoom.id);
+                                        if (invRoom.textChannels?.[0]?.id) {
+                                          setSelectedChannelId(invRoom.textChannels[0].id);
+                                        }
+                                      }}
+                                    >
+                                      <span>{t.joinedServerBadge}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="btn-success"
+                                      onClick={() =>
+                                        handleJoinServerRoom(invRoom, msg.serverInvite.hostEndpoint)
+                                      }
+                                    >
+                                      <UserPlus size={14} />
+                                      <span>{t.joinServerBtn}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
+
                           {msg.attachment && (
                             <div className="message-attachment">
                               {msg.attachment.isImage ? (
@@ -3725,6 +4710,8 @@ export default function App() {
               t={t}
               onEditProfile={openProfileStudio}
               onQuickDm={handleSendQuickDm}
+              onStartVoiceCall={(p) => handleStartDmCall(p, false)}
+              onStartVideoCall={(p) => handleStartDmCall(p, true)}
             />
           </div>
         </div>
@@ -5242,6 +6229,322 @@ export default function App() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Modal: Invite to Server & Join via Invite Code */}
+      {showInviteModal && (
+        <div className="modal-backdrop" onClick={() => setShowInviteModal(false)}>
+          <div className="modal-box" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div>
+                <h3 style={{ fontSize: 18, color: "#fff" }}>{t.inviteServerTitle}</h3>
+                <p className="sub" style={{ marginBottom: 0 }}>
+                  {t.inviteServerSub}
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setShowInviteModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Target Server Card Preview */}
+            {inviteTargetRoom && (
+              <div
+                style={{
+                  background: "#2b2d31",
+                  border: "1px solid rgba(255, 255, 255, 0.1)",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <div
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 8,
+                    backgroundColor: inviteTargetRoom.color || "#5865f2",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 800,
+                    color: "#fff",
+                    overflow: "hidden",
+                    flexShrink: 0,
+                  }}
+                >
+                  {inviteTargetRoom.iconUrl ? (
+                    <img
+                      src={inviteTargetRoom.iconUrl}
+                      alt=""
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
+                  ) : (
+                    inviteTargetRoom.shortName || "FC"
+                  )}
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 800, color: "#fff", fontSize: 14 }}>
+                    {inviteTargetRoom.name}{" "}
+                    {inviteTargetRoom.serverTag && (
+                      <span className="server-tag-badge">✦ {inviteTargetRoom.serverTag}</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {inviteTargetRoom.textChannels?.length || 1} text •{" "}
+                    {inviteTargetRoom.voiceChannels?.length || 1} voice channels
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Section 1: 1-Click Invite to Connected Peers */}
+            <div className="form-group">
+              <label>{t.inviteConnectedPeersLabel}</label>
+              {connectedPeers.length === 0 ? (
+                <div style={{ padding: 12, background: "#2b2d31", borderRadius: 6, fontSize: 12, color: "var(--text-muted)" }}>
+                  {t.noPeersYet}
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 6, maxHeight: 150, overflowY: "auto", paddingRight: 4 }}>
+                  {connectedPeers.map((peer) => {
+                    const isSent = Boolean(sentInvitePeers[peer.peerId]);
+                    return (
+                      <div
+                        key={peer.peerId}
+                        style={{
+                          background: "#2b2d31",
+                          padding: "8px 12px",
+                          borderRadius: 6,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <UserAvatar profile={peer} size="small" showStatus={true} />
+                          <div>
+                            <div style={{ fontWeight: 600, color: "#fff", fontSize: 13 }}>
+                              {peer.displayName || peer.username}#{peer.tag}
+                            </div>
+                            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                              {peer.address}:{peer.port}
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          className={isSent ? "btn-secondary" : "btn-primary"}
+                          style={{ padding: "4px 10px", fontSize: 11 }}
+                          onClick={() => handleSendServerInviteToPeer(peer)}
+                          disabled={isSent}
+                        >
+                          {isSent ? (
+                            <>
+                              <Check size={12} />
+                              <span>{t.inviteSentBtn}</span>
+                            </>
+                          ) : (
+                            <>
+                              <UserPlus size={12} />
+                              <span>{t.sendInviteBtn}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 2: Shareable Server Invite Code */}
+            <div className="form-group">
+              <label>{t.serverInviteCodeLabel}</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  className="form-input"
+                  readOnly
+                  value={buildServerInviteCode(inviteTargetRoom || currentRoom)}
+                  style={{ fontFamily: "monospace", fontSize: 11 }}
+                />
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() =>
+                    handleCopy(buildServerInviteCode(inviteTargetRoom || currentRoom))
+                  }
+                >
+                  {copiedText === buildServerInviteCode(inviteTargetRoom || currentRoom) ? (
+                    <Check size={14} />
+                  ) : (
+                    <Copy size={14} />
+                  )}
+                  <span>
+                    {copiedText === buildServerInviteCode(inviteTargetRoom || currentRoom)
+                      ? t.copied
+                      : t.copyBtn}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Section 3: Join via Invite Code */}
+            <form onSubmit={handleRedeemServerInviteCode} style={{ marginTop: 14 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>{t.joinByInviteCodeLabel}</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    className="form-input"
+                    placeholder={t.joinByInvitePlaceholder}
+                    value={joinServerCodeInput}
+                    onChange={(e) => setJoinServerCodeInput(e.target.value)}
+                  />
+                  <button type="submit" className="btn-success">
+                    {t.joinServerBtn}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            {joinServerStatusMsg && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: 8,
+                  borderRadius: 6,
+                  fontSize: 12,
+                  background:
+                    joinServerStatusMsg.type === "error"
+                      ? "rgba(242,63,67,0.2)"
+                      : "rgba(35,165,90,0.2)",
+                  color:
+                    joinServerStatusMsg.type === "error" ? "#fca5a5" : "#86efac",
+                }}
+              >
+                {joinServerStatusMsg.text}
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+              <button className="btn-secondary" onClick={() => setShowInviteModal(false)}>
+                {t.closeBtn}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Incoming Private P2P Call */}
+      {incomingDmCall && (
+        <div className="incoming-call-modal">
+          <div className="incoming-call-card">
+            <div className="incoming-call-avatar-pulse">
+              <UserAvatar
+                profile={incomingDmCall.caller}
+                speaking={true}
+                style={{ width: 88, height: 88, fontSize: 30 }}
+              />
+            </div>
+            <div className="incoming-call-title">
+              {incomingDmCall.caller?.displayName ||
+                incomingDmCall.caller?.username ||
+                "Peer"}
+            </div>
+            <div className="incoming-call-sub">
+              {incomingDmCall.withVideo
+                ? t.incomingVideoCallSub(
+                    incomingDmCall.caller?.displayName ||
+                      incomingDmCall.caller?.username ||
+                      "Peer"
+                  )
+                : t.incomingVoiceCallSub(
+                    incomingDmCall.caller?.displayName ||
+                      incomingDmCall.caller?.username ||
+                      "Peer"
+                  )}
+            </div>
+
+            <div className="incoming-call-actions">
+              <button
+                type="button"
+                className="btn-success"
+                style={{ padding: "10px 18px", fontSize: 13 }}
+                onClick={() => handleAcceptDmCall(false)}
+              >
+                <PhoneCall size={16} />
+                <span>{t.acceptVoiceBtn}</span>
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ padding: "10px 18px", fontSize: 13 }}
+                onClick={() => handleAcceptDmCall(true)}
+              >
+                <Video size={16} />
+                <span>{t.acceptVideoBtn}</span>
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{
+                  backgroundColor: "rgba(242, 63, 67, 0.25)",
+                  color: "#fca5a5",
+                  padding: "10px 18px",
+                  fontSize: 13,
+                }}
+                onClick={handleDeclineDmCall}
+              >
+                <PhoneOff size={16} />
+                <span>{t.declineCallBtn}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stack of In-App Toast Notifications */}
+      {toasts.length > 0 && (
+        <div className="toast-container">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className="toast-card"
+              onClick={() => {
+                toast.onClick?.();
+                setToasts((prev) => prev.filter((item) => item.id !== toast.id));
+              }}
+            >
+              {toast.author ? (
+                <UserAvatar profile={toast.author} size="small" />
+              ) : (
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: "50%",
+                    background: "var(--brand-blurple)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    flexShrink: 0,
+                  }}
+                >
+                  {toast.isInvite ? <UserPlus size={16} /> : <Bell size={16} />}
+                </div>
+              )}
+              <div className="toast-content">
+                <div className="toast-title">{toast.title}</div>
+                <div className="toast-body">{toast.body}</div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </>

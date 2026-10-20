@@ -96,6 +96,10 @@ function createMainWindow() {
   mainWindow.webContents.setBackgroundThrottling(false);
   mainWindow.webContents.setAudioMuted(false);
 
+  mainWindow.on("focus", () => {
+    mainWindow?.flashFrame(false);
+  });
+
   mainWindow.on("blur", () => {
     mainWindow?.webContents.setBackgroundThrottling(false);
   });
@@ -192,6 +196,22 @@ function registerIpcHandlers() {
 
   ipcMain.handle("DISCORD_WINDOW_CLOSE", () => {
     mainWindow?.close();
+    return true;
+  });
+
+  ipcMain.handle("DISCORD_WINDOW_FLASH", (_event, flag) => {
+    mainWindow?.flashFrame(Boolean(flag));
+    return true;
+  });
+
+  ipcMain.handle("DISCORD_WINDOW_FOCUS", () => {
+    if (!mainWindow) return false;
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.flashFrame(false);
     return true;
   });
 

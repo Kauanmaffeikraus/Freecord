@@ -15,6 +15,8 @@ const DiscordNative = {
     minimize: () => ipcRenderer.invoke("DISCORD_WINDOW_MINIMIZE"),
     maximize: () => ipcRenderer.invoke("DISCORD_WINDOW_MAXIMIZE"),
     close: () => ipcRenderer.invoke("DISCORD_WINDOW_CLOSE"),
+    flashFrame: (flag = true) => ipcRenderer.invoke("DISCORD_WINDOW_FLASH", Boolean(flag)),
+    focus: () => ipcRenderer.invoke("DISCORD_WINDOW_FOCUS"),
     onWindowStateChanged: (callback) => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on("DISCORD_WINDOW_STATE", listener);
