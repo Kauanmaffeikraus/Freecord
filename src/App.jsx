@@ -242,6 +242,27 @@ const I18N = {
     cameraBadge: "WEBCAM",
     screenBadge: "GO LIVE SCREEN",
     dragResizeHint: "Drag to resize stage height",
+    customizeServerBtn: "Customize Server",
+    customizeServerTooltip: "Open P2P Server Customization Studio (Right-click or click header)",
+    serverStudioEditTitle: "🏰 P2P Server Customization Studio",
+    serverStudioCreateTitle: "🏰 Create & Customize New P2P Server",
+    serverStudioSub: "Customize your server's icon, banner, colors, tag, description, and channels — synchronized directly across connected P2P peers.",
+    serverNameLabel: "Server Name",
+    serverShortLabel: "Short Icon / Acronym",
+    serverTagLabel: "Server Tag Badge",
+    serverDescLabel: "Server Description / Welcome Topic",
+    serverDescPlaceholder: "Describe this P2P server community...",
+    serverIconLabel: "Server Icon Image & Color",
+    uploadServerIconBtn: "Upload Server Icon",
+    serverBannerLabel: "Server Banner & Theme Colors",
+    uploadServerBannerBtn: "Upload Server Banner",
+    sidebarBgLabel: "Sidebar Background",
+    manageChannelsSection: "Manage Server Channels (Text & P2P Voice)",
+    addTextChannelBtn: "+ Text Channel",
+    addVoiceChannelBtn: "+ Voice Channel",
+    deleteServerBtn: "Delete Server",
+    saveServerBtn: "Save & Sync P2P Server",
+    serverLivePreviewLabel: "Live Server Sidebar & Banner Preview",
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -403,6 +424,27 @@ const I18N = {
     cameraBadge: "WEBCAM",
     screenBadge: "TELA GO LIVE",
     dragResizeHint: "Arraste para redimensionar a altura do palco",
+    customizeServerBtn: "Personalizar Servidor",
+    customizeServerTooltip: "Abrir Estúdio de Personalização do Servidor (Clique aqui ou botão direito no ícone)",
+    serverStudioEditTitle: "🏰 Estúdio de Personalização de Servidor P2P",
+    serverStudioCreateTitle: "🏰 Criar & Personalizar Novo Servidor P2P",
+    serverStudioSub: "Personalize ícone, banner, cores, tag, descrição e canais do servidor — sincronizados diretamente entre os computadores P2P conectados.",
+    serverNameLabel: "Nome do Servidor",
+    serverShortLabel: "Sigla / Emoji do Ícone",
+    serverTagLabel: "Tag / Emblema do Servidor",
+    serverDescLabel: "Descrição / Boas-vindas do Servidor",
+    serverDescPlaceholder: "Descreva a comunidade deste servidor P2P...",
+    serverIconLabel: "Imagem e Cor do Ícone do Servidor",
+    uploadServerIconBtn: "Enviar Ícone do Servidor",
+    serverBannerLabel: "Banner do Servidor & Cores do Tema",
+    uploadServerBannerBtn: "Enviar Banner do Servidor",
+    sidebarBgLabel: "Fundo da Barra Lateral",
+    manageChannelsSection: "Gerenciar Canais do Servidor (Texto & Voz P2P)",
+    addTextChannelBtn: "+ Canal de Texto",
+    addVoiceChannelBtn: "+ Canal de Voz",
+    deleteServerBtn: "Excluir Servidor",
+    saveServerBtn: "Salvar e Sincronizar Servidor P2P",
+    serverLivePreviewLabel: "Pré-visualização do Servidor & Banner",
   },
 };
 
@@ -411,7 +453,15 @@ const INITIAL_ROOMS = [
     id: "room_freecord_main",
     name: "Freecord P2P Hub",
     shortName: "FC",
+    serverTag: "P2P",
+    description: "Comunidade oficial P2P Serverless — conexão direta entre computadores sem servidor central.",
     color: "#5865f2",
+    iconUrl: "./logo.png",
+    bannerColor: "#5865f2",
+    bannerSecondaryColor: "#9b59b6",
+    bannerUrl: null,
+    sidebarBgColor: "#2b2d31",
+    updatedAt: 1,
     textChannels: [
       { id: "ch_geral", name: "general-p2p", topic: "Direct computer-to-computer chat with zero central servers" },
       { id: "ch_arquivos", name: "files-and-media", topic: "Direct peer-to-peer image & file transfers" },
@@ -426,7 +476,15 @@ const INITIAL_ROOMS = [
     id: "room_lan_gaming",
     name: "LAN & Squad Mesh",
     shortName: "LAN",
+    serverTag: "SQUAD",
+    description: "Coordenação rápida em rede local, Wi-Fi ou VPN (Tailscale, ZeroTier, Radmin).",
     color: "#23a55a",
+    iconUrl: null,
+    bannerColor: "#23a55a",
+    bannerSecondaryColor: "#00b0f4",
+    bannerUrl: null,
+    sidebarBgColor: "#2b2d31",
+    updatedAt: 1,
     textChannels: [
       { id: "ch_squad", name: "lan-lobby", topic: "Fast coordination across local network or VPN peers" },
     ],
@@ -709,11 +767,23 @@ export default function App() {
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [lanPeers, setLanPeers] = useState([]);
 
-  // Rooms & Navigation State
-  const [rooms, setRooms] = useState(INITIAL_ROOMS);
+  // Rooms & Navigation State (with localStorage persistence)
+  const [rooms, setRooms] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("freecord_custom_rooms_v1") || "null");
+      if (Array.isArray(saved) && saved.length > 0) return saved;
+    } catch {}
+    return INITIAL_ROOMS;
+  });
   const [selectedRoomId, setSelectedRoomId] = useState("room_freecord_main");
   const [selectedChannelId, setSelectedChannelId] = useState("ch_geral");
   const [selectedDmPeerId, setSelectedDmPeerId] = useState(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("freecord_custom_rooms_v1", JSON.stringify(rooms));
+    } catch {}
+  }, [rooms]);
 
   // Chat State
   const [messages, setMessages] = useState(INITIAL_REA_MESSAGES);
@@ -760,7 +830,24 @@ export default function App() {
   const [showScreenPicker, setShowScreenPicker] = useState(false);
   const [desktopSources, setDesktopSources] = useState([]);
 
-  // Create Room / Channel / Profile Modals
+  // Server / Room Customization Studio & Channel Modals
+  const [showServerStudio, setShowServerStudio] = useState(false);
+  const [serverStudioMode, setServerStudioMode] = useState("edit"); // "edit" | "create"
+  const [serverForm, setServerForm] = useState({
+    id: "",
+    name: "",
+    shortName: "",
+    serverTag: "P2P",
+    description: "",
+    color: "#5865f2",
+    iconUrl: null,
+    bannerColor: "#5865f2",
+    bannerSecondaryColor: "#9b59b6",
+    bannerUrl: null,
+    sidebarBgColor: "#2b2d31",
+    textChannels: [],
+    voiceChannels: [],
+  });
   const [showNewRoomModal, setShowNewRoomModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   const [showNewChannelModal, setShowNewChannelModal] = useState(false);
@@ -813,6 +900,8 @@ export default function App() {
   const fileInputRef = useRef(null);
   const avatarUploadRef = useRef(null);
   const bannerUploadRef = useRef(null);
+  const serverIconUploadRef = useRef(null);
+  const serverBannerUploadRef = useRef(null);
   const lastTypingSentRef = useRef(0);
 
   const refreshMediaDevices = async () => {
@@ -1062,20 +1151,32 @@ export default function App() {
               map.set(incomingRoom.id, incomingRoom);
             } else {
               const existing = map.get(incomingRoom.id);
-              const textIds = new Set(existing.textChannels.map((c) => c.id));
-              const voiceIds = new Set(existing.voiceChannels.map((c) => c.id));
-              const mergedText = [
-                ...existing.textChannels,
-                ...(incomingRoom.textChannels || []).filter((c) => !textIds.has(c.id)),
-              ];
-              const mergedVoice = [
-                ...existing.voiceChannels,
-                ...(incomingRoom.voiceChannels || []).filter((c) => !voiceIds.has(c.id)),
-              ];
+              const incomingIsNewer =
+                (incomingRoom.updatedAt || 0) >= (existing.updatedAt || 0);
+
+              const textMap = new Map(
+                (existing.textChannels || []).map((c) => [c.id, c])
+              );
+              for (const ch of incomingRoom.textChannels || []) {
+                textMap.set(ch.id, incomingIsNewer ? ch : textMap.get(ch.id) || ch);
+              }
+
+              const voiceMap = new Map(
+                (existing.voiceChannels || []).map((c) => [c.id, c])
+              );
+              for (const vc of incomingRoom.voiceChannels || []) {
+                voiceMap.set(vc.id, incomingIsNewer ? vc : voiceMap.get(vc.id) || vc);
+              }
+
               map.set(incomingRoom.id, {
                 ...existing,
-                textChannels: mergedText,
-                voiceChannels: mergedVoice,
+                ...(incomingIsNewer ? incomingRoom : {}),
+                textChannels: incomingIsNewer
+                  ? incomingRoom.textChannels || Array.from(textMap.values())
+                  : Array.from(textMap.values()),
+                voiceChannels: incomingIsNewer
+                  ? incomingRoom.voiceChannels || Array.from(voiceMap.values())
+                  : Array.from(voiceMap.values()),
               });
             }
           }
@@ -1585,6 +1686,110 @@ export default function App() {
     }
   };
 
+  const openServerStudio = (mode = "edit", targetRoom = currentRoom) => {
+    setServerStudioMode(mode);
+    if (mode === "create" || !targetRoom) {
+      const now = Date.now();
+      setServerForm({
+        id: `room_${now}`,
+        name: "New P2P Server",
+        shortName: "P2P",
+        serverTag: "MESH",
+        description: "Direct peer-to-peer serverless community.",
+        color: "#5865f2",
+        iconUrl: null,
+        bannerColor: "#5865f2",
+        bannerSecondaryColor: "#9b59b6",
+        bannerUrl: null,
+        sidebarBgColor: "#2b2d31",
+        textChannels: [
+          { id: `ch_${now}_general`, name: "general", topic: "Main P2P text channel" },
+        ],
+        voiceChannels: [
+          { id: `vc_${now}_voice`, name: "Main P2P Voice" },
+        ],
+      });
+    } else {
+      setServerForm({
+        id: targetRoom.id,
+        name: targetRoom.name || "P2P Server",
+        shortName: targetRoom.shortName || "FC",
+        serverTag: targetRoom.serverTag || "P2P",
+        description: targetRoom.description || "",
+        color: targetRoom.color || "#5865f2",
+        iconUrl: targetRoom.iconUrl || null,
+        bannerColor: targetRoom.bannerColor || targetRoom.color || "#5865f2",
+        bannerSecondaryColor: targetRoom.bannerSecondaryColor || "#9b59b6",
+        bannerUrl: targetRoom.bannerUrl || null,
+        sidebarBgColor: targetRoom.sidebarBgColor || "#2b2d31",
+        textChannels: Array.isArray(targetRoom.textChannels)
+          ? targetRoom.textChannels.map((c) => ({ ...c }))
+          : [],
+        voiceChannels: Array.isArray(targetRoom.voiceChannels)
+          ? targetRoom.voiceChannels.map((c) => ({ ...c }))
+          : [],
+      });
+    }
+    setShowServerStudio(true);
+  };
+
+  const handleSaveServerStudio = (e) => {
+    e?.preventDefault();
+    const cleanName = serverForm.name.trim() || "P2P Server";
+    const words = cleanName.split(/\s+/);
+    const fallbackShort =
+      words.length > 1
+        ? (words[0][0] + words[1][0]).toUpperCase()
+        : cleanName.slice(0, 2).toUpperCase();
+
+    const sanitizedRoom = {
+      ...serverForm,
+      name: cleanName,
+      shortName: (serverForm.shortName.trim() || fallbackShort).slice(0, 4),
+      serverTag: (serverForm.serverTag.trim() || "P2P").slice(0, 8).toUpperCase(),
+      description: serverForm.description.trim(),
+      textChannels:
+        serverForm.textChannels.length > 0
+          ? serverForm.textChannels
+          : [{ id: `ch_${Date.now()}_gen`, name: "general", topic: "Main P2P channel" }],
+      voiceChannels:
+        serverForm.voiceChannels.length > 0
+          ? serverForm.voiceChannels
+          : [{ id: `vc_${Date.now()}_voice`, name: "P2P Voice" }],
+      updatedAt: Date.now(),
+    };
+
+    let updatedRooms;
+    if (serverStudioMode === "create" || !rooms.some((r) => r.id === sanitizedRoom.id)) {
+      updatedRooms = [...rooms, sanitizedRoom];
+    } else {
+      updatedRooms = rooms.map((r) => (r.id === sanitizedRoom.id ? sanitizedRoom : r));
+    }
+
+    setRooms(updatedRooms);
+    setSelectedRoomId(sanitizedRoom.id);
+    if (
+      !sanitizedRoom.textChannels.some((c) => c.id === selectedChannelId) &&
+      sanitizedRoom.textChannels[0]
+    ) {
+      setSelectedChannelId(sanitizedRoom.textChannels[0].id);
+    }
+    setShowServerStudio(false);
+    sendP2PPacket({ type: "ROOM_SYNC", rooms: updatedRooms });
+  };
+
+  const handleDeleteServer = (roomId) => {
+    if (rooms.length <= 1) return;
+    const remaining = rooms.filter((r) => r.id !== roomId);
+    setRooms(remaining);
+    setSelectedRoomId(remaining[0].id);
+    if (remaining[0]?.textChannels?.[0]) {
+      setSelectedChannelId(remaining[0].textChannels[0].id);
+    }
+    setShowServerStudio(false);
+    sendP2PPacket({ type: "ROOM_SYNC", rooms: remaining });
+  };
+
   const handleCreateRoom = (e) => {
     e.preventDefault();
     const name = newRoomName.trim();
@@ -1598,7 +1803,15 @@ export default function App() {
       id: `room_${Date.now()}`,
       name,
       shortName,
+      serverTag: "P2P",
+      description: `Comunidade P2P ${name}`,
       color: "#5865f2",
+      iconUrl: null,
+      bannerColor: "#5865f2",
+      bannerSecondaryColor: "#9b59b6",
+      bannerUrl: null,
+      sidebarBgColor: "#2b2d31",
+      updatedAt: Date.now(),
       textChannels: [
         { id: `ch_${Date.now()}_general`, name: "general", topic: `Main P2P channel for ${name}` },
       ],
@@ -1629,8 +1842,8 @@ export default function App() {
     const updated = rooms.map((r) => {
       if (r.id !== currentRoom.id) return r;
       return newChannelType === "text"
-        ? { ...r, textChannels: [...r.textChannels, newCh] }
-        : { ...r, voiceChannels: [...r.voiceChannels, newCh] };
+        ? { ...r, updatedAt: Date.now(), textChannels: [...r.textChannels, newCh] }
+        : { ...r, updatedAt: Date.now(), voiceChannels: [...r.voiceChannels, newCh] };
     });
 
     setRooms(updated);
@@ -2092,27 +2305,44 @@ export default function App() {
             <div
               key={room.id}
               className={`server-icon ${selectedRoomId === room.id ? "active" : ""}`}
-              style={
-                selectedRoomId === room.id
-                  ? { backgroundColor: room.color }
-                  : undefined
-              }
+              style={{
+                backgroundColor:
+                  selectedRoomId === room.id
+                    ? room.color || "#5865f2"
+                    : room.iconUrl
+                    ? "#111214"
+                    : undefined,
+                padding: room.iconUrl ? 0 : undefined,
+                overflow: "hidden",
+              }}
               onClick={() => {
                 setSelectedRoomId(room.id);
                 if (room.textChannels?.[0]) {
                   setSelectedChannelId(room.textChannels[0].id);
                 }
               }}
-              title={room.name}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                openServerStudio("edit", room);
+              }}
+              title={`${room.name} (${t.customizeServerTooltip})`}
             >
-              {room.shortName}
+              {room.iconUrl ? (
+                <img
+                  src={room.iconUrl}
+                  alt={room.name}
+                  className="custom-server-icon"
+                />
+              ) : (
+                room.shortName
+              )}
             </div>
           ))}
 
           <div
             className="server-icon action"
-            onClick={() => setShowNewRoomModal(true)}
-            title={t.newRoomTitle}
+            onClick={() => openServerStudio("create")}
+            title={t.serverStudioCreateTitle}
           >
             <Plus size={22} />
           </div>
@@ -2127,21 +2357,116 @@ export default function App() {
         </div>
 
         {/* Channel Sidebar */}
-        <div className="channel-sidebar">
-          <div
-            className="sidebar-header"
-            onClick={() => {
-              if (selectedRoomId === "dm_hub") setShowConnectModal(true);
-            }}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <img src="./logo.png" alt="" style={{ width: 20, height: 20, borderRadius: 5 }} />
-              {selectedRoomId === "dm_hub"
-                ? t.p2pHubTitle
-                : currentRoom?.name}
-            </span>
-            <ShieldCheck size={16} color="#23a55a" title="Serverless Direct P2P" />
-          </div>
+        <div
+          className="channel-sidebar"
+          style={
+            selectedRoomId !== "dm_hub" && currentRoom?.sidebarBgColor
+              ? { backgroundColor: currentRoom.sidebarBgColor }
+              : undefined
+          }
+        >
+          {selectedRoomId === "dm_hub" ? (
+            <div
+              className="sidebar-header"
+              onClick={() => setShowConnectModal(true)}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <img src="./logo.png" alt="" style={{ width: 20, height: 20, borderRadius: 5 }} />
+                {t.p2pHubTitle}
+              </span>
+              <ShieldCheck size={16} color="#23a55a" title="Serverless Direct P2P" />
+            </div>
+          ) : (
+            <>
+              <div
+                className="sidebar-banner-hero"
+                style={{
+                  background: currentRoom?.bannerUrl
+                    ? `url(${currentRoom.bannerUrl}) center/cover no-repeat`
+                    : `linear-gradient(135deg, ${
+                        currentRoom?.bannerColor || currentRoom?.color || "#5865f2"
+                      } 0%, ${currentRoom?.bannerSecondaryColor || "#9b59b6"} 100%)`,
+                }}
+                onClick={() => openServerStudio("edit", currentRoom)}
+                title={t.customizeServerTooltip}
+              >
+                <div className="sidebar-banner-top">
+                  {currentRoom?.serverTag ? (
+                    <span className="server-tag-badge">✦ {currentRoom.serverTag}</span>
+                  ) : (
+                    <span />
+                  )}
+                  <button
+                    type="button"
+                    className="tile-ctrl-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openServerStudio("edit", currentRoom);
+                    }}
+                    title={t.customizeServerBtn}
+                  >
+                    <Settings size={12} />
+                    <span>{t.customizeServerBtn}</span>
+                  </button>
+                </div>
+
+                <div className="sidebar-banner-bottom">
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                    {currentRoom?.iconUrl ? (
+                      <img
+                        src={currentRoom.iconUrl}
+                        alt=""
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 7,
+                          objectFit: "cover",
+                          border: "2px solid rgba(255,255,255,0.4)",
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 26,
+                          height: 26,
+                          borderRadius: 7,
+                          backgroundColor: currentRoom?.color || "#5865f2",
+                          color: "#fff",
+                          fontSize: 11,
+                          fontWeight: 800,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {currentRoom?.shortName}
+                      </div>
+                    )}
+                    <span
+                      style={{
+                        fontWeight: 800,
+                        fontSize: 15,
+                        color: "#fff",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        textShadow: "0 2px 6px rgba(0,0,0,0.65)",
+                      }}
+                    >
+                      {currentRoom?.name}
+                    </span>
+                  </div>
+                  <ShieldCheck size={15} color="#4ade80" title="Serverless Direct P2P" />
+                </div>
+              </div>
+
+              {currentRoom?.description && (
+                <div className="sidebar-description-bar">
+                  {currentRoom.description}
+                </div>
+              )}
+            </>
+          )}
 
           <div className="channel-list">
             {selectedRoomId === "dm_hub" ? (
@@ -2383,6 +2708,15 @@ export default function App() {
             </div>
 
             <div className="stage-header-right">
+              {selectedRoomId !== "dm_hub" && currentRoom && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => openServerStudio("edit", currentRoom)}
+                >
+                  <Settings size={14} />
+                  <span>{t.customizeServerBtn}</span>
+                </button>
+              )}
               <button className="btn-secondary" onClick={() => openProfileStudio("media")}>
                 <Sliders size={14} />
                 <span>{t.mediaSettingsBtn}</span>
@@ -3894,6 +4228,488 @@ export default function App() {
                 {t.cancelBtn}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Full P2P Server / Room Customization Studio */}
+      {showServerStudio && (
+        <div className="modal-backdrop" onClick={() => setShowServerStudio(false)}>
+          <div className="profile-studio-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
+                  {serverStudioMode === "create"
+                    ? t.serverStudioCreateTitle
+                    : t.serverStudioEditTitle}
+                </h3>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+                  {t.serverStudioSub}
+                </p>
+              </div>
+              <button className="icon-btn" onClick={() => setShowServerStudio(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveServerStudio}>
+              <div className="profile-studio-grid">
+                {/* Left Column: Server Identity, Icon, Banner, Theme Colors & Channels */}
+                <div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.5fr 0.7fr 0.8fr", gap: 8 }}>
+                    <div className="form-group">
+                      <label>{t.serverNameLabel}</label>
+                      <input
+                        className="form-input"
+                        value={serverForm.name}
+                        onChange={(e) =>
+                          setServerForm((s) => ({ ...s, name: e.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>{t.serverShortLabel}</label>
+                      <input
+                        className="form-input"
+                        maxLength={4}
+                        value={serverForm.shortName}
+                        onChange={(e) =>
+                          setServerForm((s) => ({ ...s, shortName: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>{t.serverTagLabel}</label>
+                      <input
+                        className="form-input"
+                        maxLength={8}
+                        value={serverForm.serverTag}
+                        onChange={(e) =>
+                          setServerForm((s) => ({ ...s, serverTag: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{t.serverDescLabel}</label>
+                    <textarea
+                      className="form-textarea"
+                      rows={2}
+                      placeholder={t.serverDescPlaceholder}
+                      value={serverForm.description}
+                      onChange={(e) =>
+                        setServerForm((s) => ({ ...s, description: e.target.value }))
+                      }
+                    />
+                  </div>
+
+                  {/* Server Icon Image Upload & Accent Color */}
+                  <div className="form-group">
+                    <label>{t.serverIconLabel}</label>
+                    <input
+                      ref={serverIconUploadRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await resizeImageToDataUrl(file, 240, 240, 0.86);
+                          setServerForm((s) => ({ ...s, iconUrl: dataUrl }));
+                        } catch {}
+                        e.target.value = "";
+                      }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => serverIconUploadRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>{t.uploadServerIconBtn}</span>
+                      </button>
+                      {serverForm.iconUrl && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setServerForm((s) => ({ ...s, iconUrl: null }))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                      {["#5865f2", "#23a55a", "#f0b232", "#eb459e", "#f23f43", "#00b0f4", "#9b59b6"].map(
+                        (c) => (
+                          <div
+                            key={c}
+                            onClick={() => setServerForm((s) => ({ ...s, color: c }))}
+                            style={{
+                              width: 24,
+                              height: 24,
+                              borderRadius: "50%",
+                              backgroundColor: c,
+                              cursor: "pointer",
+                              border:
+                                serverForm.color === c
+                                  ? "2px solid #fff"
+                                  : "2px solid transparent",
+                            }}
+                          />
+                        )
+                      )}
+                      <input
+                        type="color"
+                        value={serverForm.color}
+                        onChange={(e) =>
+                          setServerForm((s) => ({ ...s, color: e.target.value }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {/* Server Banner Image & Gradient / Sidebar Theme Colors */}
+                  <div className="form-group">
+                    <label>{t.serverBannerLabel}</label>
+                    <input
+                      ref={serverBannerUploadRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const dataUrl = await resizeImageToDataUrl(file, 640, 260, 0.85);
+                          setServerForm((s) => ({ ...s, bannerUrl: dataUrl }));
+                        } catch {}
+                        e.target.value = "";
+                      }}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => serverBannerUploadRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>{t.uploadServerBannerBtn}</span>
+                      </button>
+                      {serverForm.bannerUrl && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setServerForm((s) => ({ ...s, bannerUrl: null }))}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>{t.primaryThemeLabel}:</span>
+                        <input
+                          type="color"
+                          value={serverForm.bannerColor}
+                          onChange={(e) =>
+                            setServerForm((s) => ({ ...s, bannerColor: e.target.value }))
+                          }
+                        />
+                      </label>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>{t.accentThemeLabel}:</span>
+                        <input
+                          type="color"
+                          value={serverForm.bannerSecondaryColor}
+                          onChange={(e) =>
+                            setServerForm((s) => ({
+                              ...s,
+                              bannerSecondaryColor: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, margin: 0 }}>
+                        <span>{t.sidebarBgLabel}:</span>
+                        <input
+                          type="color"
+                          value={serverForm.sidebarBgColor}
+                          onChange={(e) =>
+                            setServerForm((s) => ({ ...s, sidebarBgColor: e.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Manage Server Channels */}
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <label style={{ marginBottom: 0 }}>{t.manageChannelsSection}</label>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: "4px 8px", fontSize: 11 }}
+                          onClick={() =>
+                            setServerForm((s) => ({
+                              ...s,
+                              textChannels: [
+                                ...s.textChannels,
+                                {
+                                  id: `ch_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                                  name: `channel-${s.textChannels.length + 1}`,
+                                  topic: "P2P Text Channel",
+                                },
+                              ],
+                            }))
+                          }
+                        >
+                          {t.addTextChannelBtn}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: "4px 8px", fontSize: 11 }}
+                          onClick={() =>
+                            setServerForm((s) => ({
+                              ...s,
+                              voiceChannels: [
+                                ...s.voiceChannels,
+                                {
+                                  id: `vc_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+                                  name: `P2P Voice #${s.voiceChannels.length + 1}`,
+                                },
+                              ],
+                            }))
+                          }
+                        >
+                          {t.addVoiceChannelBtn}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ maxHeight: 170, overflowY: "auto", paddingRight: 4 }}>
+                      {serverForm.textChannels.map((ch, idx) => (
+                        <div key={ch.id} className="channel-manage-row">
+                          <Hash size={15} color="var(--text-muted)" />
+                          <input
+                            className="form-input"
+                            style={{ padding: "5px 8px", fontSize: 12 }}
+                            value={ch.name}
+                            onChange={(e) => {
+                              const val = e.target.value.toLowerCase().replace(/\s+/g, "-");
+                              setServerForm((s) => {
+                                const list = [...s.textChannels];
+                                list[idx] = { ...list[idx], name: val };
+                                return { ...s, textChannels: list };
+                              });
+                            }}
+                          />
+                          <input
+                            className="form-input"
+                            style={{ padding: "5px 8px", fontSize: 12 }}
+                            placeholder="Topic..."
+                            value={ch.topic || ""}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setServerForm((s) => {
+                                const list = [...s.textChannels];
+                                list[idx] = { ...list[idx], topic: val };
+                                return { ...s, textChannels: list };
+                              });
+                            }}
+                          />
+                          {serverForm.textChannels.length > 1 && (
+                            <button
+                              type="button"
+                              className="icon-btn danger"
+                              onClick={() =>
+                                setServerForm((s) => ({
+                                  ...s,
+                                  textChannels: s.textChannels.filter((item) => item.id !== ch.id),
+                                }))
+                              }
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+
+                      {serverForm.voiceChannels.map((vc, idx) => (
+                        <div key={vc.id} className="channel-manage-row">
+                          <Volume2 size={15} color="#23a55a" />
+                          <input
+                            className="form-input"
+                            style={{ padding: "5px 8px", fontSize: 12 }}
+                            value={vc.name}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setServerForm((s) => {
+                                const list = [...s.voiceChannels];
+                                list[idx] = { ...list[idx], name: val };
+                                return { ...s, voiceChannels: list };
+                              });
+                            }}
+                          />
+                          {serverForm.voiceChannels.length > 1 && (
+                            <button
+                              type="button"
+                              className="icon-btn danger"
+                              onClick={() =>
+                                setServerForm((s) => ({
+                                  ...s,
+                                  voiceChannels: s.voiceChannels.filter((item) => item.id !== vc.id),
+                                }))
+                              }
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Live Interactive Server Banner & Sidebar Preview */}
+                <div>
+                  <div className="profile-section-label" style={{ marginBottom: 8 }}>
+                    {t.serverLivePreviewLabel}
+                  </div>
+
+                  <div
+                    className="server-preview-card"
+                    style={{ backgroundColor: serverForm.sidebarBgColor || "#2b2d31" }}
+                  >
+                    {/* Preview Banner Hero */}
+                    <div
+                      className="sidebar-banner-hero"
+                      style={{
+                        cursor: "default",
+                        background: serverForm.bannerUrl
+                          ? `url(${serverForm.bannerUrl}) center/cover no-repeat`
+                          : `linear-gradient(135deg, ${
+                              serverForm.bannerColor || serverForm.color || "#5865f2"
+                            } 0%, ${serverForm.bannerSecondaryColor || "#9b59b6"} 100%)`,
+                      }}
+                    >
+                      <div className="sidebar-banner-top">
+                        {serverForm.serverTag ? (
+                          <span className="server-tag-badge">✦ {serverForm.serverTag}</span>
+                        ) : (
+                          <span />
+                        )}
+                      </div>
+                      <div className="sidebar-banner-bottom">
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {serverForm.iconUrl ? (
+                            <img
+                              src={serverForm.iconUrl}
+                              alt=""
+                              style={{
+                                width: 30,
+                                height: 30,
+                                borderRadius: 8,
+                                objectFit: "cover",
+                                border: "2px solid rgba(255,255,255,0.45)",
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: 30,
+                                height: 30,
+                                borderRadius: 8,
+                                backgroundColor: serverForm.color || "#5865f2",
+                                color: "#fff",
+                                fontSize: 12,
+                                fontWeight: 800,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
+                            >
+                              {serverForm.shortName || "FC"}
+                            </div>
+                          )}
+                          <span style={{ fontWeight: 800, fontSize: 16, color: "#fff" }}>
+                            {serverForm.name || "P2P Server"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {serverForm.description && (
+                      <div className="sidebar-description-bar">
+                        {serverForm.description}
+                      </div>
+                    )}
+
+                    <div style={{ padding: 12 }}>
+                      <div className="channel-section-title" style={{ paddingTop: 0 }}>
+                        <span>{t.textChannelsHeader}</span>
+                      </div>
+                      {serverForm.textChannels.map((ch, idx) => (
+                        <div
+                          key={ch.id}
+                          className={`channel-item ${idx === 0 ? "active" : ""}`}
+                          style={{ cursor: "default" }}
+                        >
+                          <div className="channel-item-left">
+                            <Hash size={16} />
+                            <span>{ch.name}</span>
+                          </div>
+                        </div>
+                      ))}
+
+                      <div className="channel-section-title">
+                        <span>{t.voiceChannelsHeader}</span>
+                      </div>
+                      {serverForm.voiceChannels.map((vc) => (
+                        <div key={vc.id} className="channel-item" style={{ cursor: "default" }}>
+                          <div className="channel-item-left">
+                            <Volume2 size={16} color="#23a55a" />
+                            <span>{vc.name}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18 }}>
+                <div>
+                  {serverStudioMode === "edit" && rooms.length > 1 && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ backgroundColor: "rgba(242, 63, 67, 0.2)", color: "#fca5a5" }}
+                      onClick={() => handleDeleteServer(serverForm.id)}
+                    >
+                      <Trash2 size={14} />
+                      <span>{t.deleteServerBtn}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setShowServerStudio(false)}
+                  >
+                    {t.cancelBtn}
+                  </button>
+                  <button type="submit" className="btn-primary">
+                    <Sparkles size={14} />
+                    <span>{t.saveServerBtn}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}
