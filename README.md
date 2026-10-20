@@ -23,6 +23,11 @@
   - Personalize **2-Tone Profile Theme Gradient Colors** (Primary & Accent) and toggle **Profile Badges** (`P2P Mesh Pioneer`, `Serverless Node`, `E2EE Verified`, `Open Source Builder`, `Voice Mesh Host`, `Zero-Latency Peer`) with a live interactive Profile Card preview.
 - **Real-Time Voice, Video & Go Live Screen Sharing (WebRTC P2P Mesh)**:
   - Low-latency Opus voice chat with real-time Voice Activity Detection (speaking green ring indicator), Self Mute, Self Deafen, and per-peer local volume control (`0%–200%`).
+  - **Complete Audio, Camera & Screen Share Studio**:
+    - Select your **Audio Output Device** (Speaker / Headset via `setSinkId`) with Master Output Volume (`0%–200%`) and built-in audio chime tester.
+    - Select your **Microphone Input Device** with a real-time VU input level meter and toggles for **Echo Cancellation**, **Noise Suppression**, and **Automatic Gain Control (AGC)**.
+    - Select your **Camera Device** and capture resolution (`480p`, `720p HD`, `1080p Full HD`) with live video preview.
+    - Choose your **Go Live Screen Share Resolution** (`720p HD`, `1080p Full HD`, `1440p QHD`, `4K Ultra HD`) and **Frame Rate** (`15 FPS`, `30 FPS`, `60 FPS`).
   - Native desktop/window screen sharing (**Go Live**) powered by Electron's `desktopCapturer` and `getDisplayMedia`.
   - **Serverless WebRTC SDP Invite Codes**: Connect two computers across the internet or strict NATs by exchanging compact Base64 SDP Offer/Answer tokens without port forwarding or signaling servers.
 - **Cryptographic Pairwise Fingerprints**:
