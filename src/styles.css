@@ -1282,3 +1282,75 @@ body, html, #root {
   color: #fff;
 }
 
+/* Voice, Video & Screen Share Settings Studio */
+.form-select {
+  width: 100%;
+  background-color: var(--bg-tertiary);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 9px 11px;
+  color: var(--text-header);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.form-select:focus {
+  border-color: var(--brand-blurple);
+}
+
+.mic-meter-track {
+  width: 100%;
+  height: 10px;
+  background-color: var(--bg-tertiary);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 6px;
+}
+
+.mic-meter-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #23a55a 0%, #4ade80 70%, #f0b232 90%, #f23f43 100%);
+  transition: width 0.08s ease-out;
+}
+
+.media-section-card {
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.media-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.camera-preview-box {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: 210px;
+  background: #111214;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.camera-preview-box video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+

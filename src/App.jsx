@@ -6,6 +6,7 @@ import {
   MicOff,
   Headphones,
   Settings,
+  Sliders,
   Plus,
   Radio,
   Monitor,
@@ -28,7 +29,12 @@ import {
   Trash2,
   Sparkles,
 } from "lucide-react";
-import { WebRTCVoiceEngine } from "./services/webrtcVoiceEngine";
+import {
+  WebRTCVoiceEngine,
+  SCREEN_RESOLUTIONS,
+  CAMERA_RESOLUTIONS,
+  SCREEN_FPS_OPTIONS,
+} from "./services/webrtcVoiceEngine";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -193,6 +199,28 @@ const I18N = {
     quickMessagePlaceholder: (name) => `Message @${name} directly via P2P...`,
     editMyProfileBtn: "Edit My Profile",
     saveProfileBtn: "Save & Sync Profile",
+    mediaSettingsBtn: "Voice, Video & Screen",
+    mediaSettingsTitle: "🎙️ Voice, Camera & Screen Share Settings",
+    mediaSettingsSub: "Choose your Audio Output (Speaker/Headset), Microphone Input, Camera, and Go Live Screen Share Resolution & FPS.",
+    tabProfileSettings: "✨ Profile & Identity",
+    tabMediaSettings: "🎙️ Audio, Camera & Screen",
+    micDeviceLabel: "Input Device (Microphone)",
+    speakerDeviceLabel: "Output Device (Speaker / Headset)",
+    cameraDeviceLabel: "Camera Device (Video Input)",
+    defaultDeviceOption: "System Default Device",
+    refreshDevicesBtn: "Refresh Devices",
+    testSpeakerBtn: "🔊 Test Output Audio",
+    testMicLabel: "Live Microphone Input Level",
+    masterOutputVolLabel: (vol) => `Master Output Volume: ${vol}%`,
+    echoCancelLabel: "Echo Cancellation",
+    noiseSuppLabel: "Noise Suppression",
+    autoGainLabel: "Automatic Gain Control (AGC)",
+    cameraResLabel: "Camera Capture Resolution",
+    testCameraBtn: "Preview Camera",
+    stopTestCameraBtn: "Stop Preview",
+    screenQualitySectionTitle: "🖥️ Go Live Screen Share Resolution & Frame Rate",
+    screenResLabel: "Screen Share Resolution",
+    screenFpsLabel: "Frame Rate (FPS)",
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -317,6 +345,28 @@ const I18N = {
     quickMessagePlaceholder: (name) => `Enviar mensagem direta P2P para @${name}...`,
     editMyProfileBtn: "Editar Meu Perfil",
     saveProfileBtn: "Salvar e Sincronizar Perfil",
+    mediaSettingsBtn: "Áudio, Câmera & Tela",
+    mediaSettingsTitle: "🎙️ Configurações de Áudio, Câmera & Transmissão",
+    mediaSettingsSub: "Escolha a Saída de Áudio (Fone/Caixa), o Microfone de Entrada, a Câmera e a Resolução + FPS da Transmissão de Tela (Go Live).",
+    tabProfileSettings: "✨ Perfil & Identidade",
+    tabMediaSettings: "🎙️ Áudio, Câmera & Tela",
+    micDeviceLabel: "Dispositivo de Entrada (Microfone)",
+    speakerDeviceLabel: "Dispositivo de Saída (Áudio / Fone / Alto-falante)",
+    cameraDeviceLabel: "Dispositivo de Vídeo (Câmera)",
+    defaultDeviceOption: "Padrão do Sistema",
+    refreshDevicesBtn: "Atualizar Dispositivos",
+    testSpeakerBtn: "🔊 Testar Saída de Áudio",
+    testMicLabel: "Nível do Microfone em Tempo Real",
+    masterOutputVolLabel: (vol) => `Volume Principal de Saída: ${vol}%`,
+    echoCancelLabel: "Cancelamento de Eco",
+    noiseSuppLabel: "Supressão de Ruído",
+    autoGainLabel: "Controle Automático de Ganho (AGC)",
+    cameraResLabel: "Resolução de Captura da Câmera",
+    testCameraBtn: "Testar Câmera",
+    stopTestCameraBtn: "Parar Teste",
+    screenQualitySectionTitle: "🖥️ Resolução e Taxa de Quadros da Transmissão de Tela (Go Live)",
+    screenResLabel: "Resolução da Transmissão de Tela",
+    screenFpsLabel: "Taxa de Quadros (FPS)",
   },
 };
 
@@ -659,8 +709,9 @@ export default function App() {
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelType, setNewChannelType] = useState("text");
 
-  // Profile Customization Studio & Inspected User Popout
+  // Profile Customization Studio & Media Settings Studio
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("profile"); // "profile" | "media"
   const [inspectedProfile, setInspectedProfile] = useState(null);
   const [profileForm, setProfileForm] = useState({
     displayName: "",
@@ -680,6 +731,25 @@ export default function App() {
     badges: ["P2P Node", "Early Adopter"],
   });
 
+  // Media Devices & Screen Share Quality State
+  const [mediaDevices, setMediaDevices] = useState({
+    audioInputs: [],
+    audioOutputs: [],
+    videoInputs: [],
+  });
+  const [selectedMicId, setSelectedMicId] = useState("default");
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState("default");
+  const [selectedCameraId, setSelectedCameraId] = useState("default");
+  const [cameraResolution, setCameraResolution] = useState("720p");
+  const [screenResolution, setScreenResolution] = useState("1080p");
+  const [screenFps, setScreenFps] = useState(30);
+  const [masterOutputVolume, setMasterOutputVolume] = useState(100);
+  const [echoCancellation, setEchoCancellation] = useState(true);
+  const [noiseSuppression, setNoiseSuppression] = useState(true);
+  const [autoGainControl, setAutoGainControl] = useState(true);
+  const [micInputLevel, setMicInputLevel] = useState(0);
+  const [cameraTestStream, setCameraTestStream] = useState(null);
+
   const voiceEngineRef = useRef(null);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -687,7 +757,12 @@ export default function App() {
   const bannerUploadRef = useRef(null);
   const lastTypingSentRef = useRef(0);
 
-  const openProfileStudio = () => {
+  const refreshMediaDevices = async () => {
+    const enumerated = await WebRTCVoiceEngine.enumerateDevices();
+    setMediaDevices(enumerated);
+  };
+
+  const openProfileStudio = (initialTab = "profile") => {
     const p = nodeStatus.profile;
     setProfileForm({
       displayName: p.displayName || p.username || "Peer",
@@ -706,11 +781,21 @@ export default function App() {
       accentColorSecondary: p.accentColorSecondary || "#2b2d31",
       badges: Array.isArray(p.badges) ? p.badges : ["P2P Node", "Early Adopter"],
     });
+    setSettingsTab(typeof initialTab === "string" ? initialTab : "profile");
     setInspectedProfile(null);
+    refreshMediaDevices();
     setShowProfileModal(true);
   };
 
-  // Initialize WebRTC Voice Engine
+  // Stop camera preview stream when closing modal
+  useEffect(() => {
+    if (!showProfileModal && cameraTestStream) {
+      cameraTestStream.getTracks().forEach((t) => t.stop());
+      setCameraTestStream(null);
+    }
+  }, [showProfileModal, cameraTestStream]);
+
+  // Initialize WebRTC Voice Engine & Load Media Preferences
   useEffect(() => {
     const engine = new WebRTCVoiceEngine({
       onSignalSend: (targetPeerId, signal) => {
@@ -728,6 +813,9 @@ export default function App() {
       onSpeakingChange: (who, isSpeaking) => {
         const key = who === "self" ? nodeStatus.profile.peerId : who;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
+      },
+      onInputLevelChange: (level) => {
+        setMicInputLevel(level);
       },
       onStatsUpdate: (stats) => {
         setRtcStats(stats);
@@ -762,8 +850,42 @@ export default function App() {
       },
     });
 
+    try {
+      const savedPrefs = JSON.parse(localStorage.getItem("freecord_media_prefs") || "{}");
+      if (savedPrefs.micId) {
+        setSelectedMicId(savedPrefs.micId);
+        engine.audioInputDeviceId = savedPrefs.micId;
+      }
+      if (savedPrefs.speakerId) {
+        setSelectedSpeakerId(savedPrefs.speakerId);
+        engine.audioOutputDeviceId = savedPrefs.speakerId;
+      }
+      if (savedPrefs.cameraId) {
+        setSelectedCameraId(savedPrefs.cameraId);
+        engine.videoInputDeviceId = savedPrefs.cameraId;
+      }
+      if (savedPrefs.cameraResolution) {
+        setCameraResolution(savedPrefs.cameraResolution);
+        engine.cameraResolution = savedPrefs.cameraResolution;
+      }
+      if (savedPrefs.screenResolution) {
+        setScreenResolution(savedPrefs.screenResolution);
+        engine.screenResolution = savedPrefs.screenResolution;
+      }
+      if (savedPrefs.screenFps) {
+        setScreenFps(Number(savedPrefs.screenFps));
+        engine.screenFrameRate = Number(savedPrefs.screenFps);
+      }
+    } catch {}
+
     voiceEngineRef.current = engine;
+    refreshMediaDevices();
+
+    const handleDeviceChange = () => refreshMediaDevices();
+    navigator.mediaDevices?.addEventListener?.("devicechange", handleDeviceChange);
+
     return () => {
+      navigator.mediaDevices?.removeEventListener?.("devicechange", handleDeviceChange);
       engine.destroyAll();
     };
   }, []);
@@ -1200,9 +1322,100 @@ export default function App() {
     await startScreenShareWithSource("browser-display");
   };
 
+  const persistMediaPrefs = (patch) => {
+    try {
+      const prev = JSON.parse(localStorage.getItem("freecord_media_prefs") || "{}");
+      localStorage.setItem("freecord_media_prefs", JSON.stringify({ ...prev, ...patch }));
+    } catch {}
+  };
+
+  const handleSelectMicDevice = async (deviceId) => {
+    setSelectedMicId(deviceId);
+    persistMediaPrefs({ micId: deviceId });
+    await voiceEngineRef.current?.setAudioInputDevice(deviceId);
+    refreshMediaDevices();
+  };
+
+  const handleSelectSpeakerDevice = async (deviceId) => {
+    setSelectedSpeakerId(deviceId);
+    persistMediaPrefs({ speakerId: deviceId });
+    await voiceEngineRef.current?.setAudioOutputDevice(deviceId);
+  };
+
+  const handleSelectCameraDevice = async (deviceId) => {
+    setSelectedCameraId(deviceId);
+    persistMediaPrefs({ cameraId: deviceId });
+    const updatedStream = await voiceEngineRef.current?.setVideoInputDevice(deviceId, cameraResolution);
+    if (updatedStream && videoEnabled) {
+      setLocalMediaStream(updatedStream);
+    }
+    if (cameraTestStream) {
+      await toggleCameraPreview(true, deviceId, cameraResolution);
+    }
+    refreshMediaDevices();
+  };
+
+  const handleSelectCameraResolution = async (resKey) => {
+    setCameraResolution(resKey);
+    persistMediaPrefs({ cameraResolution: resKey });
+    const updatedStream = await voiceEngineRef.current?.setVideoInputDevice(selectedCameraId, resKey);
+    if (updatedStream && videoEnabled) {
+      setLocalMediaStream(updatedStream);
+    }
+    if (cameraTestStream) {
+      await toggleCameraPreview(true, selectedCameraId, resKey);
+    }
+  };
+
+  const handleSelectScreenQuality = async (resKey, fpsVal) => {
+    const nextRes = resKey || screenResolution;
+    const nextFps = Number(fpsVal || screenFps);
+    setScreenResolution(nextRes);
+    setScreenFps(nextFps);
+    persistMediaPrefs({ screenResolution: nextRes, screenFps: nextFps });
+    const updatedStream = await voiceEngineRef.current?.setScreenShareQuality(nextRes, nextFps);
+    if (updatedStream && screenSharing) {
+      setLocalMediaStream(updatedStream);
+    }
+  };
+
+  const toggleCameraPreview = async (
+    forceEnable = null,
+    camId = selectedCameraId,
+    camRes = cameraResolution
+  ) => {
+    const shouldEnable = forceEnable !== null ? forceEnable : !cameraTestStream;
+    if (cameraTestStream) {
+      cameraTestStream.getTracks().forEach((t) => t.stop());
+      setCameraTestStream(null);
+    }
+    if (!shouldEnable) return;
+    try {
+      const resObj = CAMERA_RESOLUTIONS[camRes] || CAMERA_RESOLUTIONS["720p"];
+      const constraints = {
+        width: { ideal: resObj.width },
+        height: { ideal: resObj.height },
+      };
+      if (camId && camId !== "default") {
+        constraints.deviceId = { exact: camId };
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: constraints,
+        audio: false,
+      });
+      setCameraTestStream(stream);
+      refreshMediaDevices();
+    } catch (err) {
+      alert(`Camera preview error: ${err.message}`);
+    }
+  };
+
   const startScreenShareWithSource = async (sourceId) => {
     try {
-      const stream = await voiceEngineRef.current?.setDesktopSource(sourceId);
+      const stream = await voiceEngineRef.current?.setDesktopSource(sourceId, {
+        resolution: screenResolution,
+        frameRate: screenFps,
+      });
       if (stream) {
         setScreenSharing(true);
         setLocalMediaStream(stream);
@@ -1708,7 +1921,7 @@ export default function App() {
           <div className="user-panel">
             <div
               className="user-panel-info"
-              onClick={openProfileStudio}
+              onClick={() => openProfileStudio("profile")}
               title={t.profileSettingsTooltip}
             >
               <UserAvatar
@@ -1742,7 +1955,14 @@ export default function App() {
               </button>
               <button
                 className="icon-btn"
-                onClick={openProfileStudio}
+                onClick={() => openProfileStudio("media")}
+                title={t.mediaSettingsTitle}
+              >
+                <Sliders size={17} />
+              </button>
+              <button
+                className="icon-btn"
+                onClick={() => openProfileStudio("profile")}
                 title={t.profileSettingsTooltip}
               >
                 <Settings size={17} />
@@ -1764,7 +1984,11 @@ export default function App() {
             </div>
 
             <div className="stage-header-right">
-              <button className="btn-secondary" onClick={openProfileStudio}>
+              <button className="btn-secondary" onClick={() => openProfileStudio("media")}>
+                <Sliders size={14} />
+                <span>{t.mediaSettingsBtn}</span>
+              </button>
+              <button className="btn-secondary" onClick={() => openProfileStudio("profile")}>
                 <Sparkles size={14} />
                 <span>{t.editMyProfileBtn}</span>
               </button>
@@ -1794,12 +2018,23 @@ export default function App() {
                       </strong>
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => openProfileStudio("media")}
+                      >
+                        <Sliders size={14} />
+                        <span>{t.mediaSettingsBtn}</span>
+                      </button>
                       <button className="btn-secondary" onClick={toggleCamera}>
                         {videoEnabled ? t.turnOffCamera : t.turnOnCamera}
                       </button>
                       <button className="btn-primary" onClick={openGoLivePicker}>
                         <Monitor size={14} />
-                        <span>{screenSharing ? t.stopGoLive : t.startGoLive}</span>
+                        <span>
+                          {screenSharing
+                            ? `${t.stopGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`
+                            : `${t.startGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`}
+                        </span>
                       </button>
                     </div>
                   </div>
@@ -2263,17 +2498,23 @@ export default function App() {
         </div>
       )}
 
-      {/* Modal: Full Profile Customization Studio */}
+      {/* Modal: Full Profile Customization & Voice/Video/Screen Settings Studio */}
       {showProfileModal && (
         <div className="modal-backdrop" onClick={() => setShowProfileModal(false)}>
           <div className="profile-studio-modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div>
                 <h3 style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
-                  ✨ {t.profileModalTitle}
+                  {settingsTab === "media" ? t.mediaSettingsTitle : `✨ ${t.profileModalTitle}`}
                 </h3>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                  {t.cryptoPeerIdLabel} <b>{nodeStatus.profile.peerId}</b>
+                  {settingsTab === "media" ? (
+                    t.mediaSettingsSub
+                  ) : (
+                    <>
+                      {t.cryptoPeerIdLabel} <b>{nodeStatus.profile.peerId}</b>
+                    </>
+                  )}
                 </p>
               </div>
               <button className="icon-btn" onClick={() => setShowProfileModal(false)}>
@@ -2281,6 +2522,294 @@ export default function App() {
               </button>
             </div>
 
+            {/* Studio Top Tabs: Profile vs Audio/Camera/Screen */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <button
+                type="button"
+                className={settingsTab === "profile" ? "btn-primary" : "btn-secondary"}
+                onClick={() => setSettingsTab("profile")}
+              >
+                {t.tabProfileSettings}
+              </button>
+              <button
+                type="button"
+                className={settingsTab === "media" ? "btn-primary" : "btn-secondary"}
+                onClick={() => {
+                  setSettingsTab("media");
+                  refreshMediaDevices();
+                }}
+              >
+                {t.tabMediaSettings}
+              </button>
+            </div>
+
+            {settingsTab === "media" ? (
+              <div>
+                <div className="profile-studio-grid">
+                  {/* Left Column: Audio Output & Microphone Input */}
+                  <div>
+                    {/* Audio Output (Speaker / Headset) */}
+                    <div className="media-section-card">
+                      <div className="media-section-header">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Headphones size={16} color="#5865f2" />
+                          {t.speakerDeviceLabel}
+                        </span>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: "4px 9px", fontSize: 11 }}
+                          onClick={refreshMediaDevices}
+                        >
+                          <RefreshCw size={12} />
+                        </button>
+                      </div>
+
+                      <div className="form-group">
+                        <select
+                          className="form-select"
+                          value={selectedSpeakerId}
+                          onChange={(e) => handleSelectSpeakerDevice(e.target.value)}
+                        >
+                          <option value="default">{t.defaultDeviceOption}</option>
+                          {mediaDevices.audioOutputs.map((dev, idx) => (
+                            <option key={dev.deviceId || idx} value={dev.deviceId}>
+                              {dev.label || `Audio Output #${idx + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 10 }}>
+                        <label>{t.masterOutputVolLabel(masterOutputVolume)}</label>
+                        <input
+                          type="range"
+                          min="0"
+                          max="200"
+                          value={masterOutputVolume}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setMasterOutputVolume(val);
+                            voiceEngineRef.current?.setMasterOutputVolume(val);
+                          }}
+                          style={{ width: "100%", cursor: "pointer" }}
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={() => voiceEngineRef.current?.playTestOutputTone()}
+                      >
+                        <Volume2 size={14} />
+                        <span>{t.testSpeakerBtn}</span>
+                      </button>
+                    </div>
+
+                    {/* Microphone Input */}
+                    <div className="media-section-card">
+                      <div className="media-section-header">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Mic size={16} color="#23a55a" />
+                          {t.micDeviceLabel}
+                        </span>
+                      </div>
+
+                      <div className="form-group">
+                        <select
+                          className="form-select"
+                          value={selectedMicId}
+                          onChange={(e) => handleSelectMicDevice(e.target.value)}
+                        >
+                          <option value="default">{t.defaultDeviceOption}</option>
+                          {mediaDevices.audioInputs.map((dev, idx) => (
+                            <option key={dev.deviceId || idx} value={dev.deviceId}>
+                              {dev.label || `Microphone #${idx + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="form-group">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <label style={{ marginBottom: 0 }}>{t.testMicLabel}</label>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            style={{ padding: "3px 8px", fontSize: 11 }}
+                            onClick={() => voiceEngineRef.current?.startLocalVoice(true)}
+                          >
+                            🎙️ Test
+                          </button>
+                        </div>
+                        <div className="mic-meter-track">
+                          <div
+                            className="mic-meter-fill"
+                            style={{ width: `${micInputLevel}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                        {[
+                          {
+                            key: "echoCancellation",
+                            val: echoCancellation,
+                            setter: setEchoCancellation,
+                            label: t.echoCancelLabel,
+                          },
+                          {
+                            key: "noiseSuppression",
+                            val: noiseSuppression,
+                            setter: setNoiseSuppression,
+                            label: t.noiseSuppLabel,
+                          },
+                          {
+                            key: "autoGainControl",
+                            val: autoGainControl,
+                            setter: setAutoGainControl,
+                            label: t.autoGainLabel,
+                          },
+                        ].map((opt) => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            className={`status-choice-btn ${opt.val ? "active" : ""}`}
+                            onClick={async () => {
+                              const next = !opt.val;
+                              opt.setter(next);
+                              await voiceEngineRef.current?.setAudioInputDevice(selectedMicId, {
+                                [opt.key]: next,
+                              });
+                            }}
+                          >
+                            {opt.val ? "✓ " : ""}
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Camera & Screen Share Resolution / FPS */}
+                  <div>
+                    {/* Video Camera Selection & Resolution */}
+                    <div className="media-section-card">
+                      <div className="media-section-header">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Video size={16} color="#eb459e" />
+                          {t.cameraDeviceLabel}
+                        </span>
+                        <button
+                          type="button"
+                          className={cameraTestStream ? "btn-secondary" : "btn-primary"}
+                          style={{ padding: "4px 10px", fontSize: 11 }}
+                          onClick={() => toggleCameraPreview()}
+                        >
+                          {cameraTestStream ? t.stopTestCameraBtn : t.testCameraBtn}
+                        </button>
+                      </div>
+
+                      <div className="form-group">
+                        <select
+                          className="form-select"
+                          value={selectedCameraId}
+                          onChange={(e) => handleSelectCameraDevice(e.target.value)}
+                        >
+                          <option value="default">{t.defaultDeviceOption}</option>
+                          {mediaDevices.videoInputs.map((dev, idx) => (
+                            <option key={dev.deviceId || idx} value={dev.deviceId}>
+                              {dev.label || `Camera #${idx + 1}`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="form-group">
+                        <label>{t.cameraResLabel}</label>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                          {Object.entries(CAMERA_RESOLUTIONS).map(([key, info]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              className={`status-choice-btn ${
+                                cameraResolution === key ? "active" : ""
+                              }`}
+                              onClick={() => handleSelectCameraResolution(key)}
+                            >
+                              {info.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {cameraTestStream && (
+                        <div className="camera-preview-box">
+                          <VideoStreamView stream={cameraTestStream} muted={true} />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Screen Share Resolution & FPS */}
+                    <div className="media-section-card">
+                      <div className="media-section-header">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Monitor size={16} color="#f0b232" />
+                          {t.screenQualitySectionTitle}
+                        </span>
+                      </div>
+
+                      <div className="form-group">
+                        <label>{t.screenResLabel}</label>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                          {Object.entries(SCREEN_RESOLUTIONS).map(([key, info]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              className={`status-choice-btn ${
+                                screenResolution === key ? "active" : ""
+                              }`}
+                              onClick={() => handleSelectScreenQuality(key, screenFps)}
+                            >
+                              {info.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label>{t.screenFpsLabel}</label>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                          {SCREEN_FPS_OPTIONS.map((fps) => (
+                            <button
+                              key={fps}
+                              type="button"
+                              className={`status-choice-btn ${
+                                Number(screenFps) === fps ? "active" : ""
+                              }`}
+                              onClick={() => handleSelectScreenQuality(screenResolution, fps)}
+                            >
+                              {fps} FPS
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => setShowProfileModal(false)}
+                  >
+                    <Check size={14} />
+                    <span>{t.closeBtn}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
             <form onSubmit={handleSaveProfile}>
               <div className="profile-studio-grid">
                 {/* Left Column: Customization Controls */}
@@ -2620,6 +3149,7 @@ export default function App() {
                 </button>
               </div>
             </form>
+            )}
           </div>
         </div>
       )}
@@ -2872,6 +3402,46 @@ export default function App() {
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <h3>{t.screenPickerTitle}</h3>
             <p className="sub">{t.screenPickerSub}</p>
+
+            {/* Resolution & Frame Rate Selector Bar inside Go Live Picker */}
+            <div className="media-section-card" style={{ marginBottom: 14 }}>
+              <div className="form-group" style={{ marginBottom: 10 }}>
+                <label>{t.screenResLabel}</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+                  {Object.entries(SCREEN_RESOLUTIONS).map(([key, info]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className={`status-choice-btn ${
+                        screenResolution === key ? "active" : ""
+                      }`}
+                      onClick={() => handleSelectScreenQuality(key, screenFps)}
+                    >
+                      {info.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>{t.screenFpsLabel}</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                  {SCREEN_FPS_OPTIONS.map((fps) => (
+                    <button
+                      key={fps}
+                      type="button"
+                      className={`status-choice-btn ${
+                        Number(screenFps) === fps ? "active" : ""
+                      }`}
+                      onClick={() => handleSelectScreenQuality(screenResolution, fps)}
+                    >
+                      {fps} FPS
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="source-picker-grid">
               {desktopSources.map((src) => (
                 <div
