@@ -16,6 +16,16 @@ export const CAMERA_RESOLUTIONS = {
 
 export const SCREEN_FPS_OPTIONS = [15, 30, 60];
 
+export const WEBRTC_ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:stun.services.mozilla.com" },
+];
+
 function getAudioBinContainer() {
   if (typeof document === "undefined") return null;
   let bin = document.getElementById("freecord-remote-audio-bin");
@@ -80,6 +90,7 @@ export class WebRTCVoiceEngine {
     this.audioContext = null;
     this.vadInterval = null;
     this.statsInterval = null;
+    this.keyFrameInterval = null;
     this.frameRelayInterval = null;
     this.relayCamVideoEl = null;
     this.relayScrVideoEl = null;
@@ -850,8 +861,9 @@ export class WebRTCVoiceEngine {
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.degradationPreference = "maintain-resolution";
+      params.encodings[0].active = true;
       if (kind === "screen") {
+        params.degradationPreference = "maintain-resolution";
         const bitrates = {
           "720p": 4_500_000,
           "1080p": 10_000_000,
@@ -861,10 +873,10 @@ export class WebRTCVoiceEngine {
         params.encodings[0].maxBitrate = bitrates[this.screenResolution] || 10_000_000;
         params.encodings[0].maxFramerate = Number(this.screenFrameRate) || 30;
         params.encodings[0].scaleResolutionDownBy = 1.0;
-        // Keep video networkPriority at medium so voice audio (high) is NEVER starved by screen frames!
         params.encodings[0].priority = "medium";
         params.encodings[0].networkPriority = "medium";
       } else {
+        params.degradationPreference = "balanced";
         const camBitrates = {
           "480p": 1_500_000,
           "720p": 3_500_000,
@@ -897,25 +909,133 @@ export class WebRTCVoiceEngine {
     }
   }
 
-  enhanceSdpBitrate(sdpDescription) {
-    if (!sdpDescription || !sdpDescription.sdp) return sdpDescription;
-    // Configure Opus for constant-bitrate FEC zero-drop voice, and boost video bitrate separately
-    const lines = sdpDescription.sdp.split("\r\n");
-    const enhanced = lines.map((line) => {
-      if (line.startsWith("a=fmtp:")) {
-        if (line.includes("minptime=10")) {
-          let opusLine = line;
-          if (!opusLine.includes("maxaveragebitrate")) {
-            opusLine += ";maxaveragebitrate=128000;stereo=1;sprop-stereo=1;usedtx=0;cbr=1";
-          }
-          return opusLine;
-        }
-        if (!line.includes("x-google-max-bitrate")) {
-          return `${line};x-google-min-bitrate=2500;x-google-start-bitrate=6000;x-google-max-bitrate=28000`;
+  async forceKeyFrame(conn, kind = null) {
+    if (!conn) return;
+    try {
+      if ((!kind || kind === "screen") && conn.screenSender) {
+        if (typeof conn.screenSender.generateKeyFrame === "function") {
+          await conn.screenSender.generateKeyFrame().catch(() => {});
+        } else if (conn.screenSender.track) {
+          await conn.screenSender.replaceTrack(conn.screenSender.track).catch(() => {});
         }
       }
-      return line;
+      if ((!kind || kind === "camera") && conn.cameraSender) {
+        if (typeof conn.cameraSender.generateKeyFrame === "function") {
+          await conn.cameraSender.generateKeyFrame().catch(() => {});
+        } else if (conn.cameraSender.track) {
+          await conn.cameraSender.replaceTrack(conn.cameraSender.track).catch(() => {});
+        }
+      }
+    } catch {}
+  }
+
+  requestKeyFrame(peerId, kind = "screen") {
+    if (!this.inVoiceChannel || !peerId) return;
+    this.onSignalSend?.(peerId, {
+      signalType: "request-keyframe",
+      kind,
     });
+  }
+
+  ensureKeyFrameGenerator() {
+    if (this.keyFrameInterval) return;
+    this.keyFrameInterval = setInterval(() => {
+      if (!this.inVoiceChannel) {
+        clearInterval(this.keyFrameInterval);
+        this.keyFrameInterval = null;
+        return;
+      }
+      const hasMedia =
+        Boolean(this.localScreenStream?.getVideoTracks()?.[0]?.readyState === "live") ||
+        Boolean(this.localVideoStream?.getVideoTracks()?.[0]?.readyState === "live");
+      if (!hasMedia) {
+        clearInterval(this.keyFrameInterval);
+        this.keyFrameInterval = null;
+        return;
+      }
+      for (const conn of this.connections.values()) {
+        if (this.isWebRTCPeerConnected(conn)) {
+          this.forceKeyFrame(conn);
+        }
+      }
+    }, 2500);
+  }
+
+  enhanceSdpBitrate(sdpDescription) {
+    if (!sdpDescription || !sdpDescription.sdp) return sdpDescription;
+    const lines = sdpDescription.sdp.split("\r\n");
+    const enhanced = [];
+
+    let opusPt = null;
+    let vp8Pt = null;
+    for (const line of lines) {
+      const opusMatch = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i);
+      if (opusMatch) opusPt = opusMatch[1];
+      const vp8Match = line.match(/^a=rtpmap:(\d+)\s+VP8\/90000/i);
+      if (vp8Match) vp8Pt = vp8Match[1];
+    }
+
+    let inVideoSection = false;
+    let hasVideoBitrateLine = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      if (line.startsWith("m=video")) {
+        inVideoSection = true;
+        hasVideoBitrateLine = false;
+        enhanced.push(line);
+        continue;
+      }
+      if (line.startsWith("m=audio") || line.startsWith("m=application")) {
+        inVideoSection = false;
+      }
+
+      // Safe Opus audio enhancement (FEC, stereo, constant bitrate)
+      if (
+        line.startsWith("a=fmtp:") &&
+        (line.includes("minptime=10") || (opusPt && line.startsWith(`a=fmtp:${opusPt}`)))
+      ) {
+        let opusLine = line;
+        if (!opusLine.includes("maxaveragebitrate")) {
+          opusLine += ";maxaveragebitrate=128000;stereo=1;sprop-stereo=1;usedtx=0;cbr=1";
+        }
+        enhanced.push(opusLine);
+        continue;
+      }
+
+      // Safe VP8 video bitrate enhancement (ONLY for VP8 payload, NEVER for RTX, H264, or other codecs)
+      if (
+        vp8Pt &&
+        (line.startsWith(`a=fmtp:${vp8Pt} `) || line === `a=fmtp:${vp8Pt}`)
+      ) {
+        let vp8Line = line;
+        if (!vp8Line.includes("x-google-max-bitrate")) {
+          vp8Line += ";x-google-min-bitrate=300;x-google-start-bitrate=2000;x-google-max-bitrate=12000";
+        }
+        enhanced.push(vp8Line);
+        continue;
+      }
+
+      // Standard SDP bandwidth limit b=AS:12000 in video section (12 Mbps ceiling for VP8 & H264)
+      if (inVideoSection && line.startsWith("c=IN IP4")) {
+        enhanced.push(line);
+        if (!hasVideoBitrateLine) {
+          enhanced.push("b=AS:12000");
+          hasVideoBitrateLine = true;
+        }
+        continue;
+      }
+
+      if (inVideoSection && line.startsWith("b=AS:")) {
+        hasVideoBitrateLine = true;
+        enhanced.push("b=AS:12000");
+        continue;
+      }
+
+      enhanced.push(line);
+    }
+
     return {
       type: sdpDescription.type,
       sdp: enhanced.join("\r\n"),
@@ -924,8 +1044,8 @@ export class WebRTCVoiceEngine {
 
   // Lightweight P2P Frame Relay fallback so receivers ALWAYS see live screen/camera even while WebRTC negotiates or across strict firewalls
   updateFrameRelayLoop() {
-    const hasCamera = Boolean(this.localVideoStream?.getVideoTracks()?.[0]);
-    const hasScreen = Boolean(this.localScreenStream?.getVideoTracks()?.[0]);
+    const hasCamera = Boolean(this.localVideoStream?.getVideoTracks()?.[0]?.readyState === "live");
+    const hasScreen = Boolean(this.localScreenStream?.getVideoTracks()?.[0]?.readyState === "live");
 
     if (!this.inVoiceChannel || (!hasCamera && !hasScreen)) {
       if (this.frameRelayInterval) {
@@ -975,28 +1095,18 @@ export class WebRTCVoiceEngine {
       this.frameRelayInterval = setInterval(() => {
         if (!this.inVoiceChannel || !this.onFrameSend || this.connections.size === 0) return;
 
-        // Only send fallback TCP frames if at least one peer's WebRTC connection isn't connected yet
-        let needsFallbackRelay = false;
-        for (const conn of this.connections.values()) {
-          if (!this.isWebRTCPeerConnected(conn) || this.hasUnsentLocalTracks(conn)) {
-            needsFallbackRelay = true;
-            break;
-          }
-        }
-        if (!needsFallbackRelay) return;
-
-        // Send lightweight preview frame only while WebRTC handshake is still in progress
+        // Continuous lightweight preview frame relay: guarantees immediate visual feedback on remote computers
         if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {
           try {
             const vw = this.relayScrVideoEl.videoWidth;
             const vh = this.relayScrVideoEl.videoHeight;
-            const targetW = Math.min(960, vw);
+            const targetW = Math.min(854, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
             ctx.drawImage(this.relayScrVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.72);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.65);
             this.onFrameSend({
               kind: "screen",
               dataUrl,
@@ -1009,13 +1119,13 @@ export class WebRTCVoiceEngine {
           try {
             const vw = this.relayCamVideoEl.videoWidth;
             const vh = this.relayCamVideoEl.videoHeight;
-            const targetW = Math.min(640, vw);
+            const targetW = Math.min(480, vw);
             const targetH = Math.round((vh / vw) * targetW);
             this.relayCanvas.width = targetW;
             this.relayCanvas.height = targetH;
             const ctx = this.relayCanvas.getContext("2d");
             ctx.drawImage(this.relayCamVideoEl, 0, 0, targetW, targetH);
-            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.72);
+            const dataUrl = this.relayCanvas.toDataURL("image/jpeg", 0.65);
             this.onFrameSend({
               kind: "camera",
               dataUrl,
@@ -1023,7 +1133,7 @@ export class WebRTCVoiceEngine {
             });
           } catch {}
         }
-      }, 220);
+      }, 260);
     }
   }
 
@@ -1032,16 +1142,10 @@ export class WebRTCVoiceEngine {
     const conn = this.createPeerConnection(fromPeerId, false);
     if (framePacket.kind === "screen") {
       conn.remoteScreenFrameUrl = framePacket.dataUrl;
-      // Only re-emit if native WebRTC screen stream isn't already active
-      if (!conn.remoteScreenStream) {
-        this.emitRemoteStreamState(conn);
-      }
     } else if (framePacket.kind === "camera") {
       conn.remoteCameraFrameUrl = framePacket.dataUrl;
-      if (!conn.remoteCameraStream) {
-        this.emitRemoteStreamState(conn);
-      }
     }
+    this.emitRemoteStreamState(conn);
   }
 
   handleIncomingAudioChunk(fromPeerId, chunkPacket) {
@@ -1157,7 +1261,8 @@ export class WebRTCVoiceEngine {
     }
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: WEBRTC_ICE_SERVERS,
+      iceCandidatePoolSize: 2,
     });
 
     const audioEl = oldConn?.audioEl || new Audio();
@@ -1324,11 +1429,20 @@ export class WebRTCVoiceEngine {
           });
           track.onunmute = () => {
             this.rebuildRemoteVideoStreams(conn);
+            this.onSignalSend?.(peerId, {
+              signalType: "request-keyframe",
+              mid,
+            });
           };
           track.onended = () => {
             conn.remoteVideoEntries.delete(track.id);
             this.rebuildRemoteVideoStreams(conn);
           };
+          // Immediately request keyframe on track discovery so the video decoder receives an I-frame right away
+          this.onSignalSend?.(peerId, {
+            signalType: "request-keyframe",
+            mid,
+          });
         }
       }
 
@@ -1665,13 +1779,18 @@ export class WebRTCVoiceEngine {
         scrTrack = track;
       } else if (meta.hasCamera && !camTrack) {
         camTrack = track;
-      } else if (!scrTrack && meta.screenTrackId) {
+      } else if (!scrTrack && meta.hasScreen !== false && meta.hasCamera === false) {
         scrTrack = track;
-      } else if (!camTrack && meta.hasCamera !== false) {
+      } else if (!camTrack && meta.hasCamera !== false && meta.hasScreen === false) {
         camTrack = track;
-      } else if (!scrTrack && meta.hasScreen !== false) {
-        scrTrack = track;
       }
+    }
+
+    if (meta.hasScreen === false) {
+      scrTrack = null;
+    }
+    if (meta.hasCamera === false) {
+      camTrack = null;
     }
 
     if (camTrack) {
@@ -1743,25 +1862,35 @@ export class WebRTCVoiceEngine {
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
     if (camTrack) {
       if (conn.cameraSender) {
-        conn.cameraSender.replaceTrack(camTrack).catch(() => {});
+        const prev = conn.cameraSender.track;
+        if (prev !== camTrack) {
+          conn.cameraSender.replaceTrack(camTrack).catch(() => {});
+          addedNewTrack = true;
+        }
       } else {
         conn.cameraSender = pc.addTrack(camTrack, this.localVideoStream);
         addedNewTrack = true;
       }
-    } else if (conn.cameraSender) {
+    } else if (conn.cameraSender && conn.cameraSender.track) {
       conn.cameraSender.replaceTrack(null).catch(() => {});
+      addedNewTrack = true;
     }
 
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
     if (scrTrack) {
       if (conn.screenSender) {
-        conn.screenSender.replaceTrack(scrTrack).catch(() => {});
+        const prev = conn.screenSender.track;
+        if (prev !== scrTrack) {
+          conn.screenSender.replaceTrack(scrTrack).catch(() => {});
+          addedNewTrack = true;
+        }
       } else {
         conn.screenSender = pc.addTrack(scrTrack, this.localScreenStream);
         addedNewTrack = true;
       }
-    } else if (conn.screenSender) {
+    } else if (conn.screenSender && conn.screenSender.track) {
       conn.screenSender.replaceTrack(null).catch(() => {});
+      addedNewTrack = true;
     }
 
     return addedNewTrack;
@@ -1858,6 +1987,7 @@ export class WebRTCVoiceEngine {
           }
           await conn.pc.setLocalDescription(offer);
           await this.configureAllPeerVideoSenders();
+          this.forceKeyFrame(conn);
           this.onSignalSend?.(peerId, {
             signalType: "offer",
             sdp: this.enhanceSdpBitrate(conn.pc.localDescription),
@@ -1897,6 +2027,11 @@ export class WebRTCVoiceEngine {
         }
 
         if (signal.signalType === "stream-meta") {
+          return;
+        }
+
+        if (signal.signalType === "request-keyframe") {
+          this.forceKeyFrame(conn, signal.kind || null);
           return;
         }
 
@@ -1959,6 +2094,7 @@ export class WebRTCVoiceEngine {
           const answer = await conn.pc.createAnswer();
           await conn.pc.setLocalDescription(answer);
           await this.configureAllPeerVideoSenders();
+          this.forceKeyFrame(conn);
 
           const localMeta = this.buildLocalStreamMeta(conn);
           this.onSignalSend?.(fromPeerId, {
@@ -1984,6 +2120,7 @@ export class WebRTCVoiceEngine {
           try {
             await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
             await this.flushPendingCandidates(conn);
+            this.forceKeyFrame(conn);
             this.rebuildRemoteAudioStreams(conn);
             this.rebuildRemoteVideoStreams(conn);
 
@@ -2279,6 +2416,14 @@ export class WebRTCVoiceEngine {
     if (this.statsInterval) {
       clearInterval(this.statsInterval);
       this.statsInterval = null;
+    }
+    if (this.keyFrameInterval) {
+      clearInterval(this.keyFrameInterval);
+      this.keyFrameInterval = null;
+    }
+    if (this.frameRelayInterval) {
+      clearInterval(this.frameRelayInterval);
+      this.frameRelayInterval = null;
     }
     if (this.txProcessorNode) {
       try {
