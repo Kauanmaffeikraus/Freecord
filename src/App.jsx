@@ -905,6 +905,7 @@ export default function App() {
   const [localScreenStream, setLocalScreenStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [peerVolumes, setPeerVolumes] = useState({});
+  const [peerScreenVolumes, setPeerScreenVolumes] = useState({});
   const [rtcStats, setRtcStats] = useState({});
 
   // Stage Resize, Spotlight, Theater, Fullscreen & PiP State
@@ -2398,7 +2399,9 @@ export default function App() {
     const fitMode = tileFitMap[tile.id] || "contain";
     const zoom = tileZoomMap[tile.id] || 1;
     const videoDomId = `freecord_video_${tile.id}`;
-    const vol = peerVolumes[tile.peerId] ?? 100;
+    const isScreenTile = tile.kind === "screen";
+    const voiceVol = peerVolumes[tile.peerId] ?? 100;
+    const screenVol = peerScreenVolumes[tile.peerId] ?? 100;
     const hasVisualMedia = Boolean(tile.stream || tile.frameUrl);
 
     return (
@@ -2417,7 +2420,7 @@ export default function App() {
             videoId={videoDomId}
             stream={tile.stream}
             frameUrl={tile.frameUrl}
-            muted={tile.isSelf || selfDeafen}
+            muted={true}
             fitMode={fitMode}
             zoom={zoom}
           />
@@ -2542,7 +2545,7 @@ export default function App() {
             </div>
           )}
 
-        {/* Bottom Overlay: Name, Badge & Peer Volume */}
+        {/* Bottom Overlay: Name, Badge & Independent Voice / Stream Audio Mixers */}
         <div className="video-tile-overlay" style={{ pointerEvents: "auto" }}>
           <span className="video-tile-name">
             {tile.label}
@@ -2550,19 +2553,118 @@ export default function App() {
           </span>
 
           {!tile.isSelf && (
-            <input
-              type="range"
-              min="0"
-              max="200"
-              value={vol}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setPeerVolumes((prev) => ({ ...prev, [tile.peerId]: v }));
-                voiceEngineRef.current?.setLocalVolume(tile.peerId, v);
-              }}
-              title={t.localVolumeTooltip(tile.label, vol)}
-              style={{ width: 80, cursor: "pointer" }}
-            />
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {isScreenTile ? (
+                <>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 11,
+                      color: "#e2e8f0",
+                      background: "rgba(0,0,0,0.45)",
+                      padding: "2px 6px",
+                      borderRadius: 6,
+                    }}
+                    title={
+                      lang === "pt"
+                        ? `Volume da Transmissão (${tile.label}): ${screenVol}%`
+                        : `Stream Volume (${tile.label}): ${screenVol}%`
+                    }
+                  >
+                    <span>🖥️</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      value={screenVol}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setPeerScreenVolumes((prev) => ({ ...prev, [tile.peerId]: v }));
+                        voiceEngineRef.current?.setLocalScreenVolume(tile.peerId, v);
+                      }}
+                      style={{ width: 72, cursor: "pointer" }}
+                    />
+                    <span style={{ minWidth: 30, textAlign: "right", fontSize: 10 }}>
+                      {screenVol}%
+                    </span>
+                  </label>
+
+                  {isSpotlight && (
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 11,
+                        color: "#e2e8f0",
+                        background: "rgba(0,0,0,0.45)",
+                        padding: "2px 6px",
+                        borderRadius: 6,
+                      }}
+                      title={
+                        lang === "pt"
+                          ? `Volume da Voz (${tile.label}): ${voiceVol}%`
+                          : `Voice Volume (${tile.label}): ${voiceVol}%`
+                      }
+                    >
+                      <span>🎙️</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="200"
+                        value={voiceVol}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setPeerVolumes((prev) => ({ ...prev, [tile.peerId]: v }));
+                          voiceEngineRef.current?.setLocalVolume(tile.peerId, v);
+                        }}
+                        style={{ width: 72, cursor: "pointer" }}
+                      />
+                      <span style={{ minWidth: 30, textAlign: "right", fontSize: 10 }}>
+                        {voiceVol}%
+                      </span>
+                    </label>
+                  )}
+                </>
+              ) : (
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 11,
+                    color: "#e2e8f0",
+                    background: "rgba(0,0,0,0.45)",
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                  }}
+                  title={
+                    lang === "pt"
+                      ? `Volume da Voz (${tile.label}): ${voiceVol}%`
+                      : `Voice Volume (${tile.label}): ${voiceVol}%`
+                  }
+                >
+                  <span>🎙️</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="200"
+                    value={voiceVol}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      setPeerVolumes((prev) => ({ ...prev, [tile.peerId]: v }));
+                      voiceEngineRef.current?.setLocalVolume(tile.peerId, v);
+                    }}
+                    style={{ width: 72, cursor: "pointer" }}
+                  />
+                  <span style={{ minWidth: 30, textAlign: "right", fontSize: 10 }}>
+                    {voiceVol}%
+                  </span>
+                </label>
+              )}
+            </div>
           )}
         </div>
       </div>

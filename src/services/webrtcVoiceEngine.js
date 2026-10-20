@@ -319,6 +319,9 @@ export class WebRTCVoiceEngine {
       if (conn.audioEl) {
         await this.applySinkIdToElement(conn.audioEl);
       }
+      if (conn.screenAudioEl) {
+        await this.applySinkIdToElement(conn.screenAudioEl);
+      }
     }
   }
 
@@ -326,6 +329,7 @@ export class WebRTCVoiceEngine {
     this.masterOutputVolume = Math.max(0, Math.min(200, Number(volumePercent)));
     for (const [peerId, conn] of this.connections.entries()) {
       this.setLocalVolume(peerId, conn.volume);
+      this.setLocalScreenVolume(peerId, conn.screenVolume ?? 100);
     }
   }
 
@@ -380,8 +384,6 @@ export class WebRTCVoiceEngine {
       mixNode.gain.value = 1;
       this.txMixNode = mixNode;
       source.connect(mixNode);
-
-      this.attachScreenAudioToMixer();
 
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
@@ -471,8 +473,7 @@ export class WebRTCVoiceEngine {
           return;
         }
 
-        const hasScreenAudio = Boolean(this.localScreenStream?.getAudioTracks()?.[0]);
-        if ((this.selfMute || this.selfDeafen) && !hasScreenAudio) return;
+        if (this.selfMute || this.selfDeafen) return;
 
         const input = e.inputBuffer.getChannelData(0);
         let sumSq = 0;
@@ -482,10 +483,8 @@ export class WebRTCVoiceEngine {
         }
         const rms = Math.sqrt(sumSq / input.length);
 
-        if (rms > 0.003 || this.localSpeaking || hasScreenAudio) {
-          if (rms > 0.003 || this.localSpeaking) {
-            hangoverBuffers = 5;
-          }
+        if (rms > 0.003 || this.localSpeaking) {
+          hangoverBuffers = 5;
         } else if (hangoverBuffers > 0) {
           hangoverBuffers--;
         } else {
@@ -519,20 +518,14 @@ export class WebRTCVoiceEngine {
   }
 
   attachScreenAudioToMixer() {
-    try {
-      if (this.txScreenAudioSourceNode) {
-        try {
-          this.txScreenAudioSourceNode.disconnect();
-        } catch {}
-        this.txScreenAudioSourceNode = null;
-      }
-      if (!this.txMixNode || !this.localScreenStream) return;
-      if (this.localScreenStream.getAudioTracks().length === 0) return;
-      const ctx = this.ensureAudioContext();
-      const scrSource = ctx.createMediaStreamSource(this.localScreenStream);
-      scrSource.connect(this.txMixNode);
-      this.txScreenAudioSourceNode = scrSource;
-    } catch {}
+    // Screen share audio is transmitted on its own dedicated WebRTC sender (screenAudioSender)
+    // so the receiver can control Voice Volume and Stream Volume via two independent mixers!
+    if (this.txScreenAudioSourceNode) {
+      try {
+        this.txScreenAudioSourceNode.disconnect();
+      } catch {}
+      this.txScreenAudioSourceNode = null;
+    }
   }
 
   setSelfMute(mute) {
@@ -554,7 +547,11 @@ export class WebRTCVoiceEngine {
           (Boolean(conn.usingPcmAudio) && !this.isWebRTCAudioActive(conn));
         conn.audioEl.muted = shouldMuteWebRTC;
       }
+      if (conn.screenAudioEl) {
+        conn.screenAudioEl.muted = this.selfDeafen || Boolean(conn.screenMuted);
+      }
       this.setLocalVolume(peerId, conn.volume);
+      this.setLocalScreenVolume(peerId, conn.screenVolume ?? 100);
     }
   }
 
@@ -601,6 +598,32 @@ export class WebRTCVoiceEngine {
       conn.audioEl.muted = this.selfDeafen || conn.muted;
     }
     this.setLocalVolume(peerId, conn.volume);
+  }
+
+  setLocalScreenVolume(peerId, volumePercent) {
+    const conn = this.connections.get(peerId);
+    if (!conn) return;
+    conn.screenVolume = Math.max(0, Math.min(200, Number(volumePercent)));
+    const effectiveGain =
+      this.selfDeafen || conn.screenMuted
+        ? 0
+        : (conn.screenVolume / 100) * (this.masterOutputVolume / 100);
+    if (conn.screenAudioEl) {
+      conn.screenAudioEl.volume = Math.min(1, effectiveGain);
+    }
+    if (conn.screenGainNode) {
+      conn.screenGainNode.gain.value = effectiveGain > 1 ? effectiveGain - 1 : 0;
+    }
+  }
+
+  setLocalScreenMute(peerId, mute) {
+    const conn = this.connections.get(peerId);
+    if (!conn) return;
+    conn.screenMuted = Boolean(mute);
+    if (conn.screenAudioEl) {
+      conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted;
+    }
+    this.setLocalScreenVolume(peerId, conn.screenVolume ?? 100);
   }
 
   async setVideoInputDevice(deviceId, resolutionKey = this.cameraResolution) {
@@ -1141,18 +1164,30 @@ export class WebRTCVoiceEngine {
     audioEl.autoplay = true;
     audioEl.playsInline = true;
     audioEl.muted = this.selfDeafen || Boolean(oldConn?.muted);
+
+    const screenAudioEl = oldConn?.screenAudioEl || new Audio();
+    screenAudioEl.autoplay = true;
+    screenAudioEl.playsInline = true;
+    screenAudioEl.muted = this.selfDeafen || Boolean(oldConn?.screenMuted);
+
     const bin = getAudioBinContainer();
     if (bin && !bin.contains(audioEl)) {
       bin.appendChild(audioEl);
     }
+    if (bin && !bin.contains(screenAudioEl)) {
+      bin.appendChild(screenAudioEl);
+    }
     this.applySinkIdToElement(audioEl);
+    this.applySinkIdToElement(screenAudioEl);
 
     const conn = {
       peerId,
       pc,
       dataChannel: null,
       remoteStream: new MediaStream(),
+      remoteScreenAudioStream: new MediaStream(),
       remoteAudioTracks: new Map(), // trackId -> MediaStreamTrack
+      remoteAudioEntries: new Map(), // trackId -> { track, streamId, mid, transceiver }
       remoteCameraStream: null,
       remoteScreenStream: null,
       remoteCameraFrameUrl: oldConn?.remoteCameraFrameUrl || null,
@@ -1161,10 +1196,16 @@ export class WebRTCVoiceEngine {
       remoteStreamMeta: oldConn?.remoteStreamMeta || {
         hasCamera: false,
         hasScreen: false,
+        hasScreenAudio: false,
+        voiceAudioTrackId: null,
+        screenAudioTrackId: null,
+        voiceAudioStreamId: null,
         cameraTrackId: null,
         screenTrackId: null,
         cameraStreamId: null,
         screenStreamId: null,
+        voiceAudioMid: null,
+        screenAudioMid: null,
         cameraMid: null,
         screenMid: null,
       },
@@ -1173,7 +1214,11 @@ export class WebRTCVoiceEngine {
       cameraSender: null,
       screenSender: null,
       audioEl,
+      screenAudioEl,
       gainNode: null,
+      audioSourceNode: null,
+      screenGainNode: null,
+      screenAudioSourceNode: null,
       pcmGainNode: oldConn?.pcmGainNode || null,
       usingPcmAudio: Boolean(oldConn?.usingPcmAudio),
       nextPlayTime: 0,
@@ -1181,6 +1226,8 @@ export class WebRTCVoiceEngine {
       analyser: null,
       volume: oldConn?.volume ?? 100,
       muted: oldConn?.muted ?? false,
+      screenVolume: oldConn?.screenVolume ?? 100,
+      screenMuted: oldConn?.screenMuted ?? false,
       hasNegotiated: false,
       makingOffer: false,
       needsFollowUpNegotiation: false,
@@ -1208,6 +1255,10 @@ export class WebRTCVoiceEngine {
         if (conn.audioEl && conn.remoteAudioTracks.size > 0) {
           conn.audioEl.muted = this.selfDeafen || conn.muted;
           conn.audioEl.play().catch(() => {});
+        }
+        if (conn.screenAudioEl && conn.remoteScreenAudioStream?.getAudioTracks().length > 0) {
+          conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted;
+          conn.screenAudioEl.play().catch(() => {});
         }
       }
       this.updateFallbackProcessorState();
@@ -1249,38 +1300,21 @@ export class WebRTCVoiceEngine {
       for (const track of tracks) {
         if (track.kind === "audio") {
           conn.remoteAudioTracks.set(track.id, track);
-          const rebuildAudio = () => {
-            if (!this.connections.has(peerId)) return;
-            const liveAudioTracks = Array.from(conn.remoteAudioTracks.values()).filter(
-              (t) => t.readyState !== "ended"
-            );
-            conn.usingPcmAudio = false;
-            if (conn.pcmGainNode) {
-              try {
-                conn.pcmGainNode.gain.value = 0;
-                conn.pcmGainNode.disconnect();
-              } catch {}
-              conn.pcmGainNode = null;
-            }
-            conn.remoteStream = new MediaStream(liveAudioTracks);
-            conn.audioEl.srcObject = conn.remoteStream;
-            conn.audioEl.muted = this.selfDeafen || conn.muted;
-            const effectiveGain =
-              this.selfDeafen || conn.muted
-                ? 0
-                : (conn.volume / 100) * (this.masterOutputVolume / 100);
-            conn.audioEl.volume = Math.min(1, effectiveGain);
-            this.applySinkIdToElement(conn.audioEl);
-            conn.audioEl.play().catch(() => {});
-            this.setupRemoteAudioGraph(conn);
-            this.updateFallbackProcessorState();
+          conn.remoteAudioEntries.set(track.id, {
+            track,
+            streamId,
+            mid,
+            transceiver: e.transceiver || null,
+          });
+          track.onunmute = () => {
+            this.rebuildRemoteAudioStreams(conn);
           };
-          track.onunmute = rebuildAudio;
           track.onended = () => {
             conn.remoteAudioTracks.delete(track.id);
-            rebuildAudio();
+            conn.remoteAudioEntries.delete(track.id);
+            this.rebuildRemoteAudioStreams(conn);
           };
-          rebuildAudio();
+          this.rebuildRemoteAudioStreams(conn);
         } else if (track.kind === "video") {
           conn.remoteVideoEntries.set(track.id, {
             track,
@@ -1343,6 +1377,128 @@ export class WebRTCVoiceEngine {
     return sent;
   }
 
+  rebuildRemoteAudioStreams(conn) {
+    if (!conn || !this.connections.has(conn.peerId)) return;
+    const activeEntries = Array.from(conn.remoteAudioEntries.values()).filter(
+      (entry) => entry.track && entry.track.readyState !== "ended"
+    );
+    const meta = conn.remoteStreamMeta || {};
+
+    let voiceTrack = null;
+    let scrAudioTrack = null;
+
+    // 1. Match Screen Share Audio track by ID, Stream ID, or Transceiver MID
+    if (meta.hasScreen !== false && meta.hasScreenAudio !== false) {
+      for (const entry of activeEntries) {
+        const entryMid = entry.transceiver?.mid || entry.mid;
+        if (
+          (meta.screenAudioTrackId && entry.track.id === meta.screenAudioTrackId) ||
+          (meta.screenStreamId &&
+            entry.streamId &&
+            entry.streamId === meta.screenStreamId &&
+            entry.streamId !== meta.voiceAudioStreamId) ||
+          (meta.screenAudioMid && entryMid && entryMid === meta.screenAudioMid)
+        ) {
+          scrAudioTrack = entry.track;
+          break;
+        }
+      }
+    }
+
+    // 2. Match Microphone Voice track by ID, Stream ID, or Transceiver MID
+    for (const entry of activeEntries) {
+      if (entry.track === scrAudioTrack) continue;
+      const entryMid = entry.transceiver?.mid || entry.mid;
+      if (
+        (meta.voiceAudioTrackId && entry.track.id === meta.voiceAudioTrackId) ||
+        (meta.voiceAudioStreamId && entry.streamId && entry.streamId === meta.voiceAudioStreamId) ||
+        (meta.voiceAudioMid && entryMid && entryMid === meta.voiceAudioMid)
+      ) {
+        voiceTrack = entry.track;
+        break;
+      }
+    }
+
+    // 3. Fallback matching for remaining active audio tracks
+    for (const entry of activeEntries) {
+      const track = entry.track;
+      if (track === voiceTrack || track === scrAudioTrack) continue;
+      if (!voiceTrack) {
+        voiceTrack = track;
+      } else if (!scrAudioTrack && meta.hasScreen !== false) {
+        scrAudioTrack = track;
+      }
+    }
+
+    conn.usingPcmAudio = false;
+    if (conn.pcmGainNode) {
+      try {
+        conn.pcmGainNode.gain.value = 0;
+        conn.pcmGainNode.disconnect();
+      } catch {}
+      conn.pcmGainNode = null;
+    }
+
+    // Route Voice track exclusively to Voice Mixer (conn.audioEl + conn.gainNode + conn.analyser)
+    const prevVoiceTrackId = conn.remoteStream?.getAudioTracks()?.[0]?.id || null;
+    if (voiceTrack) {
+      if (prevVoiceTrackId !== voiceTrack.id) {
+        conn.remoteStream = new MediaStream([voiceTrack]);
+        conn.audioEl.srcObject = conn.remoteStream;
+        this.applySinkIdToElement(conn.audioEl);
+        this.setupRemoteAudioGraph(conn);
+      }
+      conn.audioEl.muted = this.selfDeafen || conn.muted;
+      const effectiveVoiceGain =
+        this.selfDeafen || conn.muted
+          ? 0
+          : (conn.volume / 100) * (this.masterOutputVolume / 100);
+      conn.audioEl.volume = Math.min(1, effectiveVoiceGain);
+      conn.audioEl.play().catch(() => {});
+    } else {
+      conn.remoteStream = new MediaStream();
+      conn.audioEl.srcObject = null;
+    }
+
+    // Route Screen Share Audio track exclusively to Stream Mixer (conn.screenAudioEl + conn.screenGainNode)
+    const prevScrAudioTrackId = conn.remoteScreenAudioStream?.getAudioTracks()?.[0]?.id || null;
+    if (scrAudioTrack) {
+      if (prevScrAudioTrackId !== scrAudioTrack.id) {
+        conn.remoteScreenAudioStream = new MediaStream([scrAudioTrack]);
+        conn.screenAudioEl.srcObject = conn.remoteScreenAudioStream;
+        this.applySinkIdToElement(conn.screenAudioEl);
+        this.setupRemoteScreenAudioGraph(conn);
+      }
+      conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted;
+      const effectiveScrGain =
+        this.selfDeafen || conn.screenMuted
+          ? 0
+          : ((conn.screenVolume ?? 100) / 100) * (this.masterOutputVolume / 100);
+      conn.screenAudioEl.volume = Math.min(1, effectiveScrGain);
+      conn.screenAudioEl.play().catch(() => {});
+    } else {
+      conn.remoteScreenAudioStream = new MediaStream();
+      if (conn.screenAudioEl) {
+        conn.screenAudioEl.srcObject = null;
+      }
+      if (conn.screenAudioSourceNode) {
+        try {
+          conn.screenAudioSourceNode.disconnect();
+        } catch {}
+        conn.screenAudioSourceNode = null;
+      }
+      if (conn.screenGainNode) {
+        try {
+          conn.screenGainNode.gain.value = 0;
+          conn.screenGainNode.disconnect();
+        } catch {}
+        conn.screenGainNode = null;
+      }
+    }
+
+    this.updateFallbackProcessorState();
+  }
+
   setupRemoteAudioGraph(conn) {
     try {
       if (conn.remoteStream.getAudioTracks().length === 0) return;
@@ -1352,12 +1508,17 @@ export class WebRTCVoiceEngine {
           conn.audioSourceNode.disconnect();
         } catch {}
       }
+      if (conn.gainNode) {
+        try {
+          conn.gainNode.disconnect();
+        } catch {}
+      }
       const source = ctx.createMediaStreamSource(conn.remoteStream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
 
-      // Only connect extra boost gain to destination when volume > 100%, because audioEl plays 0..100% reliably
+      // Independent Voice Boost Gain (100%..200%)
       const gainNode = ctx.createGain();
       const effectiveGain =
         this.selfDeafen || conn.muted
@@ -1373,14 +1534,55 @@ export class WebRTCVoiceEngine {
     } catch {}
   }
 
+  setupRemoteScreenAudioGraph(conn) {
+    try {
+      if (!conn.remoteScreenAudioStream || conn.remoteScreenAudioStream.getAudioTracks().length === 0) {
+        return;
+      }
+      const ctx = this.ensureAudioContext();
+      if (conn.screenAudioSourceNode) {
+        try {
+          conn.screenAudioSourceNode.disconnect();
+        } catch {}
+      }
+      if (conn.screenGainNode) {
+        try {
+          conn.screenGainNode.disconnect();
+        } catch {}
+      }
+      const source = ctx.createMediaStreamSource(conn.remoteScreenAudioStream);
+      const screenGainNode = ctx.createGain();
+      const effectiveScrGain =
+        this.selfDeafen || conn.screenMuted
+          ? 0
+          : ((conn.screenVolume ?? 100) / 100) * (this.masterOutputVolume / 100);
+      screenGainNode.gain.value = effectiveScrGain > 1 ? effectiveScrGain - 1 : 0;
+      source.connect(screenGainNode);
+      screenGainNode.connect(ctx.destination);
+
+      conn.screenAudioSourceNode = source;
+      conn.screenGainNode = screenGainNode;
+    } catch {}
+  }
+
   buildLocalStreamMeta(conn = null) {
+    const voiceAudioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
+    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
+    let voiceAudioMid = null;
+    let screenAudioMid = null;
     let cameraMid = null;
     let screenMid = null;
     if (conn?.pc) {
       try {
         for (const tr of conn.pc.getTransceivers()) {
+          if (conn.audioSender && tr.sender === conn.audioSender) {
+            voiceAudioMid = tr.mid;
+          }
+          if (conn.screenAudioSender && tr.sender === conn.screenAudioSender) {
+            screenAudioMid = tr.mid;
+          }
           if (conn.cameraSender && tr.sender === conn.cameraSender) {
             cameraMid = tr.mid;
           }
@@ -1393,10 +1595,16 @@ export class WebRTCVoiceEngine {
     return {
       hasCamera: Boolean(camTrack && camTrack.readyState === "live"),
       hasScreen: Boolean(scrTrack && scrTrack.readyState === "live"),
+      hasScreenAudio: Boolean(screenAudioTrack && screenAudioTrack.readyState === "live"),
+      voiceAudioTrackId: voiceAudioTrack?.id || null,
+      screenAudioTrackId: screenAudioTrack?.id || null,
+      voiceAudioStreamId: this.localAudioStream?.id || null,
       cameraTrackId: camTrack?.id || null,
       screenTrackId: scrTrack?.id || null,
       cameraStreamId: this.localVideoStream?.id || null,
       screenStreamId: this.localScreenStream?.id || null,
+      voiceAudioMid,
+      screenAudioMid,
       cameraMid,
       screenMid,
       screenResolution: this.screenResolution,
@@ -1571,11 +1779,13 @@ export class WebRTCVoiceEngine {
     };
 
     const audioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
+    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
 
     return (
       checkSender(conn.audioSender, audioTrack) ||
+      checkSender(conn.screenAudioSender, screenAudioTrack) ||
       checkSender(conn.cameraSender, camTrack) ||
       checkSender(conn.screenSender, scrTrack)
     );
@@ -1682,6 +1892,7 @@ export class WebRTCVoiceEngine {
             ...conn.remoteStreamMeta,
             ...signal.streamMeta,
           };
+          this.rebuildRemoteAudioStreams(conn);
           this.rebuildRemoteVideoStreams(conn);
         }
 
@@ -1756,6 +1967,7 @@ export class WebRTCVoiceEngine {
             streamMeta: localMeta,
           });
 
+          this.rebuildRemoteAudioStreams(conn);
           this.rebuildRemoteVideoStreams(conn);
 
           // If we have local camera/screen/audio tracks that couldn't fit in the answer SDP (because offer had no m=video), immediately send a follow-up offer!
@@ -1772,6 +1984,7 @@ export class WebRTCVoiceEngine {
           try {
             await conn.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
             await this.flushPendingCandidates(conn);
+            this.rebuildRemoteAudioStreams(conn);
             this.rebuildRemoteVideoStreams(conn);
 
             // Re-broadcast stream-meta now that transceiver mids are finalized
@@ -1986,9 +2199,27 @@ export class WebRTCVoiceEngine {
       } catch {}
       conn.audioSourceNode = null;
     }
+    if (conn.screenGainNode) {
+      try {
+        conn.screenGainNode.gain.value = 0;
+        conn.screenGainNode.disconnect();
+      } catch {}
+      conn.screenGainNode = null;
+    }
+    if (conn.screenAudioSourceNode) {
+      try {
+        conn.screenAudioSourceNode.disconnect();
+      } catch {}
+      conn.screenAudioSourceNode = null;
+    }
     if (conn.remoteStream) {
       try {
         conn.remoteStream.getTracks().forEach((t) => t.stop());
+      } catch {}
+    }
+    if (conn.remoteScreenAudioStream) {
+      try {
+        conn.remoteScreenAudioStream.getTracks().forEach((t) => t.stop());
       } catch {}
     }
     try {
@@ -2006,6 +2237,16 @@ export class WebRTCVoiceEngine {
         conn.audioEl.removeAttribute("src");
         conn.audioEl.load();
         conn.audioEl.remove();
+      } catch {}
+    }
+    if (conn.screenAudioEl) {
+      try {
+        conn.screenAudioEl.pause();
+        conn.screenAudioEl.muted = true;
+        conn.screenAudioEl.srcObject = null;
+        conn.screenAudioEl.removeAttribute("src");
+        conn.screenAudioEl.load();
+        conn.screenAudioEl.remove();
       } catch {}
     }
     this.connections.delete(peerId);
