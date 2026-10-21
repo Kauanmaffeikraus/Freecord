@@ -1,16 +1,25 @@
 {
   "name": "freecord-ptb",
-  "version": "1.0.1225-p2p",
+  "version": "1.0.0",
   "description": "Freecord PTB — Serverless P2P Desktop & Web Communication reconstructed with REA evidence",
   "main": "electron/main.cjs",
+  "author": "Kauanmaffeikraus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Kauanmaffeikraus/Freecord.git"
+  },
   "scripts": {
     "dev:vite": "vite --port 5173",
     "build": "vite build",
     "start": "vite build && electron .",
     "dev": "vite build && electron .",
-    "peer2": "electron . --peer-instance=2"
+    "peer2": "electron . --peer-instance=2",
+    "dist": "vite build && electron-builder",
+    "dist:win": "vite build && electron-builder --win",
+    "dist:linux": "vite build && electron-builder --linux"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -18,6 +27,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
     "vite": "^6.0.5"
   }
 }
