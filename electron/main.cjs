@@ -4,6 +4,7 @@ const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, powerSaveB
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { autoUpdater } = require("electron-updater");
 const { P2PNode } = require("./p2pNode.cjs");
 
 // Parse --peer-instance=<n> so multiple peers can run on one computer
@@ -294,6 +295,76 @@ function registerIpcHandlers() {
     child.unref();
     return { spawned: true, instanceId: nextId };
   });
+
+  // Auto-updater IPC endpoints
+  ipcMain.handle("FREECORD_GET_APP_VERSION", () => {
+    return app.getVersion();
+  });
+
+  ipcMain.handle("FREECORD_CHECK_FOR_UPDATES", async () => {
+    if (!app.isPackaged) {
+      return { ok: false, dev: true, message: "Auto-updater operates in packaged production builds." };
+    }
+    try {
+      const res = await autoUpdater.checkForUpdates();
+      return { ok: true, updateInfo: res?.updateInfo };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle("FREECORD_QUIT_AND_INSTALL", () => {
+    autoUpdater.quitAndInstall();
+    return true;
+  });
+}
+
+function setupAutoUpdater() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", { status: "checking" });
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", {
+      status: "available",
+      version: info.version,
+      releaseDate: info.releaseDate,
+    });
+  });
+
+  autoUpdater.on("update-not-available", (info) => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", {
+      status: "not-available",
+      version: info.version,
+    });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", {
+      status: "downloading",
+      percent: Math.round(progress.percent || 0),
+      bytesPerSecond: progress.bytesPerSecond,
+      transferred: progress.transferred,
+      total: progress.total,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", {
+      status: "downloaded",
+      version: info.version,
+    });
+  });
+
+  autoUpdater.on("error", (err) => {
+    mainWindow?.webContents.send("FREECORD_UPDATE_STATUS", {
+      status: "error",
+      message: err.message,
+    });
+  });
 }
 
 app.whenReady().then(async () => {
@@ -322,8 +393,17 @@ app.whenReady().then(async () => {
   });
 
   registerIpcHandlers();
+  setupAutoUpdater();
   await setupP2PNode();
   createMainWindow();
+
+  if (app.isPackaged) {
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((err) => {
+        console.warn("[Freecord AutoUpdater] Initial check error:", err.message);
+      });
+    }, 4500);
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

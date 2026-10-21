@@ -8,8 +8,17 @@ const DiscordNative = {
   isRenderer: true,
   app: {
     getReleaseChannel: () => "ptb",
-    getVersion: () => "1.0.1225-p2p",
+    getVersion: () => ipcRenderer.invoke("FREECORD_GET_APP_VERSION"),
     spawnPeerInstance: (instanceId) => ipcRenderer.invoke("FREECORD_SPAWN_PEER_INSTANCE", instanceId),
+  },
+  updater: {
+    checkForUpdates: () => ipcRenderer.invoke("FREECORD_CHECK_FOR_UPDATES"),
+    quitAndInstall: () => ipcRenderer.invoke("FREECORD_QUIT_AND_INSTALL"),
+    onUpdateStatus: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on("FREECORD_UPDATE_STATUS", listener);
+      return () => ipcRenderer.removeListener("FREECORD_UPDATE_STATUS", listener);
+    },
   },
   window: {
     minimize: () => ipcRenderer.invoke("DISCORD_WINDOW_MINIMIZE"),

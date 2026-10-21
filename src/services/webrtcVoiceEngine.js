@@ -102,6 +102,12 @@ export class WebRTCVoiceEngine {
     this.txScreenAudioSourceNode = null;
     this.txMixNode = null;
     this.speakingHoldUntil = 0;
+    this.screenAudioSourceNode = null;
+    this.screenAudioGateNode = null;
+    this.screenAudioDestStream = null;
+    this.processedScreenAudioTrack = null;
+    this.screenAudioDuckingHangover = 0;
+    this.screenAudioHangoverTimer = null;
   }
 
   setLocalPeerId(peerId) {
@@ -453,6 +459,9 @@ export class WebRTCVoiceEngine {
         if (speaking !== this.localSpeaking) {
           this.localSpeaking = speaking;
           this.onSpeakingChange?.("self", speaking);
+          this.applyViewerEchoGuard();
+        } else if (speaking) {
+          this.applyViewerEchoGuard();
         }
       }, 45);
 
@@ -539,6 +548,141 @@ export class WebRTCVoiceEngine {
     }
   }
 
+  setupScreenAudioDuckingGraph() {
+    this.cleanupScreenAudioGraph();
+    if (!this.localScreenStream) return;
+    const rawTrack = this.localScreenStream.getAudioTracks()[0];
+    if (!rawTrack) return;
+
+    try {
+      const ctx = this.ensureAudioContext();
+      const source = ctx.createMediaStreamSource(new MediaStream([rawTrack]));
+      const gate = ctx.createGain();
+      gate.gain.value = 1.0;
+      const dest = ctx.createMediaStreamDestination();
+
+      source.connect(gate);
+      gate.connect(dest);
+
+      this.screenAudioSourceNode = source;
+      this.screenAudioGateNode = gate;
+      this.screenAudioDestStream = dest.stream;
+
+      const processedTrack = dest.stream.getAudioTracks()[0];
+      if (processedTrack) {
+        this.processedScreenAudioTrack = processedTrack;
+        // Immediately attach processed track to all existing peer screen audio senders
+        for (const conn of this.connections.values()) {
+          if (conn.screenAudioSender) {
+            conn.screenAudioSender.replaceTrack(processedTrack).catch(() => {});
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Freecord VoiceEngine] Screen audio ducking graph error:", err.message);
+    }
+  }
+
+  applyScreenAudioAntiEchoGate() {
+    if (!this.screenAudioGateNode || !this.audioContext) return;
+    let anyRemoteSpeaking = false;
+    for (const conn of this.connections.values()) {
+      if (conn.remoteSpeaking && !conn.muted && !this.selfDeafen) {
+        anyRemoteSpeaking = true;
+        break;
+      }
+    }
+    const ctx = this.audioContext;
+    const now = ctx.currentTime;
+    if (anyRemoteSpeaking) {
+      if (this.screenAudioHangoverTimer) {
+        clearTimeout(this.screenAudioHangoverTimer);
+        this.screenAudioHangoverTimer = null;
+      }
+      // Immediate ramp to 0: completely isolates remote voices from leaking into the screen share loopback
+      this.screenAudioGateNode.gain.cancelScheduledValues(now);
+      this.screenAudioGateNode.gain.setTargetAtTime(0, now, 0.012);
+      this.screenAudioDuckingHangover = Date.now() + 450;
+    } else {
+      const remainingHangover = (this.screenAudioDuckingHangover || 0) - Date.now();
+      if (remainingHangover > 0) {
+        if (!this.screenAudioHangoverTimer) {
+          this.screenAudioHangoverTimer = setTimeout(() => {
+            this.screenAudioHangoverTimer = null;
+            this.applyScreenAudioAntiEchoGate();
+          }, remainingHangover);
+        }
+        return;
+      }
+      // Smooth fade back to 1.0
+      this.screenAudioGateNode.gain.cancelScheduledValues(now);
+      this.screenAudioGateNode.gain.setTargetAtTime(1.0, now, 0.04);
+    }
+  }
+
+  isLocalSpeakingEchoActive() {
+    return Boolean(this.localSpeaking);
+  }
+
+  applyViewerEchoGuard() {
+    const isSpeaking = this.isLocalSpeakingEchoActive();
+    for (const conn of this.connections.values()) {
+      if (conn.screenAudioEl) {
+        conn.screenAudioEl.muted = this.selfDeafen || Boolean(conn.screenMuted) || isSpeaking;
+      }
+      if (conn.screenGainNode && this.audioContext) {
+        const now = this.audioContext.currentTime;
+        if (isSpeaking) {
+          conn.screenGainNode.gain.cancelScheduledValues(now);
+          conn.screenGainNode.gain.setValueAtTime(0, now);
+        } else {
+          const effectiveScrGain =
+            this.selfDeafen || conn.screenMuted
+              ? 0
+              : ((conn.screenVolume ?? 100) / 100) * (this.masterOutputVolume / 100);
+          const boostVal = effectiveScrGain > 1 ? effectiveScrGain - 1 : 0;
+          conn.screenGainNode.gain.cancelScheduledValues(now);
+          conn.screenGainNode.gain.setValueAtTime(boostVal, now);
+        }
+      }
+    }
+  }
+
+  setRemotePeerSpeaking(peerId, isSpeaking) {
+    if (!peerId) return;
+    const conn = this.connections.get(peerId);
+    if (conn) {
+      conn.remoteSpeaking = Boolean(isSpeaking);
+    }
+    this.applyScreenAudioAntiEchoGate();
+  }
+
+  cleanupScreenAudioGraph() {
+    if (this.screenAudioHangoverTimer) {
+      clearTimeout(this.screenAudioHangoverTimer);
+      this.screenAudioHangoverTimer = null;
+    }
+    if (this.screenAudioSourceNode) {
+      try {
+        this.screenAudioSourceNode.disconnect();
+      } catch {}
+      this.screenAudioSourceNode = null;
+    }
+    if (this.screenAudioGateNode) {
+      try {
+        this.screenAudioGateNode.disconnect();
+      } catch {}
+      this.screenAudioGateNode = null;
+    }
+    if (this.processedScreenAudioTrack) {
+      try {
+        this.processedScreenAudioTrack.stop();
+      } catch {}
+      this.processedScreenAudioTrack = null;
+    }
+    this.screenAudioDestStream = null;
+  }
+
   setSelfMute(mute) {
     this.selfMute = Boolean(mute);
     this.applyMuteState();
@@ -550,6 +694,8 @@ export class WebRTCVoiceEngine {
       this.selfMute = true;
     }
     this.applyMuteState();
+    this.applyViewerEchoGuard();
+    this.applyScreenAudioAntiEchoGate();
     for (const [peerId, conn] of this.connections.entries()) {
       if (conn.audioEl) {
         const shouldMuteWebRTC =
@@ -559,7 +705,7 @@ export class WebRTCVoiceEngine {
         conn.audioEl.muted = shouldMuteWebRTC;
       }
       if (conn.screenAudioEl) {
-        conn.screenAudioEl.muted = this.selfDeafen || Boolean(conn.screenMuted);
+        conn.screenAudioEl.muted = this.selfDeafen || Boolean(conn.screenMuted) || this.isLocalSpeakingEchoActive();
       }
       this.setLocalVolume(peerId, conn.volume);
       this.setLocalScreenVolume(peerId, conn.screenVolume ?? 100);
@@ -615,12 +761,16 @@ export class WebRTCVoiceEngine {
     const conn = this.connections.get(peerId);
     if (!conn) return;
     conn.screenVolume = Math.max(0, Math.min(200, Number(volumePercent)));
+    const isSpeaking = this.isLocalSpeakingEchoActive();
     const effectiveGain =
-      this.selfDeafen || conn.screenMuted
+      this.selfDeafen || conn.screenMuted || isSpeaking
         ? 0
         : (conn.screenVolume / 100) * (this.masterOutputVolume / 100);
     if (conn.screenAudioEl) {
       conn.screenAudioEl.volume = Math.min(1, effectiveGain);
+      if (isSpeaking) {
+        conn.screenAudioEl.muted = true;
+      }
     }
     if (conn.screenGainNode) {
       conn.screenGainNode.gain.value = effectiveGain > 1 ? effectiveGain - 1 : 0;
@@ -632,7 +782,7 @@ export class WebRTCVoiceEngine {
     if (!conn) return;
     conn.screenMuted = Boolean(mute);
     if (conn.screenAudioEl) {
-      conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted;
+      conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted || this.isLocalSpeakingEchoActive();
     }
     this.setLocalScreenVolume(peerId, conn.screenVolume ?? 100);
   }
@@ -731,6 +881,7 @@ export class WebRTCVoiceEngine {
   async setDesktopSource(sourceId = null, options = {}) {
     if (!sourceId) {
       this.activeDesktopSourceId = null;
+      this.cleanupScreenAudioGraph();
       if (this.localScreenStream) {
         this.localScreenStream.getTracks().forEach((t) => t.stop());
         this.localScreenStream = null;
@@ -749,6 +900,7 @@ export class WebRTCVoiceEngine {
 
     const res = SCREEN_RESOLUTIONS[this.screenResolution] || SCREEN_RESOLUTIONS["1080p"];
     const fps = this.screenFrameRate || 30;
+    const captureAudio = options.captureAudio !== false;
 
     if (this.localScreenStream) {
       this.localScreenStream.getTracks().forEach((t) => t.stop());
@@ -774,19 +926,38 @@ export class WebRTCVoiceEngine {
           maxHeight: res.height,
           maxFrameRate: fps,
         };
-        // Try capturing at exact target preset with system audio first, then fallback cleanly
-        try {
-          this.localScreenStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              mandatory: {
-                chromeMediaSource: "desktop",
+
+        if (captureAudio) {
+          // Try capturing at exact target preset with system audio first, then fallback cleanly
+          try {
+            this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                mandatory: {
+                  chromeMediaSource: "desktop",
+                },
               },
-            },
-            video: {
-              mandatory: strictMandatoryVideo,
-            },
-          });
-        } catch {
+              video: {
+                mandatory: strictMandatoryVideo,
+              },
+            });
+          } catch {
+            try {
+              this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                  mandatory: strictMandatoryVideo,
+                },
+              });
+            } catch {
+              this.localScreenStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                  mandatory: flexibleMandatoryVideo,
+                },
+              });
+            }
+          }
+        } else {
           try {
             this.localScreenStream = await navigator.mediaDevices.getUserMedia({
               audio: false,
@@ -810,7 +981,7 @@ export class WebRTCVoiceEngine {
             height: { ideal: res.height, max: res.height },
             frameRate: { ideal: fps, max: fps },
           },
-          audio: true,
+          audio: captureAudio,
         });
       }
 
@@ -821,11 +992,18 @@ export class WebRTCVoiceEngine {
           videoTrack.contentHint = fps >= 60 ? "motion" : "detail";
         }
         videoTrack.onended = () => {
+          this.cleanupScreenAudioGraph();
           this.localScreenStream = null;
           this.activeDesktopSourceId = null;
           this.updateFrameRelayLoop();
           this.syncTracksWithPeers();
         };
+      }
+
+      if (captureAudio && this.localScreenStream.getAudioTracks().length > 0) {
+        this.setupScreenAudioDuckingGraph();
+      } else {
+        this.cleanupScreenAudioGraph();
       }
 
       this.updateFrameRelayLoop();
@@ -1157,6 +1335,7 @@ export class WebRTCVoiceEngine {
       if (!conn.remoteSpeaking) {
         conn.remoteSpeaking = true;
         this.onSpeakingChange?.(fromPeerId, true);
+        this.applyScreenAudioAntiEchoGate();
       }
       if (conn.speakingDecayTimer) {
         clearTimeout(conn.speakingDecayTimer);
@@ -1164,6 +1343,7 @@ export class WebRTCVoiceEngine {
       conn.speakingDecayTimer = setTimeout(() => {
         conn.remoteSpeaking = false;
         this.onSpeakingChange?.(fromPeerId, false);
+        this.applyScreenAudioAntiEchoGate();
       }, 480);
     }
 
@@ -1681,7 +1861,10 @@ export class WebRTCVoiceEngine {
 
   buildLocalStreamMeta(conn = null) {
     const voiceAudioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
-    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
+    const screenAudioTrack =
+      this.processedScreenAudioTrack ||
+      this.localScreenStream?.getAudioTracks()?.[0] ||
+      null;
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
     let voiceAudioMid = null;
@@ -1847,7 +2030,10 @@ export class WebRTCVoiceEngine {
       }
     }
 
-    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
+    const screenAudioTrack =
+      this.processedScreenAudioTrack ||
+      this.localScreenStream?.getAudioTracks()?.[0] ||
+      null;
     if (screenAudioTrack) {
       if (conn.screenAudioSender) {
         conn.screenAudioSender.replaceTrack(screenAudioTrack).catch(() => {});
@@ -1908,7 +2094,10 @@ export class WebRTCVoiceEngine {
     };
 
     const audioTrack = this.localAudioStream?.getAudioTracks()?.[0] || null;
-    const screenAudioTrack = this.localScreenStream?.getAudioTracks()?.[0] || null;
+    const screenAudioTrack =
+      this.processedScreenAudioTrack ||
+      this.localScreenStream?.getAudioTracks()?.[0] ||
+      null;
     const camTrack = this.localVideoStream?.getVideoTracks()?.[0] || null;
     const scrTrack = this.localScreenStream?.getVideoTracks()?.[0] || null;
 
@@ -2393,6 +2582,7 @@ export class WebRTCVoiceEngine {
 
   destroyAll() {
     this.inVoiceChannel = false;
+    this.cleanupScreenAudioGraph();
     for (const peerId of Array.from(this.connections.keys())) {
       this.destroyPeer(peerId);
     }

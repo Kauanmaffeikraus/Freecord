@@ -173,6 +173,8 @@ const I18N = {
     cancelBtn: "Cancel",
     screenPickerTitle: "🖥️ Share Screen (P2P Go Live)",
     screenPickerSub: "Select a screen or window to stream directly to peers in the voice channel:",
+    shareSystemAudioLabel: "Share System Audio",
+    shareSystemAudioDesc: "Stream desktop / game sound with anti-echo loopback isolation",
     newRoomTitle: "Create New P2P Room",
     newRoomSub: "Created rooms are automatically synchronized with all computers connected to you.",
     roomNameLabel: "P2P Room Name",
@@ -216,6 +218,19 @@ const I18N = {
     mediaSettingsSub: "Choose your Audio Output (Speaker/Headset), Microphone Input, Camera, and Go Live Screen Share Resolution & FPS.",
     tabProfileSettings: "✨ Profile & Identity",
     tabMediaSettings: "🎙️ Audio, Camera & Screen",
+    tabUpdateSettings: "🚀 Updates",
+    updateSettingsTitle: "Freecord Updates & Release Channel",
+    updateSettingsSub: "Automatic P2P and GitHub Releases updater powered by electron-updater.",
+    currentVersionLabel: "Current App Version:",
+    releaseChannelLabel: "Release Channel:",
+    updateStatusLabel: "Update Status:",
+    checkForUpdatesBtn: "Check for Updates",
+    restartAndInstallBtn: "Restart & Update Now",
+    updateReadyNotice: "A new version of Freecord is downloaded and ready to install!",
+    downloadingUpdate: "Downloading Freecord update...",
+    updateUpToDate: "You are running the latest version of Freecord.",
+    updateAvailableText: (v) => `New update available: v${v}`,
+    viewReleasesOnGithub: "View GitHub Releases",
     micDeviceLabel: "Input Device (Microphone)",
     speakerDeviceLabel: "Output Device (Speaker / Headset)",
     cameraDeviceLabel: "Camera Device (Video Input)",
@@ -388,6 +403,8 @@ const I18N = {
     cancelBtn: "Cancelar",
     screenPickerTitle: "🖥️ Transmitir Tela (Go Live P2P)",
     screenPickerSub: "Selecione a tela ou janela para transmitir diretamente aos peers conectados no canal de voz:",
+    shareSystemAudioLabel: "Compartilhar Áudio do Sistema",
+    shareSystemAudioDesc: "Transmitir som do jogo / computador com isolamento anti-eco de retorno",
     newRoomTitle: "Criar Nova Sala P2P",
     newRoomSub: "Salas criadas são sincronizadas automaticamente com todos os computadores conectados a você.",
     roomNameLabel: "Nome da Sala P2P",
@@ -431,6 +448,19 @@ const I18N = {
     mediaSettingsSub: "Escolha a Saída de Áudio (Fone/Caixa), o Microfone de Entrada, a Câmera e a Resolução + FPS da Transmissão de Tela (Go Live).",
     tabProfileSettings: "✨ Perfil & Identidade",
     tabMediaSettings: "🎙️ Áudio, Câmera & Tela",
+    tabUpdateSettings: "🚀 Atualizações",
+    updateSettingsTitle: "Atualizações do Freecord & Canal de Lançamento",
+    updateSettingsSub: "Atualizador automático via GitHub Releases com electron-updater.",
+    currentVersionLabel: "Versão Atual do App:",
+    releaseChannelLabel: "Canal de Lançamento:",
+    updateStatusLabel: "Status da Atualização:",
+    checkForUpdatesBtn: "Verificar Atualizações",
+    restartAndInstallBtn: "Reiniciar e Atualizar Agora",
+    updateReadyNotice: "Uma nova versão do Freecord foi baixada e está pronta para instalar!",
+    downloadingUpdate: "Baixando atualização do Freecord...",
+    updateUpToDate: "Você está usando a versão mais recente do Freecord.",
+    updateAvailableText: (v) => `Nova atualização disponível: v${v}`,
+    viewReleasesOnGithub: "Ver Releases no GitHub",
     micDeviceLabel: "Dispositivo de Entrada (Microfone)",
     speakerDeviceLabel: "Dispositivo de Saída (Áudio / Fone / Alto-falante)",
     cameraDeviceLabel: "Dispositivo de Vídeo (Câmera)",
@@ -1209,8 +1239,11 @@ export default function App() {
 
   // Profile Customization Studio & Media Settings Studio
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState("profile"); // "profile" | "media"
+  const [settingsTab, setSettingsTab] = useState("profile"); // "profile" | "media" | "updates"
   const [inspectedProfile, setInspectedProfile] = useState(null);
+  const [appVersion, setAppVersion] = useState("1.0.0");
+  const [updateStatus, setUpdateStatus] = useState({ status: "idle" });
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [profileForm, setProfileForm] = useState({
     displayName: "",
     username: "",
@@ -1241,6 +1274,7 @@ export default function App() {
   const [cameraResolution, setCameraResolution] = useState("720p");
   const [screenResolution, setScreenResolution] = useState("1080p");
   const [screenFps, setScreenFps] = useState(30);
+  const [shareScreenAudio, setShareScreenAudio] = useState(true);
   const [masterOutputVolume, setMasterOutputVolume] = useState(100);
   const [echoCancellation, setEchoCancellation] = useState(true);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
@@ -1496,6 +1530,9 @@ export default function App() {
         setScreenFps(Number(savedPrefs.screenFps));
         engine.screenFrameRate = Number(savedPrefs.screenFps);
       }
+      if (savedPrefs.shareScreenAudio !== undefined) {
+        setShareScreenAudio(Boolean(savedPrefs.shareScreenAudio));
+      }
     } catch {}
 
     voiceEngineRef.current = engine;
@@ -1509,6 +1546,42 @@ export default function App() {
       engine.destroyAll();
     };
   }, []);
+
+  // Listen for Auto-Updater status from Electron Main Process
+  useEffect(() => {
+    window.DiscordNative?.app?.getVersion?.().then?.((v) => {
+      if (v) setAppVersion(v);
+    });
+    const unsub = window.DiscordNative?.updater?.onUpdateStatus?.((statusObj) => {
+      if (statusObj) {
+        setUpdateStatus(statusObj);
+        if (statusObj.status !== "checking") {
+          setIsCheckingUpdate(false);
+        }
+      }
+    });
+    return () => unsub?.();
+  }, []);
+
+  const handleCheckForUpdates = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateStatus({ status: "checking" });
+    try {
+      const res = await window.DiscordNative?.updater?.checkForUpdates?.();
+      if (res?.dev) {
+        setUpdateStatus({
+          status: "dev",
+          message: res.message || "Auto-updater operates in packaged builds.",
+        });
+      } else if (!res?.ok && res?.error) {
+        setUpdateStatus({ status: "error", message: res.error });
+      }
+    } catch (err) {
+      setUpdateStatus({ status: "error", message: err.message });
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   // Connect to Electron P2P Bridge if running inside Electron
   useEffect(() => {
@@ -1856,6 +1929,10 @@ export default function App() {
             ...prev,
             [event.fromPeerId]: Boolean(event.speaking),
           }));
+          voiceEngineRef.current?.setRemotePeerSpeaking(
+            event.fromPeerId,
+            Boolean(event.speaking)
+          );
         }
         break;
       }
@@ -2464,6 +2541,7 @@ export default function App() {
       const stream = await engine?.setDesktopSource(sourceId, {
         resolution: screenResolution,
         frameRate: screenFps,
+        captureAudio: shareScreenAudio,
       });
       if (stream) {
         setScreenSharing(true);
@@ -3431,7 +3509,23 @@ export default function App() {
         <div className="titlebar-left">
           <img src="./logo.png" alt="Freecord" className="titlebar-logo" />
           <span>FREECORD</span>
-          <span className="ptb-badge">PTB 1.0.1225 P2P</span>
+          <span className="ptb-badge">PTB {appVersion} P2P</span>
+          {updateStatus?.status === "downloaded" && (
+            <button
+              className="p2p-pill"
+              style={{
+                background: "rgba(35, 165, 90, 0.25)",
+                borderColor: "#23a55a",
+                color: "#57f287",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+              onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
+              title={t.restartAndInstallBtn}
+            >
+              <span>🚀 {t.restartAndInstallBtn} (v{updateStatus.version})</span>
+            </button>
+          )}
           <div
             className="p2p-pill"
             onClick={() => setShowConnectModal(true)}
@@ -3514,6 +3608,59 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      {/* Auto-Updater Banner Notification */}
+      {updateStatus?.status === "downloaded" && (
+        <div
+          style={{
+            backgroundColor: "#23a55a",
+            color: "#ffffff",
+            padding: "8px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            fontSize: 13,
+            fontWeight: 600,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          }}
+        >
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span>🚀</span>
+            <span>{t.updateReadyNotice} ({updateStatus.version || "v1.0.0"})</span>
+          </span>
+          <button
+            className="btn-primary"
+            style={{
+              backgroundColor: "#1e1f22",
+              color: "#fff",
+              padding: "4px 12px",
+              fontSize: 12,
+              borderRadius: 4,
+              border: "1px solid rgba(255,255,255,0.2)",
+              cursor: "pointer",
+            }}
+            onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
+          >
+            {t.restartAndInstallBtn}
+          </button>
+        </div>
+      )}
+      {updateStatus?.status === "downloading" && (
+        <div
+          style={{
+            backgroundColor: "#5865f2",
+            color: "#ffffff",
+            padding: "6px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          <span>⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%</span>
+        </div>
+      )}
 
       {/* Main Workspace */}
       <div className="app-shell">
@@ -4794,11 +4941,17 @@ export default function App() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div>
                 <h3 style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
-                  {settingsTab === "media" ? t.mediaSettingsTitle : `✨ ${t.profileModalTitle}`}
+                  {settingsTab === "media"
+                    ? t.mediaSettingsTitle
+                    : settingsTab === "updates"
+                    ? t.updateSettingsTitle
+                    : `✨ ${t.profileModalTitle}`}
                 </h3>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
                   {settingsTab === "media" ? (
                     t.mediaSettingsSub
+                  ) : settingsTab === "updates" ? (
+                    t.updateSettingsSub
                   ) : (
                     <>
                       {t.cryptoPeerIdLabel} <b>{nodeStatus.profile.peerId}</b>
@@ -4811,7 +4964,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Studio Top Tabs: Profile vs Audio/Camera/Screen */}
+            {/* Studio Top Tabs: Profile vs Audio/Camera/Screen vs Updates */}
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               <button
                 type="button"
@@ -4829,6 +4982,13 @@ export default function App() {
                 }}
               >
                 {t.tabMediaSettings}
+              </button>
+              <button
+                type="button"
+                className={settingsTab === "updates" ? "btn-primary" : "btn-secondary"}
+                onClick={() => setSettingsTab("updates")}
+              >
+                {t.tabUpdateSettings}
               </button>
             </div>
 
@@ -5096,6 +5256,120 @@ export default function App() {
                     <Check size={14} />
                     <span>{t.closeBtn}</span>
                   </button>
+                </div>
+              </div>
+            ) : settingsTab === "updates" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div className="media-section-card">
+                  <div className="media-section-header">
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Radio size={16} color="#5865f2" />
+                      {t.updateSettingsTitle}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>
+                    {t.updateSettingsSub}
+                  </p>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                    <div style={{ background: "var(--bg-secondary)", padding: 12, borderRadius: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
+                        {t.currentVersionLabel}
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginTop: 4 }}>
+                        v{appVersion}
+                      </div>
+                    </div>
+
+                    <div style={{ background: "var(--bg-secondary)", padding: 12, borderRadius: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
+                        {t.releaseChannelLabel}
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: "#57f287", marginTop: 4 }}>
+                        PTB (Public Test Build)
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background: "var(--bg-secondary)", padding: 14, borderRadius: 8, marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+                      {t.updateStatusLabel}
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>
+                      {updateStatus?.status === "downloaded" && (
+                        <span style={{ color: "#57f287" }}>
+                          🚀 {t.updateReadyNotice} (v{updateStatus.version})
+                        </span>
+                      )}
+                      {updateStatus?.status === "downloading" && (
+                        <span style={{ color: "#5865f2" }}>
+                          ⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%
+                        </span>
+                      )}
+                      {updateStatus?.status === "available" && (
+                        <span style={{ color: "#fee75c" }}>
+                          📦 {t.updateAvailableText(updateStatus.version)}
+                        </span>
+                      )}
+                      {updateStatus?.status === "not-available" && (
+                        <span style={{ color: "#57f287" }}>
+                          ✅ {t.updateUpToDate}
+                        </span>
+                      )}
+                      {updateStatus?.status === "checking" && (
+                        <span style={{ color: "var(--text-muted)" }}>
+                          ⏳ {t.checkForUpdatesBtn}...
+                        </span>
+                      )}
+                      {updateStatus?.status === "dev" && (
+                        <span style={{ color: "var(--text-muted)" }}>
+                          🛠️ {updateStatus.message || "Modo de desenvolvimento. O atualizador automático opera nos instaladores compilados."}
+                        </span>
+                      )}
+                      {updateStatus?.status === "error" && (
+                        <span style={{ color: "#ed4245" }}>
+                          ⚠️ {updateStatus.message || "Erro ao verificar atualizações."}
+                        </span>
+                      )}
+                      {(!updateStatus?.status || updateStatus?.status === "idle") && (
+                        <span style={{ color: "var(--text-muted)" }}>
+                          {t.updateUpToDate}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      disabled={isCheckingUpdate || updateStatus?.status === "checking"}
+                      onClick={handleCheckForUpdates}
+                    >
+                      {isCheckingUpdate ? "..." : t.checkForUpdatesBtn}
+                    </button>
+
+                    {updateStatus?.status === "downloaded" && (
+                      <button
+                        type="button"
+                        className="btn-success"
+                        onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
+                      >
+                        {t.restartAndInstallBtn}
+                      </button>
+                    )}
+
+                    <a
+                      href="https://github.com/Kauanmaffeikraus/Freecord/releases"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn-secondary"
+                      style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6 }}
+                    >
+                      <ExternalLink size={14} />
+                      <span>{t.viewReleasesOnGithub}</span>
+                    </a>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -5728,6 +6002,43 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginTop: 12,
+                  paddingTop: 10,
+                  borderTop: "1px solid var(--border)",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  const nextVal = !shareScreenAudio;
+                  setShareScreenAudio(nextVal);
+                  persistMediaPrefs({ shareScreenAudio: nextVal });
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-normal)" }}>
+                    {t.shareSystemAudioLabel || "Share System Audio"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {t.shareSystemAudioDesc || "Stream desktop / game sound with anti-echo loopback isolation"}
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--brand)" }}
+                  checked={shareScreenAudio}
+                  onChange={(e) => {
+                    const nextVal = e.target.checked;
+                    setShareScreenAudio(nextVal);
+                    persistMediaPrefs({ shareScreenAudio: nextVal });
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
               </div>
             </div>
 
