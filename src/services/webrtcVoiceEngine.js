@@ -16,6 +16,27 @@ export const CAMERA_RESOLUTIONS = {
 
 export const SCREEN_FPS_OPTIONS = [15, 30, 60];
 
+function safeEncodeToken(obj) {
+  const json = JSON.stringify(obj);
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) {
+    bin += String.fromCharCode(bytes[i]);
+  }
+  return btoa(bin);
+}
+
+function safeDecodeToken(str) {
+  const clean = String(str).replace(/^fc-sdp:\/\/|\s+/g, "");
+  const bin = atob(clean);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    bytes[i] = bin.charCodeAt(i);
+  }
+  const json = new TextDecoder().decode(bytes);
+  return JSON.parse(json);
+}
+
 export const WEBRTC_ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -1645,7 +1666,16 @@ export class WebRTCVoiceEngine {
   bindDataChannel(conn, dc) {
     conn.dataChannel = dc;
     dc.onopen = () => {
-      this.onManualPeerConnected?.(conn.peerId);
+      try {
+        if (this.localProfile) {
+          dc.send(JSON.stringify({
+            type: "HELLO",
+            profile: this.localProfile,
+            timestamp: Date.now(),
+          }));
+        }
+      } catch {}
+      this.onManualPeerConnected?.(conn.peerId, conn.manualProfile);
     };
     dc.onmessage = (e) => {
       try {
@@ -1657,10 +1687,10 @@ export class WebRTCVoiceEngine {
 
   sendViaDataChannel(packet, targetPeerId = null) {
     const raw = JSON.stringify(packet);
-    if (raw.length > 60000) return 0; // Avoid RTCDataChannel message size limit exceptions
+    if (raw.length > 60000) return 0;
     let sent = 0;
     for (const [id, conn] of this.connections.entries()) {
-      if (targetPeerId && id !== targetPeerId) continue;
+      if (targetPeerId && id !== targetPeerId && conn.manualProfile?.peerId !== targetPeerId) continue;
       if (conn.dataChannel && conn.dataChannel.readyState === "open") {
         try {
           conn.dataChannel.send(raw);
@@ -2339,98 +2369,122 @@ export class WebRTCVoiceEngine {
 
   // Serverless Manual WebRTC SDP Invite Code (for Browser-to-Browser or strict NAT without port forwarding)
   async createManualInviteOffer(localProfile) {
-    this.inVoiceChannel = true;
-    await this.startLocalVoice();
-    const tempPeerId = `webrtc_${Math.random().toString(36).slice(2, 8)}`;
-    const conn = this.createPeerConnection(tempPeerId, true);
+    this.localProfile = localProfile;
+    const tempPeerId = `manual_offer_${Date.now()}`;
+    const conn = this.createPeerConnection(tempPeerId, true, true);
 
     const offer = await conn.pc.createOffer();
     await conn.pc.setLocalDescription(offer);
 
-    await this.waitForIceGatheringComplete(conn.pc, 2200);
+    await this.waitForIceGatheringComplete(conn.pc, 3000);
 
     const tokenPayload = {
-      v: 1,
+      v: 2,
       kind: "offer",
       peerId: localProfile.peerId,
+      displayName: localProfile.displayName || localProfile.username,
       username: localProfile.username,
       tag: localProfile.tag,
       avatarColor: localProfile.avatarColor,
+      avatarUrl: localProfile.avatarUrl,
+      status: localProfile.status,
       sdp: conn.pc.localDescription,
     };
 
     conn.pendingManualOffer = true;
     return {
       tempPeerId,
-      inviteCode: btoa(unescape(encodeURIComponent(JSON.stringify(tokenPayload)))),
+      inviteCode: safeEncodeToken(tokenPayload),
     };
   }
 
   async acceptManualInviteCode(inviteCode, localProfile) {
-    const decoded = JSON.parse(decodeURIComponent(escape(atob(inviteCode.trim()))));
+    this.localProfile = localProfile;
+    const decoded = safeDecodeToken(inviteCode);
     if (!decoded || !decoded.sdp) {
-      throw new Error("Invalid P2P invite code.");
+      throw new Error("Código de convite WebRTC inválido.");
     }
-
-    this.inVoiceChannel = true;
-    await this.startLocalVoice();
 
     if (decoded.kind === "offer") {
       const remotePeerId = decoded.peerId || `webrtc_${Math.random().toString(36).slice(2, 8)}`;
-      const conn = this.createPeerConnection(remotePeerId, false);
+      const conn = this.createPeerConnection(remotePeerId, false, true);
       conn.manualProfile = {
         peerId: remotePeerId,
-        username: decoded.username || "WebRTC Peer",
+        displayName: decoded.displayName || decoded.username || "WebRTC Peer",
+        username: decoded.username || "webrtc_peer",
         tag: decoded.tag || "0000",
         avatarColor: decoded.avatarColor || "#57F287",
+        avatarUrl: decoded.avatarUrl || null,
+        status: decoded.status || "online",
+        address: "WebRTC DataChannel",
+        port: 0,
+        rttMs: 5,
+        fingerprint: "WEBRTC-DIRECT-SDP",
       };
 
       await conn.pc.setRemoteDescription(new RTCSessionDescription(decoded.sdp));
       const answer = await conn.pc.createAnswer();
       await conn.pc.setLocalDescription(answer);
-      await this.waitForIceGatheringComplete(conn.pc, 2200);
+      await this.waitForIceGatheringComplete(conn.pc, 3000);
 
       const answerPayload = {
-        v: 1,
+        v: 2,
         kind: "answer",
         peerId: localProfile.peerId,
+        displayName: localProfile.displayName || localProfile.username,
         username: localProfile.username,
         tag: localProfile.tag,
         avatarColor: localProfile.avatarColor,
+        avatarUrl: localProfile.avatarUrl,
+        status: localProfile.status,
         sdp: conn.pc.localDescription,
       };
 
       return {
         mode: "answer-generated",
         remoteProfile: conn.manualProfile,
-        answerCode: btoa(unescape(encodeURIComponent(JSON.stringify(answerPayload)))),
+        answerCode: safeEncodeToken(answerPayload),
       };
     } else if (decoded.kind === "answer") {
       let targetConn = null;
-      for (const conn of this.connections.values()) {
+      for (const [id, conn] of this.connections.entries()) {
         if (conn.pendingManualOffer || conn.pc.signalingState === "have-local-offer") {
           targetConn = conn;
           break;
         }
       }
       if (!targetConn) {
-        throw new Error("No pending WebRTC offer found to apply this answer.");
+        throw new Error("Nenhuma oferta WebRTC pendente encontrada para aplicar esta resposta.");
       }
 
+      // Re-key connection from temp ID to the actual remote peerId
+      const oldTempId = targetConn.peerId;
+      this.connections.delete(oldTempId);
+      targetConn.peerId = decoded.peerId;
+      this.connections.set(decoded.peerId, targetConn);
       targetConn.pendingManualOffer = false;
+
       targetConn.manualProfile = {
-        peerId: decoded.peerId || targetConn.peerId,
-        username: decoded.username || "WebRTC Peer",
+        peerId: decoded.peerId,
+        displayName: decoded.displayName || decoded.username || "WebRTC Peer",
+        username: decoded.username || "webrtc_peer",
         tag: decoded.tag || "0000",
         avatarColor: decoded.avatarColor || "#5865F2",
+        avatarUrl: decoded.avatarUrl || null,
+        status: decoded.status || "online",
+        address: "WebRTC DataChannel",
+        port: 0,
+        rttMs: 5,
+        fingerprint: "WEBRTC-DIRECT-SDP",
       };
+
       await targetConn.pc.setRemoteDescription(new RTCSessionDescription(decoded.sdp));
       return {
         mode: "connected",
         remoteProfile: targetConn.manualProfile,
       };
     }
-    throw new Error("Unknown P2P invite code type.");
+    throw new Error("Formato de convite WebRTC desconhecido.");
   }
 
   waitForIceGatheringComplete(pc, timeoutMs = 2000) {

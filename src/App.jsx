@@ -1197,6 +1197,14 @@ export default function App() {
 
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [lanPeers, setLanPeers] = useState([]);
+  const mobileWsRef = useRef(null);
+  const [savedLanPeers, setSavedLanPeers] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+    } catch {
+      return [];
+    }
+  });
 
   // Rooms & Navigation State (with localStorage persistence)
   const [leftRoomIds, setLeftRoomIds] = useState(() => {
@@ -1587,11 +1595,29 @@ export default function App() {
         setRtcStats(stats);
       },
       onDataChannelMessage: (fromPeerId, packet) => {
+        if (packet.type === "HELLO" && packet.profile) {
+          const p = packet.profile;
+          setConnectedPeers((prev) => {
+            const clean = prev.filter((item) => item.peerId !== p.peerId && !item.peerId.startsWith("manual_offer_"));
+            return [
+              ...clean,
+              {
+                ...p,
+                address: "WebRTC DataChannel",
+                port: 0,
+                rttMs: 5,
+                fingerprint: "WEBRTC-DIRECT-SDP",
+                voiceChannelId: null,
+                voiceState: {},
+              },
+            ];
+          });
+        }
         handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId });
       },
-      onManualPeerConnected: (peerId) => {
+      onManualPeerConnected: (peerId, profileOverride = null) => {
         const conn = engine.connections.get(peerId);
-        const manualProf = conn?.manualProfile || {
+        const manualProf = profileOverride || conn?.manualProfile || {
           peerId,
           displayName: "WebRTC Peer",
           username: "webrtc_peer",
@@ -1599,9 +1625,9 @@ export default function App() {
           avatarColor: "#57F287",
         };
         setConnectedPeers((prev) => {
-          if (prev.some((p) => p.peerId === peerId)) return prev;
+          const clean = prev.filter((p) => p.peerId !== manualProf.peerId && !p.peerId.startsWith("manual_offer_"));
           return [
-            ...prev,
+            ...clean,
             {
               ...manualProf,
               address: "WebRTC DataChannel",
@@ -1768,15 +1794,18 @@ export default function App() {
   }, [rooms, activeVoiceChannelId, selfMute, selfDeafen, videoEnabled, screenSharing]);
 
   const sendP2PPacket = (packet, targetPeerId = null) => {
+    // 1. Send via Electron Native P2P if available
     if (window.DiscordNative?.p2p) {
       window.DiscordNative.p2p.send(packet, targetPeerId);
-      // Only also send via DataChannel if targeting a manual browser-only WebRTC peer
-      if (targetPeerId && String(targetPeerId).startsWith("webrtc_")) {
-        voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
-      }
-      return;
     }
+    // 2. Send via WebRTC DataChannel (always forwards to connected browser/mobile peers)
     voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
+    // 3. Send via Mobile WebSocket if connected to a desktop node
+    if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
+      try {
+        mobileWsRef.current.send(JSON.stringify(packet));
+      } catch {}
+    }
   };
 
   const handleIncomingP2PEvent = (event) => {
@@ -2711,6 +2740,143 @@ export default function App() {
     } catch {}
   };
 
+  const connectViaWebSocket = (host, port) => {
+    return new Promise((resolve, reject) => {
+      try {
+        if (mobileWsRef.current) {
+          try { mobileWsRef.current.close(); } catch {}
+          mobileWsRef.current = null;
+        }
+
+        const wsUrl = `ws://${host}:${port}/p2p`;
+        const ws = new WebSocket(wsUrl);
+        mobileWsRef.current = ws;
+
+        let resolved = false;
+        const timer = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            try { ws.close(); } catch {}
+            reject(new Error(lang === "en" ? `Connection timeout to ${host}:${port}` : `Tempo limite ao conectar em ${host}:${port}. Verifique o IP e se o Freecord está aberto no PC.`));
+          }
+        }, 7000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({
+            type: "HELLO",
+            profile: nodeStatus.profile,
+            timestamp: Date.now(),
+          }));
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const packet = JSON.parse(e.data);
+            if (packet.type === "HELLO" || packet.type === "HELLO_ACK") {
+              const remoteProf = packet.profile;
+              if (remoteProf && remoteProf.peerId) {
+                const peerEntry = {
+                  ...remoteProf,
+                  address: host,
+                  port: Number(port),
+                  rttMs: 2,
+                  fingerprint: "P2P-LAN-DIRECT",
+                  voiceChannelId: packet.voiceChannelId || null,
+                  voiceState: packet.voiceState || {},
+                };
+
+                setConnectedPeers((prev) => {
+                  const clean = prev.filter((p) => p.peerId !== remoteProf.peerId);
+                  return [...clean, peerEntry];
+                });
+
+                // Save to remembered LAN peers
+                try {
+                  const saved = JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+                  const updated = [
+                    { host, port: Number(port), name: remoteProf.displayName || remoteProf.username, peerId: remoteProf.peerId, tag: remoteProf.tag, timestamp: Date.now() },
+                    ...saved.filter((s) => s.host !== host || s.port !== Number(port))
+                  ].slice(0, 8);
+                  localStorage.setItem("freecord_saved_lan_peers", JSON.stringify(updated));
+                  setSavedLanPeers(updated);
+                } catch {}
+
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timer);
+                  resolve(peerEntry);
+                }
+
+                if (packet.type === "HELLO") {
+                  ws.send(JSON.stringify({
+                    type: "HELLO_ACK",
+                    profile: nodeStatus.profile,
+                    timestamp: Date.now(),
+                  }));
+                }
+              }
+            }
+
+            // Route WebRTC signaling and media frames
+            if (packet.type === "VOICE_SIGNAL") {
+              voiceEngineRef.current?.handleIncomingSignal(packet.fromPeerId || host, packet.signal);
+            } else if (packet.type === "VOICE_MEDIA_FRAME") {
+              voiceEngineRef.current?.handleIncomingMediaFrame(packet.fromPeerId || host, packet);
+            } else if (packet.type === "VOICE_AUDIO_CHUNK") {
+              voiceEngineRef.current?.handleIncomingAudioChunk(packet.fromPeerId || host, packet);
+            } else {
+              handleIncomingP2PEventRef.current?.(packet);
+            }
+          } catch (err) {
+            console.warn("[Freecord WS] Error processing packet:", err);
+          }
+        };
+
+        ws.onerror = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timer);
+            reject(new Error(lang === "en" ? `Could not connect to ${host}:${port}. Check that Freecord is open on the PC and connected to the same Wi-Fi.` : `Não foi possível conectar em ${host}:${port}. Verifique se o Freecord está aberto no PC e se ambos estão na mesma rede Wi-Fi.`));
+          }
+        };
+
+        ws.onclose = () => {
+          setConnectedPeers((prev) => prev.filter((p) => p.address !== host || p.port !== Number(port)));
+        };
+      } catch (err) {
+        reject(err);
+      }
+    });
+  };
+
+  const handleConnectByHostPort = async (host, port) => {
+    try {
+      setConnectStatusMsg({
+        type: "info",
+        text: lang === "en" ? `Connecting to ${host}:${port}...` : `Conectando a ${host}:${port}...`,
+      });
+
+      let peer;
+      if (window.DiscordNative?.p2p) {
+        peer = await window.DiscordNative.p2p.connect(host, port);
+      } else {
+        peer = await connectViaWebSocket(host, port);
+      }
+
+      setConnectStatusMsg({
+        type: "success",
+        text:
+          lang === "en"
+            ? `Connected to ${peer?.displayName || peer?.username || host}#${peer?.tag || "P2P"} (${host}:${port})!`
+            : `Conectado com sucesso a ${peer?.displayName || peer?.username || host}#${peer?.tag || "P2P"} (${host}:${port})!`,
+      });
+      return peer;
+    } catch (err) {
+      setConnectStatusMsg({ type: "error", text: err.message });
+      throw err;
+    }
+  };
+
   const handleConnectByIp = async (e) => {
     e?.preventDefault();
     const raw = directIpInput.trim();
@@ -2728,22 +2894,9 @@ export default function App() {
     }
 
     try {
-      setConnectStatusMsg({
-        type: "info",
-        text: lang === "en" ? `Connecting directly to ${host}:${port}...` : `Conectando diretamente a ${host}:${port}...`,
-      });
-      const peer = await window.DiscordNative.p2p.connect(host, port);
-      setConnectStatusMsg({
-        type: "success",
-        text:
-          lang === "en"
-            ? `Successfully connected to ${peer.displayName || peer.username}#${peer.tag} (${peer.address}:${peer.port})!`
-            : `Conectado com sucesso a ${peer.displayName || peer.username}#${peer.tag} (${peer.address}:${peer.port})!`,
-      });
+      await handleConnectByHostPort(host, port);
       setDirectIpInput("");
-    } catch (err) {
-      setConnectStatusMsg({ type: "error", text: err.message });
-    }
+    } catch {}
   };
 
   const handleCopy = (text) => {
@@ -7502,7 +7655,38 @@ return (
                 <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
                   {t.lanTabDesc}
                 </p>
-                {lanPeers.length === 0 ? (
+
+                {/* Remembered / Saved LAN Peers (for Android & Desktop) */}
+                {savedLanPeers.length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", marginBottom: 6 }}>
+                      {lang === "en" ? "Recent Computers on LAN:" : "Computadores Recentes na LAN:"}
+                    </div>
+                    {savedLanPeers.map((sp) => {
+                      const isConnected = connectedPeers.some((cp) => cp.address === sp.host && cp.port === sp.port);
+                      return (
+                        <div key={`${sp.host}:${sp.port}`} className="endpoint-copy-card" style={{ marginBottom: 6 }}>
+                          <div>
+                            <strong style={{ color: "#fff" }}>{sp.name}#{sp.tag || "P2P"}</strong>
+                            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{sp.host}:{sp.port}</div>
+                          </div>
+                          {isConnected ? (
+                            <span style={{ color: "#4ade80", fontWeight: 700, fontSize: 12 }}>{t.connectedBadge}</span>
+                          ) : (
+                            <button
+                              className="btn-success"
+                              onClick={() => handleConnectByHostPort(sp.host, sp.port)}
+                            >
+                              {t.connectNowBtn}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {lanPeers.length === 0 && savedLanPeers.length === 0 ? (
                   <div style={{ padding: 14, background: "#2b2d31", borderRadius: 6, marginBottom: 12 }}>
                     {t.noLanDetected}
                   </div>
@@ -7524,9 +7708,7 @@ return (
                       ) : (
                         <button
                           className="btn-success"
-                          onClick={() =>
-                            window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)
-                          }
+                          onClick={() => handleConnectByHostPort(lp.host, lp.tcpPort)}
                         >
                           {t.connectNowBtn}
                         </button>
@@ -7602,14 +7784,27 @@ return (
                                 ? "Answer Code generated! Copy it below and send it back to Computer 1."
                                 : "Código de Resposta gerado! Copie abaixo e envie de volta ao Computador 1.",
                           });
+                          if (res.remoteProfile) {
+                            setConnectedPeers((prev) => {
+                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
+                              return [...clean, res.remoteProfile];
+                            });
+                          }
                         } else {
                           setConnectStatusMsg({
                             type: "success",
                             text:
                               lang === "en"
-                                ? `WebRTC P2P tunnel connected with ${res.remoteProfile.username}!`
-                                : `Túnel WebRTC P2P conectado com ${res.remoteProfile.username}!`,
+                                ? `WebRTC P2P tunnel connected with ${res.remoteProfile.displayName || res.remoteProfile.username}!`
+                                : `Túnel WebRTC P2P conectado com ${res.remoteProfile.displayName || res.remoteProfile.username}!`,
                           });
+                          if (res.remoteProfile) {
+                            setConnectedPeers((prev) => {
+                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
+                              return [...clean, res.remoteProfile];
+                            });
+                          }
+                          setIncomingInviteInput("");
                         }
                       } catch (err) {
                         setConnectStatusMsg({ type: "error", text: err.message });
