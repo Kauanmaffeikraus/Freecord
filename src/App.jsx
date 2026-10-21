@@ -40,6 +40,12 @@ import {
   LogOut,
   Bell,
   BellOff,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronDown,
+  MessageSquare,
+  Users,
+  User,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -365,6 +371,23 @@ const I18N = {
     newDmToastTitle: (user) => `New DM from ${user}`,
     newChannelMsgToastTitle: (user, ch) => `${user} in #${ch}`,
     newServerInviteToastTitle: (user, srv) => `${user} invited you to ${srv}`,
+    mobileServersTab: "Servers",
+    mobileDmsTab: "Messages",
+    mobileCallTab: "Call",
+    mobileYouTab: "You",
+    mobileInCallBadge: (name) => `In Voice: ${name}`,
+    mobileOpenCallStage: "Open Call",
+    mobileMembersTitle: "Channel Members",
+    mobileBackBtn: "Back",
+    mobileSettingsTitle: "Settings & Profile",
+    mobileAudioVideoSettings: "Voice & Video Settings",
+    mobileConnectComputers: "Connect P2P Computers",
+    mobileLanguage: "Switch Language",
+    mobileNotifications: "Sound Notifications",
+    mobileEnabled: "Enabled",
+    mobileMuted: "Muted",
+    mobileNoChannelsFound: "No channels found in this server",
+    mobileLeaveServerConfirm: (name) => `Leave server ${name}?`,
   },
   pt: {
     nodePill: (id, port, count) => `Nó #${id} • Porta ${port || "WebRTC"} • ${count} Peer(s) Conectado(s)`,
@@ -595,6 +618,23 @@ const I18N = {
     newDmToastTitle: (user) => `Nova mensagem no PV de ${user}`,
     newChannelMsgToastTitle: (user, ch) => `${user} em #${ch}`,
     newServerInviteToastTitle: (user, srv) => `${user} convidou você para ${srv}`,
+    mobileServersTab: "Servidores",
+    mobileDmsTab: "Mensagens",
+    mobileCallTab: "Chamada",
+    mobileYouTab: "Você",
+    mobileInCallBadge: (name) => `Em Voz: ${name}`,
+    mobileOpenCallStage: "Abrir Chamada",
+    mobileMembersTitle: "Membros do Canal",
+    mobileBackBtn: "Voltar",
+    mobileSettingsTitle: "Configurações e Perfil",
+    mobileAudioVideoSettings: "Configurações de Áudio & Vídeo",
+    mobileConnectComputers: "Conectar Computadores P2P",
+    mobileLanguage: "Mudar Idioma",
+    mobileNotifications: "Notificações Sonoras",
+    mobileEnabled: "Ativado",
+    mobileMuted: "Silenciado",
+    mobileNoChannelsFound: "Nenhum canal encontrado neste servidor",
+    mobileLeaveServerConfirm: (name) => `Deseja sair do servidor ${name}?`,
   },
 };
 
@@ -1214,6 +1254,30 @@ export default function App() {
   });
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toasts, setToasts] = useState([]);
+
+  // Dedicated Discord Mobile Navigation State
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return Boolean(
+      window.Capacitor?.isNativePlatform?.() ||
+      window.innerWidth <= 768
+    );
+  });
+  const [mobileTab, setMobileTab] = useState("servers"); // "servers" | "dms" | "call" | "you"
+  const [mobileInChat, setMobileInChat] = useState(false);
+  const [showMobileMembers, setShowMobileMembers] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = Boolean(
+        window.Capacitor?.isNativePlatform?.() ||
+        window.innerWidth <= 768
+      );
+      setIsMobile(mobile);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   // Chat State
   const [messages, setMessages] = useState(INITIAL_REA_MESSAGES);
@@ -3550,10 +3614,667 @@ export default function App() {
     return sum;
   }, [unreadCounts]);
 
-  return (
+  const totalServerUnread = useMemo(() => {
+    let sum = 0;
+    for (const [k, v] of Object.entries(unreadCounts)) {
+      if (!k.startsWith("dm_")) sum += v;
+    }
+    return sum;
+  }, [unreadCounts]);
+
+  const activeVoiceChannelObj = useMemo(() => {
+    if (!activeVoiceChannelId) return null;
+    for (const room of rooms) {
+      const found = room.voiceChannels?.find((v) => v.id === activeVoiceChannelId);
+      if (found) return found;
+    }
+    if (activeVoiceChannelId.startsWith("dm_call_")) {
+      const parts = activeVoiceChannelId.replace("dm_call_", "").split("__");
+      const otherPeerId = parts.find((p) => p !== nodeStatus.profile.peerId);
+      const otherPeer = connectedPeers.find((p) => p.peerId === otherPeerId);
+      return {
+        id: activeVoiceChannelId,
+        name: otherPeer ? (otherPeer.displayName || otherPeer.username) : "P2P Call",
+      };
+    }
+    return null;
+  }, [activeVoiceChannelId, rooms, nodeStatus.profile.peerId, connectedPeers]);
+
+  const selectedDmPeer = useMemo(() => {
+    if (!selectedDmPeerId) return null;
+    return connectedPeers.find((p) => p.peerId === selectedDmPeerId) || null;
+  }, [selectedDmPeerId, connectedPeers]);
+
+    const renderChatColumnContent = () => (
+    <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+      {/* Outgoing Private Call Ringing Banner */}
+              {outgoingDmCall && (
+                <div className="outgoing-call-banner">
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <UserAvatar profile={outgoingDmCall.peer} size="small" />
+                    <span>
+                      {t.outgoingCallRinging(
+                        outgoingDmCall.peer?.displayName ||
+                          outgoingDmCall.peer?.username ||
+                          "Peer"
+                      )}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ backgroundColor: "rgba(242, 63, 67, 0.25)", color: "#fca5a5" }}
+                    onClick={handleCancelOutgoingDmCall}
+                  >
+                    <PhoneOff size={13} />
+                    <span>{t.cancelCallBtn}</span>
+                  </button>
+                </div>
+              )}
+              {/* Voice / Simultaneous Webcam + Go Live Screen Stage */}
+              {activeVoiceChannelId && (
+                <div
+                  ref={stageContainerRef}
+                  className={`voice-stage-container ${stageTheaterMode ? "theater-mode" : ""}`}
+                  style={!stageTheaterMode ? { height: stageHeight } : undefined}
+                >
+                  <div className="stage-toolbar">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Volume2 size={16} color="#23a55a" />
+                      <strong style={{ color: "#fff", fontSize: 13 }}>
+                        {t.voiceStageTitle}
+                      </strong>
+                    </div>
+
+                    <div className="stage-toolbar-controls">
+                      {/* Tile Size Slider for Grid Mode */}
+                      {!activeSpotlightTile && (
+                        <div className="stage-size-pill">
+                          <span>{t.tileSizeLabel}:</span>
+                          <input
+                            type="range"
+                            min="180"
+                            max="640"
+                            step="20"
+                            value={tileMinWidth}
+                            onChange={(e) => setTileMinWidth(Number(e.target.value))}
+                            style={{ width: 78, cursor: "pointer" }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Grid vs Spotlight Toggle */}
+                      {activeSpotlightTile && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setSpotlightTileId(null)}
+                        >
+                          <LayoutGrid size={14} />
+                          <span>{t.gridModeBtn}</span>
+                        </button>
+                      )}
+
+                      {/* Floating Webcam PiP Toggle when Screen Share is Spotlighted */}
+                      {activeSpotlightTile && activeWebcamTileForPip && (
+                        <button
+                          type="button"
+                          className={showWebcamPipOverlay ? "btn-primary" : "btn-secondary"}
+                          onClick={() => setShowWebcamPipOverlay((v) => !v)}
+                        >
+                          <PictureInPicture2 size={14} />
+                          <span>{t.webcamPipToggle}</span>
+                        </button>
+                      )}
+
+                      {/* Theater Mode Toggle */}
+                      <button
+                        type="button"
+                        className={stageTheaterMode ? "btn-primary" : "btn-secondary"}
+                        onClick={() => setStageTheaterMode((v) => !v)}
+                      >
+                        {stageTheaterMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                        <span>{stageTheaterMode ? t.exitTheaterBtn : t.theaterModeBtn}</span>
+                      </button>
+
+                      {/* Fullscreen Entire Stage */}
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => toggleElementFullscreen(stageContainerRef.current)}
+                        title={t.stageFullscreenBtn}
+                      >
+                        <Maximize2 size={14} />
+                        <span>{t.stageFullscreenBtn}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => openProfileStudio("media")}
+                      >
+                        <Sliders size={14} />
+                        <span>{t.mediaSettingsBtn}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className={videoEnabled ? "btn-primary" : "btn-secondary"}
+                        onClick={toggleCamera}
+                      >
+                        {videoEnabled ? <Video size={14} /> : <VideoOff size={14} />}
+                        <span>{videoEnabled ? t.turnOffCamera : t.turnOnCamera}</span>
+                      </button>
+
+                      <button type="button" className="btn-primary" onClick={openGoLivePicker}>
+                        <Monitor size={14} />
+                        <span>
+                          {screenSharing
+                            ? `${t.stopGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`
+                            : `${t.startGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Stage Body: Spotlight Mode (Main Large Tile + Dock Strip) vs Resizable Grid Mode */}
+                  {activeSpotlightTile ? (
+                    <div className="voice-spotlight-layout">
+                      <div className="voice-spotlight-main">
+                        {renderStageTile(activeSpotlightTile, true)}
+                      </div>
+
+                      {stageTiles.length > 1 && (
+                        <div className="voice-spotlight-dock">
+                          {stageTiles
+                            .filter((tile) => tile.id !== activeSpotlightTile.id)
+                            .map((tile) => renderStageTile(tile, false))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      className="voice-video-grid"
+                      style={{
+                        gridTemplateColumns: `repeat(auto-fit, minmax(${tileMinWidth}px, 1fr))`,
+                      }}
+                    >
+                      {stageTiles.map((tile) => renderStageTile(tile, false))}
+                    </div>
+                  )}
+
+                  {/* Bottom Drag Handle to Resize Stage Height */}
+                  {!stageTheaterMode && (
+                    <div
+                      className="stage-resize-handle"
+                      onMouseDown={startStageHeightDrag}
+                      title={t.dragResizeHint}
+                    >
+                      <div className="stage-resize-handle-bar" />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Direct P2P Network Hub View */}
+              {selectedRoomId === "dm_hub" && !selectedDmPeerId ? (
+                <div className="messages-scroller" style={{ padding: "22px 26px" }}>
+                  <div
+                    style={{
+                      background: "linear-gradient(135deg, rgba(88,101,242,0.18), rgba(155,89,182,0.14))",
+                      border: "1px solid rgba(88,101,242,0.35)",
+                      borderRadius: 10,
+                      padding: 20,
+                      marginBottom: 20,
+                      display: "flex",
+                      gap: 18,
+                      alignItems: "center",
+                    }}
+                  >
+                    <img
+                      src="./logo.png"
+                      alt="Freecord Logo"
+                      style={{
+                        width: 76,
+                        height: 76,
+                        borderRadius: 16,
+                        boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <h2 style={{ color: "#fff", fontSize: 20, marginBottom: 6 }}>
+                        {t.hubBannerTitle}
+                      </h2>
+                      <p style={{ color: "var(--text-normal)", fontSize: 13, lineHeight: 1.5 }}>
+                        {t.hubBannerDesc}
+                      </p>
+
+                      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        {(nodeStatus.connectionStrings || []).map((ep) => (
+                          <div key={ep} className="endpoint-copy-card" style={{ marginBottom: 0, gap: 12 }}>
+                            <div>
+                              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
+                                {t.yourEndpointLabel}
+                              </div>
+                              <div className="endpoint-code">{ep}</div>
+                            </div>
+                            <button className="btn-primary" onClick={() => handleCopy(ep)}>
+                              {copiedText === ep ? <Check size={14} /> : <Copy size={14} />}
+                              <span>{copiedText === ep ? t.copied : t.copyIpPort}</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Discovered LAN / Local Peers */}
+                  <h3 style={{ color: "var(--text-header)", fontSize: 14, marginBottom: 10 }}>
+                    {t.discoveredLanHeader(lanPeers.length)}
+                  </h3>
+                  {lanPeers.length === 0 ? (
+                    <div
+                      style={{
+                        background: "#2b2d31",
+                        padding: 16,
+                        borderRadius: 8,
+                        color: "var(--text-muted)",
+                        marginBottom: 20,
+                      }}
+                    >
+                      {t.searchingLan}{" "}
+                      {isElectron && (
+                        <button
+                          className="btn-primary"
+                          style={{ marginLeft: 10 }}
+                          onClick={handleSpawnSecondPeer}
+                        >
+                          <ExternalLink size={14} />
+                          <span>{t.spawnPeerBtn}</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
+                      {lanPeers.map((lp) => (
+                        <div
+                          key={lp.peerId}
+                          style={{
+                            background: "#2b2d31",
+                            padding: "12px 16px",
+                            borderRadius: 8,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <UserAvatar profile={lp} showStatus={true} />
+                            <div>
+                              <div style={{ fontWeight: 700, color: "#fff" }}>
+                                {lp.displayName || lp.username}#{lp.tag}{" "}
+                                <span className="message-peer-badge">{lp.peerId}</span>
+                              </div>
+                              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                                Endpoint: {lp.host}:{lp.tcpPort} • {lp.customStatus}
+                              </div>
+                            </div>
+                          </div>
+                          {lp.isConnected ? (
+                            <span style={{ color: "#4ade80", fontWeight: 700, fontSize: 12 }}>
+                              {t.interconnected}
+                            </span>
+                          ) : (
+                            <button
+                              className="btn-success"
+                              onClick={() =>
+                                window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)
+                              }
+                            >
+                              {t.connectP2pBtn}
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Messages Feed */
+                <>
+                  <div className="messages-scroller">
+                    <div className="channel-welcome">
+                      <h2>{t.welcomeChannelTitle(currentChannelObj?.name)}</h2>
+                      <p>
+                        {currentChannelObj?.topic || t.welcomeChannelDefault}
+                      </p>
+                    </div>
+
+                    {filteredMessages.map((msg) => (
+                      <div key={msg.id} className="message-item">
+                        <UserAvatar
+                          profile={msg.author}
+                          onClick={() => setInspectedProfile(msg.author)}
+                        />
+
+                        <div className="message-content">
+                          <div className="message-header">
+                            <span
+                              className="message-author"
+                              style={{ cursor: "pointer" }}
+                              onClick={() => setInspectedProfile(msg.author)}
+                            >
+                              {msg.author?.displayName || msg.author?.username}
+                            </span>
+                            <span className="message-peer-badge">
+                              #{msg.author?.tag || "P2P"}
+                            </span>
+                            <span className="message-timestamp">{msg.timestamp}</span>
+                          </div>
+
+                          <div className="message-text">{msg.text}</div>
+
+                          {/* Interactive P2P Server Invite Card Embed */}
+                          {msg.serverInvite?.room && (() => {
+                            const invRoom = msg.serverInvite.room;
+                            const isAlreadyMember = rooms.some((r) => r.id === invRoom.id);
+                            return (
+                              <div className="server-invite-card">
+                                <div
+                                  className="server-invite-banner"
+                                  style={{
+                                    background: invRoom.bannerUrl
+                                      ? `url(${invRoom.bannerUrl}) center/cover no-repeat`
+                                      : `linear-gradient(135deg, ${
+                                          invRoom.bannerColor || invRoom.color || "#5865f2"
+                                        } 0%, ${invRoom.bannerSecondaryColor || "#9b59b6"} 100%)`,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 800,
+                                      color: "rgba(255,255,255,0.85)",
+                                      letterSpacing: 0.5,
+                                      zIndex: 2,
+                                    }}
+                                  >
+                                    {t.serverInviteCardHeader}
+                                  </span>
+                                </div>
+                                <div className="server-invite-body">
+                                  <div className="server-invite-info">
+                                    <div
+                                      className="server-invite-icon"
+                                      style={{ backgroundColor: invRoom.color || "#5865f2" }}
+                                    >
+                                      {invRoom.iconUrl ? (
+                                        <img src={invRoom.iconUrl} alt={invRoom.name} />
+                                      ) : (
+                                        invRoom.shortName || "FC"
+                                      )}
+                                    </div>
+                                    <div className="server-invite-meta">
+                                      <div className="server-invite-name">
+                                        <span>{invRoom.name}</span>
+                                        {invRoom.serverTag && (
+                                          <span className="server-tag-badge">
+                                            ✦ {invRoom.serverTag}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="server-invite-desc">
+                                        {invRoom.description ||
+                                          t.invitedYouToJoin(
+                                            msg.author?.displayName ||
+                                              msg.author?.username ||
+                                              "Peer"
+                                          )}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {isAlreadyMember ? (
+                                    <button
+                                      type="button"
+                                      className="btn-secondary"
+                                      onClick={() => {
+                                        setSelectedRoomId(invRoom.id);
+                                        if (invRoom.textChannels?.[0]?.id) {
+                                          setSelectedChannelId(invRoom.textChannels[0].id);
+                                        }
+                                      }}
+                                    >
+                                      <span>{t.joinedServerBadge}</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="btn-success"
+                                      onClick={() =>
+                                        handleJoinServerRoom(invRoom, msg.serverInvite.hostEndpoint)
+                                      }
+                                    >
+                                      <UserPlus size={14} />
+                                      <span>{t.joinServerBtn}</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })()}
+
+                          {msg.attachment && (
+                            <div className="message-attachment">
+                              {msg.attachment.isImage ? (
+                                <img src={msg.attachment.dataUrl} alt={msg.attachment.name} />
+                              ) : null}
+                              <div className="file-attachment-card">
+                                <div>
+                                  <div style={{ fontWeight: 600, color: "#fff", fontSize: 13 }}>
+                                    {msg.attachment.name}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                    {(msg.attachment.size / 1024).toFixed(1)} KB • {t.directP2pTransfer}
+                                  </div>
+                                </div>
+                                <a
+                                  href={msg.attachment.dataUrl}
+                                  download={msg.attachment.name}
+                                  className="btn-primary"
+                                  style={{ textDecoration: "none" }}
+                                >
+                                  <Download size={14} />
+                                  <span>{t.downloadBtn}</span>
+                                </a>
+                              </div>
+                            </div>
+                          )}
+
+                          {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                            <div className="reactions-row">
+                              {Object.entries(msg.reactions).map(([emoji, peerList]) => {
+                                const active = peerList.includes(nodeStatus.profile.peerId);
+                                return (
+                                  <div
+                                    key={emoji}
+                                    className={`reaction-pill ${active ? "active" : ""}`}
+                                    onClick={() => handleToggleReaction(msg.id, emoji)}
+                                  >
+                                    <span>{emoji}</span>
+                                    <span>{peerList.length}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Hover Quick React Bar */}
+                        <div className="quick-react-bar">
+                          {["👍", "❤️", "🔥", "🚀", "⚡"].map((emoji) => (
+                            <button
+                              key={emoji}
+                              className="quick-react-btn"
+                              onClick={() => handleToggleReaction(msg.id, emoji)}
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  {/* Chat Input */}
+                  <div className="chat-input-wrapper">
+                    {activeTyping && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--text-muted)",
+                          marginBottom: 4,
+                          paddingLeft: 4,
+                        }}
+                      >
+                        <b>{t.isTyping(activeTyping.username)}</b>
+                      </div>
+                    )}
+                    <form className="chat-input-bar" onSubmit={handleSendMessage}>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        style={{ display: "none" }}
+                        onChange={handleFileAttachment}
+                      />
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        onClick={() => fileInputRef.current?.click()}
+                        title={t.sendFileTooltip}
+                      >
+                        <Paperclip size={18} />
+                      </button>
+                      <input
+                        type="text"
+                        placeholder={t.chatPlaceholder(currentChannelObj?.name)}
+                        value={chatInput}
+                        onChange={(e) => {
+                          setChatInput(e.target.value);
+                          const now = Date.now();
+                          if (now - lastTypingSentRef.current > 2000) {
+                            lastTypingSentRef.current = now;
+                            sendP2PPacket({
+                              type: "TYPING_STATE",
+                              channelId: effectiveChannelId,
+                              username: selfDisplayName,
+                            });
+                          }
+                        }}
+                      />
+                      <button type="submit" className="icon-btn" title={t.sendMessageTooltip}>
+                        <Send size={18} color="var(--brand-blurple)" />
+                      </button>
+                    </form>
+                  </div>
+                </>
+              )}
+    </div>
+  );
+
+  const renderPeerSidebarContent = (isDrawer = false) => (
+    <div className={`peer-sidebar ${isDrawer ? "mobile-drawer-inner" : ""}`}>
+      <div className="channel-section-title" style={{ paddingTop: 0 }}>
+        <span>{t.youSidebarHeader}</span>
+      </div>
+      <div
+        className="peer-card"
+        onClick={() => setInspectedProfile(nodeStatus.profile)}
+      >
+        <div className="peer-card-left">
+          <UserAvatar profile={nodeStatus.profile} showStatus={true} />
+          <div className="peer-card-meta">
+            <span className="peer-card-name">
+              {selfDisplayName}#{nodeStatus.profile.tag}
+            </span>
+            <span className="peer-card-sub">
+              {nodeStatus.profile.statusEmoji || ""}{" "}
+              {nodeStatus.profile.customStatus || `TCP: ${nodeStatus.tcpPort || "Web"}`}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="channel-section-title">
+        <span>{t.connectedComputersHeader(connectedPeers.length)}</span>
+      </div>
+      {connectedPeers.map((peer) => (
+        <div
+          key={peer.peerId}
+          className="peer-card"
+          onClick={() => setInspectedProfile(peer)}
+          title={`Click to view ${peer.displayName || peer.username}'s Profile Card`}
+        >
+          <div className="peer-card-left">
+            <UserAvatar
+              profile={peer}
+              speaking={Boolean(speakingMap[peer.peerId])}
+              showStatus={true}
+            />
+            <div className="peer-card-meta">
+              <span className="peer-card-name">
+                {peer.displayName || peer.username}#{peer.tag}
+              </span>
+              <span className="peer-card-sub">
+                {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port} • ${peer.rttMs}ms`}
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      <div className="channel-section-title">
+        <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected).length)}</span>
+        <RefreshCw
+          size={12}
+          style={{ cursor: "pointer" }}
+          onClick={() => window.DiscordNative?.p2p?.beaconNow()}
+          title="Broadcast UDP Discovery Beacon Now"
+        />
+      </div>
+      {lanPeers
+        .filter((l) => !l.isConnected)
+        .map((lp) => (
+          <div key={lp.peerId} className="peer-card">
+            <div className="peer-card-left">
+              <UserAvatar profile={lp} showStatus={true} />
+              <div className="peer-card-meta">
+                <span className="peer-card-name">{lp.displayName || lp.username}</span>
+                <span className="peer-card-sub">
+                  {lp.host}:{lp.tcpPort}
+                </span>
+              </div>
+            </div>
+            <button
+              className="btn-success"
+              onClick={() =>
+                window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)
+              }
+            >
+              {t.connectShortBtn}
+            </button>
+          </div>
+        ))}
+    </div>
+  );
+
+return (
     <>
-      {/* DiscordPTB Frameless Titlebar with Official Freecord Logo */}
-      <div className="titlebar">
+      {/* DiscordPTB Frameless Titlebar with Official Freecord Logo (Desktop only) */}
+      {!isMobile && (
+        <div className="titlebar">
         <div className="titlebar-left">
           <img src="./logo.png" alt="Freecord" className="titlebar-logo" />
           <span>FREECORD</span>
@@ -3656,6 +4377,7 @@ export default function App() {
           </button>
         </div>
       </div>
+      )}
 
       {/* Auto-Updater Banner Notification */}
       {updateStatus?.status === "downloaded" && (
@@ -3710,8 +4432,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Workspace */}
-      <div className="app-shell">
+      {/* Main Workspace (Desktop vs Dedicated Discord Mobile UI) */}
+      {!isMobile ? (
+        <div className="app-shell">
         {/* Left Server / P2P Spaces Rail */}
         <div className="server-rail">
           <div
@@ -4956,6 +5679,922 @@ export default function App() {
           </div>
         </div>
       </div>
+      ) : (
+        <div className="app-shell mobile-shell">
+          <div className="mobile-body">
+            {/* TAB: SERVERS */}
+            {mobileTab === "servers" && (
+              !mobileInChat ? (
+                <div className="mobile-servers-split">
+                  {/* Left Server Rail */}
+                  <div className="server-rail mobile-rail">
+                    <div
+                      className={`server-icon home-logo ${selectedRoomId === "dm_hub" ? "active" : ""}`}
+                      style={{ position: "relative" }}
+                      onClick={() => {
+                        setSelectedRoomId("dm_hub");
+                        setSelectedDmPeerId(null);
+                        setMobileTab("dms");
+                        setMobileInChat(false);
+                      }}
+                      title={t.p2pHubTitle}
+                    >
+                      <img src="./logo.png" alt="Freecord Hub" />
+                      {totalDmUnread > 0 ? (
+                        <span className="unread-badge rail-badge">
+                          {totalDmUnread > 99 ? "99+" : totalDmUnread}
+                        </span>
+                      ) : connectedPeers.length > 0 ? (
+                        <span className="server-badge">{connectedPeers.length}</span>
+                      ) : null}
+                    </div>
+
+                    <div className="rail-divider" />
+
+                    {rooms.map((room) => {
+                      const serverUnread = (room.textChannels || []).reduce(
+                        (acc, ch) => acc + (unreadCounts[ch.id] || 0),
+                        0
+                      );
+                      return (
+                        <div
+                          key={room.id}
+                          className={`server-icon ${selectedRoomId === room.id ? "active" : ""}`}
+                          style={{
+                            position: "relative",
+                            backgroundColor:
+                              selectedRoomId === room.id
+                                ? room.color || "#5865f2"
+                                : room.iconUrl
+                                ? "#111214"
+                                : undefined,
+                            padding: room.iconUrl ? 0 : undefined,
+                            overflow: "visible",
+                          }}
+                          onClick={() => {
+                            setSelectedRoomId(room.id);
+                            if (room.textChannels?.[0]) {
+                              setSelectedChannelId(room.textChannels[0].id);
+                            }
+                          }}
+                        >
+                          {room.iconUrl ? (
+                            <img
+                              src={room.iconUrl}
+                              alt=""
+                              style={{ width: "100%", height: "100%", borderRadius: "inherit", objectFit: "cover" }}
+                            />
+                          ) : (
+                            room.shortName
+                          )}
+                          {serverUnread > 0 && (
+                            <span className="unread-badge rail-badge">{serverUnread}</span>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    <div
+                      className="server-icon add-server-btn"
+                      onClick={() => setShowNewRoomModal(true)}
+                      title={t.createRoomBtn}
+                    >
+                      <Plus size={20} />
+                    </div>
+
+                    <div
+                      className="server-icon connect-btn"
+                      onClick={() => setShowConnectModal(true)}
+                      title={t.connectComputerBtn}
+                    >
+                      <Radio size={20} />
+                    </div>
+                  </div>
+
+                  {/* Right Channel Sidebar */}
+                  <div
+                    className="channel-sidebar mobile-sidebar"
+                    style={
+                      selectedRoomId !== "dm_hub" && currentRoom?.sidebarBgColor
+                        ? { backgroundColor: currentRoom.sidebarBgColor }
+                        : undefined
+                    }
+                  >
+                    {currentRoom && (
+                      <div
+                        className="sidebar-banner-hero"
+                        style={{
+                          background: currentRoom?.bannerUrl
+                            ? `url(${currentRoom.bannerUrl}) center/cover no-repeat`
+                            : `linear-gradient(135deg, ${
+                                currentRoom?.bannerColor || currentRoom?.color || "#5865f2"
+                              } 0%, ${currentRoom?.bannerSecondaryColor || "#9b59b6"} 100%)`,
+                        }}
+                        onClick={() => openServerStudio("edit", currentRoom)}
+                      >
+                        <div className="sidebar-banner-top">
+                          {currentRoom?.serverTag ? (
+                            <span className="server-tag-badge">✦ {currentRoom.serverTag}</span>
+                          ) : (
+                            <span />
+                          )}
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <button
+                              type="button"
+                              className="tile-ctrl-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openInviteServerModal(currentRoom);
+                              }}
+                              title={t.inviteServerBtn}
+                            >
+                              <UserPlus size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              className="tile-ctrl-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openServerStudio("edit", currentRoom);
+                              }}
+                              title={t.customizeServerBtn}
+                            >
+                              <Settings size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              className="tile-ctrl-btn"
+                              style={{ color: "#fca5a5" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(t.mobileLeaveServerConfirm(currentRoom?.name))) {
+                                  handleLeaveServer(currentRoom?.id);
+                                }
+                              }}
+                              title={t.leaveServerBtn}
+                            >
+                              <LogOut size={12} />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="sidebar-banner-bottom">
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                            {currentRoom?.iconUrl ? (
+                              <img
+                                src={currentRoom.iconUrl}
+                                alt=""
+                                style={{
+                                  width: 26,
+                                  height: 26,
+                                  borderRadius: 7,
+                                  objectFit: "cover",
+                                  border: "2px solid rgba(255,255,255,0.4)",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                style={{
+                                  width: 26,
+                                  height: 26,
+                                  borderRadius: 7,
+                                  backgroundColor: currentRoom?.color || "#5865f2",
+                                  color: "#fff",
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                              >
+                                {currentRoom?.shortName}
+                              </div>
+                            )}
+                            <span
+                              style={{
+                                fontWeight: 800,
+                                fontSize: 15,
+                                color: "#fff",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                textShadow: "0 2px 6px rgba(0,0,0,0.65)",
+                              }}
+                            >
+                              {currentRoom?.name}
+                            </span>
+                          </div>
+                          <ShieldCheck size={15} color="#4ade80" />
+                        </div>
+                      </div>
+                    )}
+
+                    {currentRoom?.description && (
+                      <div className="sidebar-description-bar">{currentRoom.description}</div>
+                    )}
+
+                    <div className="channel-list" style={{ flex: 1, overflowY: "auto" }}>
+                      <div className="channel-section-title">
+                        <span>{t.textChannelsHeader}</span>
+                        <Plus
+                          size={14}
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setNewChannelType("text");
+                            setShowNewChannelModal(true);
+                          }}
+                        />
+                      </div>
+                      {currentRoom?.textChannels?.map((ch) => {
+                        const chUnread = unreadCounts[ch.id] || 0;
+                        return (
+                          <div
+                            key={ch.id}
+                            className={`channel-item ${selectedChannelId === ch.id ? "active" : ""} ${chUnread > 0 ? "has-unread" : ""}`}
+                            onClick={() => {
+                              setSelectedChannelId(ch.id);
+                              setMobileInChat(true);
+                            }}
+                          >
+                            <div className="channel-item-left">
+                              <Hash size={18} />
+                              <span style={{ fontWeight: chUnread > 0 ? 800 : undefined, color: chUnread > 0 ? "#fff" : undefined }}>
+                                {ch.name}
+                              </span>
+                            </div>
+                            {chUnread > 0 && <span className="unread-badge">{chUnread}</span>}
+                          </div>
+                        );
+                      })}
+
+                      <div className="channel-section-title">
+                        <span>{t.voiceChannelsHeader}</span>
+                        <Plus
+                          size={14}
+                          style={{ cursor: "pointer" }}
+                          onClick={() => {
+                            setNewChannelType("voice");
+                            setShowNewChannelModal(true);
+                          }}
+                        />
+                      </div>
+                      {currentRoom?.voiceChannels?.map((vc) => {
+                        const members = peersInVoiceChannel(vc.id);
+                        return (
+                          <div key={vc.id}>
+                            <div
+                              className={`channel-item ${activeVoiceChannelId === vc.id ? "active" : ""}`}
+                              onClick={() => {
+                                handleJoinVoiceChannel(vc);
+                                setMobileTab("call");
+                              }}
+                            >
+                              <div className="channel-item-left">
+                                <Volume2 size={18} color={activeVoiceChannelId === vc.id ? "#23a55a" : undefined} />
+                                <span>{vc.name}</span>
+                              </div>
+                              {members.length > 0 && (
+                                <span style={{ fontSize: 11, color: "#4ade80", fontWeight: 700 }}>
+                                  {members.length}
+                                </span>
+                              )}
+                            </div>
+
+                            {members.length > 0 && (
+                              <div className="voice-channel-users">
+                                {members.map((m) => (
+                                  <div
+                                    key={m.peerId}
+                                    className="voice-user-row"
+                                    onClick={() => setInspectedProfile(m)}
+                                  >
+                                    <div className="voice-user-left">
+                                      <UserAvatar profile={m} size="small" speaking={m.speaking} />
+                                      <span style={{ fontSize: 12 }}>{m.displayName}</span>
+                                    </div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                      {m.screenSharing && <span className="live-badge">{t.liveBadge}</span>}
+                                      {m.muted && <MicOff size={12} color="#f23f43" />}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="user-panel" style={{ marginTop: "auto" }}>
+                      <div
+                        className="user-panel-info"
+                        onClick={() => setMobileTab("you")}
+                      >
+                        <UserAvatar
+                          profile={nodeStatus.profile}
+                          speaking={Boolean(speakingMap[nodeStatus.profile.peerId])}
+                          showStatus={true}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div className="user-panel-name">{selfDisplayName}</div>
+                          <div className="user-panel-sub">
+                            {nodeStatus.profile.statusEmoji || ""}{" "}
+                            {nodeStatus.profile.customStatus || `#${nodeStatus.profile.tag}`}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="user-panel-actions">
+                        <button
+                          className={`icon-btn ${selfMute ? "danger" : ""}`}
+                          onClick={toggleSelfMute}
+                          title={selfMute ? t.unmuteMic : t.muteMic}
+                        >
+                          {selfMute ? <MicOff size={17} /> : <Mic size={17} />}
+                        </button>
+                        <button
+                          className={`icon-btn ${selfDeafen ? "danger" : ""}`}
+                          onClick={toggleSelfDeafen}
+                          title={selfDeafen ? t.undeafenAudio : t.deafenAudio}
+                        >
+                          <Headphones size={17} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mobile-chat-screen">
+                  <div className="mobile-chat-header">
+                    <button
+                      type="button"
+                      className="icon-btn mobile-header-btn"
+                      onClick={() => setMobileInChat(false)}
+                      title={t.mobileBackBtn}
+                    >
+                      <ArrowLeft size={20} />
+                    </button>
+                    <div className="mobile-header-title-wrap">
+                      <div className="mobile-header-title">
+                        <Hash size={18} color="var(--text-muted)" />
+                        <span>{currentChannelObj?.name}</span>
+                      </div>
+                      {currentChannelObj?.topic && (
+                        <div className="mobile-header-sub">{currentChannelObj.topic}</div>
+                      )}
+                    </div>
+                    <div className="mobile-header-actions">
+                      <button
+                        type="button"
+                        className="icon-btn mobile-header-btn"
+                        onClick={() => openInviteServerModal(currentRoom)}
+                        title={t.inviteServerBtn}
+                      >
+                        <UserPlus size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn mobile-header-btn"
+                        onClick={() => setShowMobileMembers(true)}
+                        title={t.mobileMembersTitle}
+                      >
+                        <Users size={18} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {renderChatColumnContent()}
+                </div>
+              )
+            )}
+
+            {/* TAB: DMS */}
+            {mobileTab === "dms" && (
+              !mobileInChat ? (
+                <div className="mobile-dms-screen">
+                  <div className="mobile-dms-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <img src="./logo.png" alt="" style={{ width: 28, height: 28, borderRadius: 7 }} />
+                      <span style={{ fontWeight: 800, fontSize: 17, color: "#fff" }}>
+                        {t.mobileDmsTab}
+                      </span>
+                    </div>
+                    <button
+                      className="btn-primary"
+                      style={{ padding: "6px 12px", fontSize: 12 }}
+                      onClick={() => setShowConnectModal(true)}
+                    >
+                      <Radio size={13} />
+                      <span>{t.connectComputerBtn}</span>
+                    </button>
+                  </div>
+
+                  <div className="mobile-endpoint-card">
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>
+                      {t.yourEndpointLabel}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <div className="endpoint-code" style={{ fontSize: 11, padding: "4px 8px" }}>
+                        {nodeStatus.connectionStrings?.[0] || nodeStatus.localhostEndpoint || "P2P WebRTC Direct"}
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        style={{ padding: "5px 10px", fontSize: 11 }}
+                        onClick={() => handleCopy(nodeStatus.connectionStrings?.[0] || nodeStatus.localhostEndpoint || "")}
+                      >
+                        {copiedText ? <Check size={12} /> : <Copy size={12} />}
+                        <span>{copiedText ? t.copied : t.copyBtn}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="channel-section-title" style={{ padding: "12px 16px 4px 16px" }}>
+                    <span>{t.directMessagesHeader(connectedPeers.length)}</span>
+                  </div>
+
+                  {connectedPeers.length === 0 ? (
+                    <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+                      <p>{t.noPeersYet}</p>
+                      <button
+                        className="btn-primary"
+                        style={{ margin: "14px auto 0 auto" }}
+                        onClick={() => setShowConnectModal(true)}
+                      >
+                        <Radio size={14} />
+                        <span>{t.connectComputerBtn}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mobile-dms-list">
+                      {connectedPeers.map((peer) => {
+                        const sorted = [nodeStatus.profile.peerId, peer.peerId].sort().join("__");
+                        const dmChId = `dm_${sorted}`;
+                        const dmUnread = unreadCounts[dmChId] || 0;
+
+                        return (
+                          <div
+                            key={peer.peerId}
+                            className="mobile-dm-item"
+                            onClick={() => {
+                              setSelectedDmPeerId(peer.peerId);
+                              setSelectedRoomId("dm_hub");
+                              setMobileInChat(true);
+                            }}
+                          >
+                            <UserAvatar profile={peer} size="medium" showStatus={true} />
+                            <div className="mobile-dm-item-info">
+                              <div className="mobile-dm-item-name">
+                                {peer.displayName || peer.username}#{peer.tag}
+                              </div>
+                              <div className="mobile-dm-item-status">
+                                {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port}`}
+                              </div>
+                            </div>
+
+                            <div className="mobile-dm-item-actions" onClick={(e) => e.stopPropagation()}>
+                              {dmUnread > 0 && <span className="unread-badge">{dmUnread}</span>}
+                              <button
+                                className="icon-btn-round voice"
+                                onClick={() => handleStartDmCall(peer, false)}
+                                title={t.startVoiceCallBtn}
+                              >
+                                <PhoneCall size={15} />
+                              </button>
+                              <button
+                                className="icon-btn-round video"
+                                onClick={() => handleStartDmCall(peer, true)}
+                                title={t.startVideoCallBtn}
+                              >
+                                <Video size={15} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {lanPeers.filter((l) => !l.isConnected).length > 0 && (
+                    <>
+                      <div className="channel-section-title" style={{ padding: "16px 16px 4px 16px" }}>
+                        <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected).length)}</span>
+                      </div>
+                      <div className="mobile-dms-list">
+                        {lanPeers
+                          .filter((l) => !l.isConnected)
+                          .map((lp) => (
+                            <div key={lp.peerId} className="mobile-dm-item">
+                              <UserAvatar profile={lp} size="medium" showStatus={true} />
+                              <div className="mobile-dm-item-info">
+                                <div className="mobile-dm-item-name">{lp.displayName || lp.username}</div>
+                                <div className="mobile-dm-item-status">{lp.host}:{lp.tcpPort}</div>
+                              </div>
+                              <button
+                                className="btn-success"
+                                style={{ padding: "6px 12px", fontSize: 12 }}
+                                onClick={() => window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)}
+                              >
+                                {t.connectShortBtn}
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="mobile-chat-screen">
+                  <div className="mobile-chat-header">
+                    <button
+                      type="button"
+                      className="icon-btn mobile-header-btn"
+                      onClick={() => setMobileInChat(false)}
+                      title={t.mobileBackBtn}
+                    >
+                      <ArrowLeft size={20} />
+                    </button>
+
+                    {selectedDmPeer && (
+                      <div
+                        className="mobile-header-title-wrap"
+                        onClick={() => setInspectedProfile(selectedDmPeer)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <UserAvatar profile={selectedDmPeer} size="small" showStatus={true} />
+                          <div className="mobile-header-title">
+                            <span>{selectedDmPeer.displayName || selectedDmPeer.username}</span>
+                          </div>
+                        </div>
+                        <div className="mobile-header-sub">
+                          {selectedDmPeer.customStatus || `#${selectedDmPeer.tag}`}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mobile-header-actions">
+                      {selectedDmPeer && (
+                        <>
+                          <button
+                            type="button"
+                            className="icon-btn mobile-header-btn"
+                            onClick={() => handleStartDmCall(selectedDmPeer, false)}
+                            title={t.startVoiceCallBtn}
+                          >
+                            <PhoneCall size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-btn mobile-header-btn"
+                            onClick={() => handleStartDmCall(selectedDmPeer, true)}
+                            title={t.startVideoCallBtn}
+                          >
+                            <Video size={18} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {renderChatColumnContent()}
+                </div>
+              )
+            )}
+
+            {/* TAB: CALL */}
+            {mobileTab === "call" && (
+              <div className="mobile-call-stage">
+                <div className="mobile-call-header">
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setMobileTab("servers")}
+                    title="Minimizar Chamada"
+                  >
+                    <ChevronDown size={22} />
+                  </button>
+
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontWeight: 800, fontSize: 16, color: "#fff" }}>
+                      {activeVoiceChannelObj?.name || "Direct P2P Call"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#4ade80", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                      <span className="pulse-dot-inline" />
+                      <span>{t.voiceConnected}</span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => openProfileStudio("media")}
+                    title={t.mediaSettingsBtn}
+                  >
+                    <Sliders size={18} />
+                  </button>
+                </div>
+
+                <div className="mobile-call-grid">
+                  {stageTiles.map((tile) => (
+                    <div key={tile.id} className="mobile-call-tile">
+                      {renderStageTile(tile, false)}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mobile-call-controls">
+                  <button
+                    type="button"
+                    className={`mobile-call-btn ${selfMute ? "danger" : ""}`}
+                    onClick={toggleSelfMute}
+                    title={selfMute ? t.unmuteMic : t.muteMic}
+                  >
+                    {selfMute ? <MicOff size={22} /> : <Mic size={22} />}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mobile-call-btn ${selfDeafen ? "danger" : ""}`}
+                    onClick={toggleSelfDeafen}
+                    title={selfDeafen ? t.undeafenAudio : t.deafenAudio}
+                  >
+                    <Headphones size={22} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mobile-call-btn ${videoEnabled ? "active" : ""}`}
+                    onClick={toggleCamera}
+                    title={videoEnabled ? t.turnOffCamera : t.turnOnCamera}
+                  >
+                    {videoEnabled ? <Video size={22} /> : <VideoOff size={22} />}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mobile-call-btn ${screenSharing ? "active" : ""}`}
+                    onClick={openGoLivePicker}
+                    title={screenSharing ? t.stopScreenBtn : t.screenBtn}
+                  >
+                    <Monitor size={22} />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="mobile-call-btn end-call"
+                    onClick={() => {
+                      handleLeaveVoiceChannel();
+                      setMobileTab("servers");
+                    }}
+                    title={t.disconnectVoice}
+                  >
+                    <PhoneOff size={22} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB: YOU */}
+            {mobileTab === "you" && (
+              <div className="mobile-you-screen">
+                <div className="mobile-you-header">
+                  <div
+                    className="mobile-you-banner"
+                    style={{
+                      background: nodeStatus.profile.bannerUrl
+                        ? `url(${nodeStatus.profile.bannerUrl}) center/cover no-repeat`
+                        : `linear-gradient(135deg, ${nodeStatus.profile.bannerColor || "#5865f2"} 0%, ${nodeStatus.profile.accentColorSecondary || "#2b2d31"} 100%)`,
+                    }}
+                  />
+                  <div className="mobile-you-avatar-wrap">
+                    <UserAvatar
+                      profile={nodeStatus.profile}
+                      style={{ width: 84, height: 84, fontSize: 32 }}
+                      showStatus={true}
+                    />
+                  </div>
+                </div>
+
+                <div className="mobile-you-info">
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                    <h2 style={{ fontSize: 22, fontWeight: 800, color: "#fff", margin: 0 }}>
+                      {selfDisplayName}
+                    </h2>
+                    <span style={{ fontSize: 13, color: "var(--text-muted)", fontWeight: 600 }}>
+                      #{nodeStatus.profile.tag}
+                    </span>
+                  </div>
+
+                  <div style={{ fontSize: 13, color: "#fff", marginBottom: 12 }}>
+                    {nodeStatus.profile.statusEmoji || "⚡"}{" "}
+                    <span style={{ color: "var(--text-muted)" }}>
+                      {nodeStatus.profile.customStatus || "Serverless P2P Direct"}
+                    </span>
+                  </div>
+
+                  {nodeStatus.profile.bio && (
+                    <p style={{ fontSize: 13, color: "var(--text-normal)", lineHeight: 1.4, margin: "0 0 14px 0" }}>
+                      {nodeStatus.profile.bio}
+                    </p>
+                  )}
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+                    {(nodeStatus.profile.badges || []).map((b) => (
+                      <span key={b} className="badge-pill">
+                        ✦ {b}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="mobile-menu-card">
+                  <div className="mobile-menu-item" onClick={() => openProfileStudio("profile")}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Sparkles size={18} color="var(--brand-blurple)" />
+                      <span>{t.editMyProfileBtn}</span>
+                    </div>
+                    <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
+                  </div>
+
+                  <div className="mobile-menu-item" onClick={() => openProfileStudio("media")}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Sliders size={18} color="#23a55a" />
+                      <span>{t.mediaSettingsTitle}</span>
+                    </div>
+                    <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
+                  </div>
+
+                  <div className="mobile-menu-item" onClick={() => setShowConnectModal(true)}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Radio size={18} color="#5865f2" />
+                      <span>{t.connectComputerBtn}</span>
+                    </div>
+                    <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
+                  </div>
+
+                  <div className="mobile-menu-item" onClick={handleToggleLanguage}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Globe size={18} color="#f59e0b" />
+                      <span>{t.mobileLanguage}: <b>{lang === "en" ? "English" : "Português"}</b></span>
+                    </div>
+                    <span style={{ fontSize: 12, color: "var(--brand-blurple)", fontWeight: 700 }}>
+                      {lang === "en" ? "Mudar" : "Switch"}
+                    </span>
+                  </div>
+
+                  <div className="mobile-menu-item" onClick={() => setNotificationsEnabled((v) => !v)}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      {notificationsEnabled ? (
+                        <Bell size={18} color="#23a55a" />
+                      ) : (
+                        <BellOff size={18} color="#f23f43" />
+                      )}
+                      <span>{t.mobileNotifications}</span>
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: notificationsEnabled ? "#4ade80" : "#fca5a5" }}>
+                      {notificationsEnabled ? t.mobileEnabled : t.mobileMuted}
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ padding: "16px 20px", textAlign: "center", color: "var(--text-muted)", fontSize: 11 }}>
+                  Freecord PTB {appVersion} • Serverless P2P
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Floating Mini-Call Bar */}
+          {activeVoiceChannelId && mobileTab !== "call" && (
+            <div className="mobile-mini-call-bar" onClick={() => setMobileTab("call")}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                <span className="pulse-dot-inline" />
+                <Volume2 size={16} color="#23a55a" />
+                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <strong style={{ color: "#fff", fontSize: 13 }}>
+                    {activeVoiceChannelObj?.name || "P2P Voice"}
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }} onClick={(e) => e.stopPropagation()}>
+                <button
+                  type="button"
+                  className={`icon-btn ${selfMute ? "danger" : ""}`}
+                  style={{ width: 30, height: 30 }}
+                  onClick={toggleSelfMute}
+                >
+                  {selfMute ? <MicOff size={14} /> : <Mic size={14} />}
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  style={{ width: 30, height: 30 }}
+                  onClick={handleLeaveVoiceChannel}
+                >
+                  <PhoneOff size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="btn-success"
+                  style={{ padding: "4px 8px", fontSize: 11 }}
+                  onClick={() => setMobileTab("call")}
+                >
+                  {t.mobileOpenCallStage}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Discord Mobile Bottom Navigation Bar */}
+          <nav className="mobile-bottom-nav">
+            <button
+              type="button"
+              className={`mobile-nav-item ${mobileTab === "servers" ? "active" : ""}`}
+              onClick={() => {
+                setMobileTab("servers");
+              }}
+            >
+              <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
+                <Hash size={22} />
+                {totalServerUnread > 0 && (
+                  <span className="mobile-nav-badge">{totalServerUnread}</span>
+                )}
+              </div>
+              <span>{t.mobileServersTab}</span>
+            </button>
+
+            <button
+              type="button"
+              className={`mobile-nav-item ${mobileTab === "dms" ? "active" : ""}`}
+              onClick={() => {
+                setMobileTab("dms");
+              }}
+            >
+              <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
+                <MessageSquare size={22} />
+                {totalDmUnread > 0 && (
+                  <span className="mobile-nav-badge">{totalDmUnread}</span>
+                )}
+              </div>
+              <span>{t.mobileDmsTab}</span>
+            </button>
+
+            {activeVoiceChannelId && (
+              <button
+                type="button"
+                className={`mobile-nav-item ${mobileTab === "call" ? "active" : ""}`}
+                onClick={() => {
+                  setMobileTab("call");
+                }}
+              >
+                <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
+                  <PhoneCall size={22} color="#23a55a" />
+                  <span className="mobile-nav-pulse-dot" />
+                </div>
+                <span style={{ color: "#23a55a" }}>{t.mobileCallTab}</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              className={`mobile-nav-item ${mobileTab === "you" ? "active" : ""}`}
+              onClick={() => {
+                setMobileTab("you");
+              }}
+            >
+              <div className="mobile-nav-icon-wrap">
+                <UserAvatar
+                  profile={nodeStatus.profile}
+                  size="small"
+                  showStatus={true}
+                  style={{ width: 24, height: 24 }}
+                />
+              </div>
+              <span>{t.mobileYouTab}</span>
+            </button>
+          </nav>
+
+          {/* Slide-over Members Drawer on Mobile */}
+          {showMobileMembers && (
+            <div className="mobile-drawer-backdrop" onClick={() => setShowMobileMembers(false)}>
+              <div className="mobile-drawer-sheet" onClick={(e) => e.stopPropagation()}>
+                <div className="mobile-drawer-header">
+                  <span style={{ fontWeight: 800, fontSize: 16, color: "#fff" }}>
+                    {t.mobileMembersTitle}
+                  </span>
+                  <button className="icon-btn" onClick={() => setShowMobileMembers(false)}>
+                    <X size={18} />
+                  </button>
+                </div>
+                <div style={{ flex: 1, overflowY: "auto" }}>
+                  {renderPeerSidebarContent(true)}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Modal: Inspected User Profile Card Popout */}
       {inspectedProfile && (
