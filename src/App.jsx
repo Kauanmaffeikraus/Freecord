@@ -173,6 +173,8 @@ const I18N = {
     cancelBtn: "Cancel",
     screenPickerTitle: "🖥️ Share Screen (P2P Go Live)",
     screenPickerSub: "Select a screen or window to stream directly to peers in the voice channel:",
+    shareSystemAudioLabel: "Share System Audio",
+    shareSystemAudioDesc: "Stream desktop / game sound with anti-echo loopback isolation",
     newRoomTitle: "Create New P2P Room",
     newRoomSub: "Created rooms are automatically synchronized with all computers connected to you.",
     roomNameLabel: "P2P Room Name",
@@ -388,6 +390,8 @@ const I18N = {
     cancelBtn: "Cancelar",
     screenPickerTitle: "🖥️ Transmitir Tela (Go Live P2P)",
     screenPickerSub: "Selecione a tela ou janela para transmitir diretamente aos peers conectados no canal de voz:",
+    shareSystemAudioLabel: "Compartilhar Áudio do Sistema",
+    shareSystemAudioDesc: "Transmitir som do jogo / computador com isolamento anti-eco de retorno",
     newRoomTitle: "Criar Nova Sala P2P",
     newRoomSub: "Salas criadas são sincronizadas automaticamente com todos os computadores conectados a você.",
     roomNameLabel: "Nome da Sala P2P",
@@ -1241,6 +1245,7 @@ export default function App() {
   const [cameraResolution, setCameraResolution] = useState("720p");
   const [screenResolution, setScreenResolution] = useState("1080p");
   const [screenFps, setScreenFps] = useState(30);
+  const [shareScreenAudio, setShareScreenAudio] = useState(true);
   const [masterOutputVolume, setMasterOutputVolume] = useState(100);
   const [echoCancellation, setEchoCancellation] = useState(true);
   const [noiseSuppression, setNoiseSuppression] = useState(true);
@@ -1495,6 +1500,9 @@ export default function App() {
       if (savedPrefs.screenFps) {
         setScreenFps(Number(savedPrefs.screenFps));
         engine.screenFrameRate = Number(savedPrefs.screenFps);
+      }
+      if (savedPrefs.shareScreenAudio !== undefined) {
+        setShareScreenAudio(Boolean(savedPrefs.shareScreenAudio));
       }
     } catch {}
 
@@ -1856,6 +1864,10 @@ export default function App() {
             ...prev,
             [event.fromPeerId]: Boolean(event.speaking),
           }));
+          voiceEngineRef.current?.setRemotePeerSpeaking(
+            event.fromPeerId,
+            Boolean(event.speaking)
+          );
         }
         break;
       }
@@ -2464,6 +2476,7 @@ export default function App() {
       const stream = await engine?.setDesktopSource(sourceId, {
         resolution: screenResolution,
         frameRate: screenFps,
+        captureAudio: shareScreenAudio,
       });
       if (stream) {
         setScreenSharing(true);
@@ -5728,6 +5741,43 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginTop: 12,
+                  paddingTop: 10,
+                  borderTop: "1px solid var(--border)",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  const nextVal = !shareScreenAudio;
+                  setShareScreenAudio(nextVal);
+                  persistMediaPrefs({ shareScreenAudio: nextVal });
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-normal)" }}>
+                    {t.shareSystemAudioLabel || "Share System Audio"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {t.shareSystemAudioDesc || "Stream desktop / game sound with anti-echo loopback isolation"}
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  style={{ width: 18, height: 18, cursor: "pointer", accentColor: "var(--brand)" }}
+                  checked={shareScreenAudio}
+                  onChange={(e) => {
+                    const nextVal = e.target.checked;
+                    setShareScreenAudio(nextVal);
+                    persistMediaPrefs({ shareScreenAudio: nextVal });
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
               </div>
             </div>
 
