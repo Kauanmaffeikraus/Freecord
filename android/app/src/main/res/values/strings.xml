@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Freecord</string>
+    <string name="title_activity_main">Freecord</string>
+    <string name="package_name">com.freecord.ptb</string>
+    <string name="custom_url_scheme">com.freecord.ptb</string>
+</resources>

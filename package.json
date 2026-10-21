@@ -16,15 +16,20 @@
     "peer2": "electron . --peer-instance=2",
     "dist": "vite build && electron-builder",
     "dist:win": "vite build && electron-builder --win",
-    "dist:linux": "vite build && electron-builder --linux"
+    "dist:linux": "vite build && electron-builder --linux",
+    "cap:sync": "vite build && npx cap sync android",
+    "build:apk": "vite build && npx cap sync android && cd android && .\\gradlew.bat assembleDebug && cd .. && powershell -Command \"Copy-Item -Force android/app/build/outputs/apk/debug/app-debug.apk release/Freecord-debug.apk\""
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.1",
     "electron-builder": "^26.15.3",

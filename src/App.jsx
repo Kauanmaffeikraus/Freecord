@@ -59,6 +59,50 @@ const AVAILABLE_BADGES = [
 
 const STATUS_EMOJIS = ["⚡", "🚀", "🎮", "💻", "🎧", "🔥", "🛡️", "🌙", "☕"];
 
+const ANIMATED_AVATAR_PRESETS = [
+  { name: "Hacker Cat", url: "https://media.giphy.com/media/unQ3IJU2RG7DO/giphy.gif" },
+  { name: "Matrix Glitch", url: "https://media.giphy.com/media/oEI9uBYSzLpBK/giphy.gif" },
+  { name: "Pixel Synth", url: "https://media.giphy.com/media/L1R1tvI9svkIWwpVYr/giphy.gif" },
+  { name: "Anime Star", url: "https://media.giphy.com/media/13HgwGsXF0aiGY/giphy.gif" },
+  { name: "Glitch Skull", url: "https://media.giphy.com/media/26tn33aiTi1jkl6H6/giphy.gif" },
+  { name: "Neon Flame", url: "https://media.giphy.com/media/du3J3cXyzhj75IOgvA/giphy.gif" },
+];
+
+const ANIMATED_BANNER_PRESETS = [
+  { name: "Retro Grid", url: "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif" },
+  { name: "Cyber City", url: "https://media.giphy.com/media/U3qYN8S0j3bpK/giphy.gif" },
+  { name: "Galaxy Nebula", url: "https://media.giphy.com/media/l41lFw057lAJQMwg0/giphy.gif" },
+  { name: "Lo-Fi Rain", url: "https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif" },
+];
+
+function isAnimatedGifUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  const s = url.toLowerCase();
+  return (
+    s.includes("image/gif") ||
+    s.endsWith(".gif") ||
+    s.includes(".gif?") ||
+    s.includes("giphy.com") ||
+    s.includes("tenor.com")
+  );
+}
+
+function readImageFileToDataUrl(file, maxW = 320, maxH = 320, quality = 0.84) {
+  if (file.type === "image/gif" || file.name.toLowerCase().endsWith(".gif")) {
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error("O arquivo GIF deve ter no máximo 10 MB.");
+    }
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("Falha ao ler arquivo GIF"));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+  }
+  return resizeImageToDataUrl(file, maxW, maxH, quality);
+}
+
+
 function resizeImageToDataUrl(file, maxW, maxH, quality = 0.84) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -231,6 +275,10 @@ const I18N = {
     updateUpToDate: "You are running the latest version of Freecord.",
     updateAvailableText: (v) => `New update available: v${v}`,
     viewReleasesOnGithub: "View GitHub Releases",
+    avatarGifUrlPlaceholder: "Or paste an animated GIF URL (Tenor, Giphy, web)...",
+    bannerGifUrlPlaceholder: "Or paste an animated GIF banner URL...",
+    animatedGifBadge: "GIF",
+    presetGifsLabel: "Animated GIF Presets:",
     micDeviceLabel: "Input Device (Microphone)",
     speakerDeviceLabel: "Output Device (Speaker / Headset)",
     cameraDeviceLabel: "Camera Device (Video Input)",

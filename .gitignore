@@ -1,6 +1,9 @@
 node_modules/
 dist/
 release/
+android/local.properties
+android/.gradle/
+android/app/build/
 rea/
 *.log
 freecord-state-*.json
