@@ -46,6 +46,10 @@ import {
   MessageSquare,
   Users,
   User,
+  Lock,
+  QrCode,
+  Camera,
+  KeyRound,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -53,6 +57,21 @@ import {
   CAMERA_RESOLUTIONS,
   SCREEN_FPS_OPTIONS,
 } from "./services/webrtcVoiceEngine";
+import {
+  loadOrCreateCryptoIdentity,
+  encryptChatMessagePayload,
+  decryptChatMessagePayload,
+  buildSharedChannelIds,
+  buildHistorySyncDigest,
+  collectMissedMessagesForPeer,
+  mergeHistoryMessages,
+  buildLanQrPayload,
+  parseScannedQrPayload,
+  generateQrCodeDataUrl,
+  decodeQrFromImageData,
+  createIdentityBackupBundle,
+  parseIdentityBackupBundle,
+} from "./services/p2pPhase1CryptoAndQr";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -1287,10 +1306,41 @@ export default function App() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Chat State
-  const [messages, setMessages] = useState(INITIAL_REA_MESSAGES);
+  // Cryptographic Identity (Phase 1 E2EE)
+  const [cryptoIdentity, setCryptoIdentity] = useState(() =>
+    loadOrCreateCryptoIdentity()
+  );
+
+  // Chat State (Persisted locally for offline History Sync)
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("freecord_chat_messages_v1") || "null");
+      if (Array.isArray(saved) && saved.length > 0) {
+        const merged = mergeHistoryMessages(INITIAL_REA_MESSAGES, saved);
+        return merged.merged;
+      }
+    } catch {}
+    return INITIAL_REA_MESSAGES;
+  });
   const [chatInput, setChatInput] = useState("");
   const [typingPeers, setTypingPeers] = useState({});
+  const messagesRef = useRef(messages);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+    try {
+      const compact = messages.slice(-250).map((m) => {
+        if (m?.attachment?.dataUrl && m.attachment.dataUrl.length > 512 * 1024) {
+          return {
+            ...m,
+            attachment: { ...m.attachment, dataUrl: null, omittedInStorage: true },
+          };
+        }
+        return m;
+      });
+      localStorage.setItem("freecord_chat_messages_v1", JSON.stringify(compact));
+    } catch {}
+  }, [messages]);
 
   // Voice, Simultaneous Webcam + Screen Share & Resizable Stage State
   const [activeVoiceChannelId, setActiveVoiceChannelId] = useState(null);
@@ -1323,6 +1373,18 @@ export default function App() {
   const [directIpInput, setDirectIpInput] = useState("");
   const [connectStatusMsg, setConnectStatusMsg] = useState(null);
   const [copiedText, setCopiedText] = useState(null);
+
+  // Phase 1: QR Code Pairing & Camera Scanner State
+  const [lanQrDataUrl, setLanQrDataUrl] = useState(null);
+  const [isScanningQr, setIsScanningQr] = useState(false);
+  const [qrScanStatus, setQrScanStatus] = useState(null);
+  const qrVideoRef = useRef(null);
+  const qrCanvasRef = useRef(null);
+  const qrStreamRef = useRef(null);
+  const qrScanTimerRef = useRef(null);
+  const qrImageInputRef = useRef(null);
+  const identityImportInputRef = useRef(null);
+  const [identityBackupStatus, setIdentityBackupStatus] = useState(null);
 
   // Manual Serverless WebRTC SDP state
   const [generatedInviteCode, setGeneratedInviteCode] = useState("");
@@ -1761,6 +1823,9 @@ export default function App() {
         },
         peer.peerId
       );
+      setTimeout(() => {
+        requestHistorySyncFromPeer(peer.peerId);
+      }, 250);
       if (activeVoiceChannelId) {
         p2p.setVoiceState(activeVoiceChannelId, {
           muted: selfMute,
@@ -1808,11 +1873,47 @@ export default function App() {
     }
   };
 
+  const requestHistorySyncFromPeer = (targetPeerId = null) => {
+    const myId = selfPeerIdRef.current;
+    const sharedChs = buildSharedChannelIds(roomsRef.current, myId, targetPeerId || "");
+    // Also include all DM channels with currently connected peers
+    for (const cp of connectedPeersRef.current || []) {
+      if (cp?.peerId) {
+        const sorted = [myId, cp.peerId].sort().join("__");
+        if (!sharedChs.includes(`dm_${sorted}`)) sharedChs.push(`dm_${sorted}`);
+      }
+    }
+    const digest = buildHistorySyncDigest(messagesRef.current, sharedChs);
+    sendP2PPacket(
+      {
+        type: "HISTORY_SYNC_REQUEST",
+        fromPeerId: myId,
+        channelIds: sharedChs,
+        digest,
+      },
+      targetPeerId
+    );
+  };
+
+  const normalizeIncomingMessage = (rawMsg) => {
+    if (!rawMsg || !rawMsg.id) return null;
+    if (rawMsg.e2ee && rawMsg.e2ee.ciphertext) {
+      const dec = decryptChatMessagePayload(rawMsg.e2ee, rawMsg.channelId, rawMsg.text || "");
+      return {
+        ...rawMsg,
+        text: dec.text,
+        e2eeVerified: dec.verified,
+      };
+    }
+    return rawMsg;
+  };
+
   const handleIncomingP2PEvent = (event) => {
     switch (event.type) {
       case "CHAT_MESSAGE": {
         if (!event.message || !event.message.id) return;
-        const msg = event.message;
+        const msg = normalizeIncomingMessage(event.message);
+        if (!msg) return;
         let isDuplicate = false;
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) {
@@ -1973,6 +2074,59 @@ export default function App() {
             }
           }
           return Array.from(map.values());
+        });
+        if (event.fromPeerId) {
+          setTimeout(() => requestHistorySyncFromPeer(event.fromPeerId), 200);
+        }
+        break;
+      }
+
+      case "HISTORY_SYNC_REQUEST": {
+        const requesterId = event.fromPeerId;
+        const myId = selfPeerIdRef.current;
+        const allowedChannels = buildSharedChannelIds(
+          roomsRef.current,
+          myId,
+          requesterId || ""
+        );
+        for (const cp of connectedPeersRef.current || []) {
+          if (cp?.peerId) {
+            const sorted = [myId, cp.peerId].sort().join("__");
+            if (!allowedChannels.includes(`dm_${sorted}`)) {
+              allowedChannels.push(`dm_${sorted}`);
+            }
+          }
+        }
+        const missed = collectMissedMessagesForPeer(
+          messagesRef.current,
+          event.digest || {},
+          allowedChannels
+        );
+        if (missed.length > 0) {
+          sendP2PPacket(
+            {
+              type: "HISTORY_SYNC_RESPONSE",
+              fromPeerId: myId,
+              messages: missed,
+            },
+            requesterId || null
+          );
+        }
+        break;
+      }
+
+      case "HISTORY_SYNC_RESPONSE": {
+        if (!Array.isArray(event.messages) || event.messages.length === 0) break;
+        const normalizedList = event.messages
+          .map((m) => normalizeIncomingMessage(m))
+          .filter(Boolean);
+        if (normalizedList.length === 0) break;
+        setMessages((prev) => {
+          const { merged, addedCount } = mergeHistoryMessages(prev, normalizedList);
+          if (addedCount > 0 && notificationsEnabledRef.current) {
+            playSynthesizedUiSound("message");
+          }
+          return merged;
         });
         break;
       }
@@ -2241,6 +2395,8 @@ export default function App() {
     statusEmoji: nodeStatus.profile.statusEmoji,
     customStatus: nodeStatus.profile.customStatus,
     badges: nodeStatus.profile.badges,
+    cryptoPubKey: cryptoIdentity.publicKey,
+    keyFingerprint: cryptoIdentity.keyFingerprint,
   });
 
   const handleSendMessage = (e) => {
@@ -2248,31 +2404,53 @@ export default function App() {
     const trimmed = chatInput.trim();
     if (!trimmed) return;
 
+    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+    const remotePeerObj = targetPeer
+      ? connectedPeers.find((p) => p.peerId === targetPeer)
+      : null;
+    const e2eeEnvelope = encryptChatMessagePayload(
+      trimmed,
+      effectiveChannelId,
+      cryptoIdentity.publicKey,
+      remotePeerObj?.cryptoPubKey || ""
+    );
+
     const newMsg = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: Date.now(),
       channelId: effectiveChannelId,
       author: buildAuthorSnapshot(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       text: trimmed,
+      e2ee: e2eeEnvelope,
+      e2eeVerified: true,
       reactions: {},
     };
 
     setMessages((prev) => [...prev, newMsg]);
     setChatInput("");
 
-    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
     sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, targetPeer);
   };
 
   const handleSendQuickDm = (peerProfile, text) => {
     const sorted = [nodeStatus.profile.peerId, peerProfile.peerId].sort().join("__");
     const dmChId = `dm_${sorted}`;
+    const e2eeEnvelope = encryptChatMessagePayload(
+      text,
+      dmChId,
+      cryptoIdentity.publicKey,
+      peerProfile?.cryptoPubKey || ""
+    );
     const newMsg = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: Date.now(),
       channelId: dmChId,
       author: buildAuthorSnapshot(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       text,
+      e2ee: e2eeEnvelope,
+      e2eeVerified: true,
       reactions: {},
     };
     setMessages((prev) => [...prev, newMsg]);
@@ -2764,7 +2942,11 @@ export default function App() {
         ws.onopen = () => {
           ws.send(JSON.stringify({
             type: "HELLO",
-            profile: nodeStatus.profile,
+            profile: {
+              ...nodeStatus.profile,
+              cryptoPubKey: cryptoIdentity.publicKey,
+              keyFingerprint: cryptoIdentity.keyFingerprint,
+            },
             timestamp: Date.now(),
           }));
         };
@@ -2780,7 +2962,7 @@ export default function App() {
                   address: host,
                   port: Number(port),
                   rttMs: 2,
-                  fingerprint: "P2P-LAN-DIRECT",
+                  fingerprint: remoteProf.keyFingerprint || "P2P-LAN-DIRECT",
                   voiceChannelId: packet.voiceChannelId || null,
                   voiceState: packet.voiceState || {},
                 };
@@ -2810,10 +2992,18 @@ export default function App() {
                 if (packet.type === "HELLO") {
                   ws.send(JSON.stringify({
                     type: "HELLO_ACK",
-                    profile: nodeStatus.profile,
+                    profile: {
+                      ...nodeStatus.profile,
+                      cryptoPubKey: cryptoIdentity.publicKey,
+                      keyFingerprint: cryptoIdentity.keyFingerprint,
+                    },
                     timestamp: Date.now(),
                   }));
                 }
+
+                setTimeout(() => {
+                  requestHistorySyncFromPeer(remoteProf.peerId);
+                }, 300);
               }
             }
 
@@ -2910,6 +3100,257 @@ export default function App() {
       const nextId = Number(nodeStatus.instanceId || 1) + 1;
       await window.DiscordNative.app.spawnPeerInstance(nextId);
     }
+  };
+
+  // Phase 1: Generate LAN Pairing QR Code when Connect Modal opens
+  useEffect(() => {
+    if (!showConnectModal) {
+      stopQrCameraScanner();
+      return;
+    }
+    const primaryEp =
+      nodeStatus.connectionStrings?.[0] ||
+      nodeStatus.localhostEndpoint ||
+      (generatedInviteCode ? generatedInviteCode : "");
+    if (!primaryEp) {
+      setLanQrDataUrl(null);
+      return;
+    }
+    const qrPayload = primaryEp.startsWith("fc-sdp://")
+      ? primaryEp
+      : buildLanQrPayload(primaryEp, {
+          ...nodeStatus.profile,
+          cryptoPubKey: cryptoIdentity.publicKey,
+        });
+    generateQrCodeDataUrl(qrPayload, 210).then((url) => {
+      setLanQrDataUrl(url);
+    });
+  }, [
+    showConnectModal,
+    nodeStatus.connectionStrings,
+    nodeStatus.localhostEndpoint,
+    nodeStatus.profile,
+    generatedInviteCode,
+    cryptoIdentity.publicKey,
+  ]);
+
+  const stopQrCameraScanner = () => {
+    if (qrScanTimerRef.current) {
+      clearInterval(qrScanTimerRef.current);
+      qrScanTimerRef.current = null;
+    }
+    if (qrStreamRef.current) {
+      qrStreamRef.current.getTracks().forEach((tr) => tr.stop());
+      qrStreamRef.current = null;
+    }
+    setIsScanningQr(false);
+  };
+
+  const handleDecodedQrString = async (rawCode) => {
+    stopQrCameraScanner();
+    try {
+      const parsed = parseScannedQrPayload(rawCode);
+      if (parsed.kind === "lan") {
+        setQrScanStatus({
+          type: "success",
+          text:
+            lang === "en"
+              ? `QR Scanned! Connecting to ${parsed.host}:${parsed.port}...`
+              : `QR Lido! Conectando a ${parsed.host}:${parsed.port}...`,
+        });
+        await handleConnectByHostPort(parsed.host, parsed.port);
+      } else if (parsed.kind === "server-invite") {
+        const clean = parsed.code.replace(/^fc-srv:\/\//i, "").trim();
+        const decoded = JSON.parse(decodeURIComponent(escape(atob(clean))));
+        if (decoded?.room?.id) {
+          await handleJoinServerRoom(decoded.room, decoded.endpoint);
+          setShowConnectModal(false);
+        }
+      } else if (parsed.kind === "webrtc-sdp") {
+        setConnectTab("sdp");
+        setIncomingInviteInput(parsed.code);
+        setQrScanStatus({
+          type: "success",
+          text:
+            lang === "en"
+              ? "WebRTC SDP QR Code loaded! Click Process WebRTC Code."
+              : "QR Code WebRTC SDP carregado! Clique em Processar Código WebRTC.",
+        });
+      }
+      if (notificationsEnabledRef.current) {
+        playSynthesizedUiSound("invite");
+      }
+    } catch (err) {
+      setQrScanStatus({
+        type: "error",
+        text: err.message || (lang === "en" ? "Invalid QR Code" : "QR Code inválido"),
+      });
+    }
+  };
+
+  const startQrCameraScanner = async () => {
+    setQrScanStatus(null);
+    if (isScanningQr) {
+      stopQrCameraScanner();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+      qrStreamRef.current = stream;
+      setIsScanningQr(true);
+
+      setTimeout(() => {
+        if (qrVideoRef.current) {
+          qrVideoRef.current.srcObject = stream;
+          qrVideoRef.current.play().catch(() => {});
+        }
+      }, 80);
+
+      qrScanTimerRef.current = setInterval(() => {
+        const video = qrVideoRef.current;
+        const canvas = qrCanvasRef.current;
+        if (!video || !canvas || video.readyState < 2) return;
+        const w = video.videoWidth || 320;
+        const h = video.videoHeight || 240;
+        if (!w || !h) return;
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return;
+        ctx.drawImage(video, 0, 0, w, h);
+        const imageData = ctx.getImageData(0, 0, w, h);
+        const decoded = decodeQrFromImageData(imageData);
+        if (decoded) {
+          handleDecodedQrString(decoded);
+        }
+      }, 150);
+    } catch (err) {
+      setQrScanStatus({
+        type: "error",
+        text:
+          lang === "en"
+            ? `Camera access error: ${err.message}`
+            : `Erro ao acessar câmera: ${err.message}`,
+      });
+    }
+  };
+
+  const handleScanQrImageFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const imgData = ctx.getImageData(0, 0, img.width, img.height);
+        const decoded = decodeQrFromImageData(imgData);
+        if (decoded) {
+          handleDecodedQrString(decoded);
+        } else {
+          setQrScanStatus({
+            type: "error",
+            text:
+              lang === "en"
+                ? "No QR Code found in this image."
+                : "Nenhum QR Code encontrado nesta imagem.",
+          });
+        }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const handleExportIdentityBackup = () => {
+    try {
+      const bundleStr = createIdentityBackupBundle({
+        profile: nodeStatus.profile,
+        cryptoIdentity,
+        rooms,
+        leftRoomIds,
+        savedLanPeers,
+      });
+      const blob = new Blob([bundleStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${nodeStatus.profile.username || "freecord"}-${nodeStatus.profile.tag || "id"}.freecord-id.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setIdentityBackupStatus({
+        type: "success",
+        text:
+          lang === "en"
+            ? "Identity backup (.freecord-id.json) exported successfully!"
+            : "Backup de identidade (.freecord-id.json) exportado com sucesso!",
+      });
+    } catch (err) {
+      setIdentityBackupStatus({ type: "error", text: err.message });
+    }
+  };
+
+  const handleImportIdentityBackup = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const restored = parseIdentityBackupBundle(reader.result);
+        if (restored.cryptoIdentity) {
+          setCryptoIdentity(restored.cryptoIdentity);
+        }
+        if (restored.profile) {
+          setProfileForm((prev) => ({ ...prev, ...restored.profile }));
+          if (window.DiscordNative?.p2p) {
+            const updated = await window.DiscordNative.p2p.updateProfile(restored.profile);
+            if (updated) setNodeStatus((prev) => ({ ...prev, profile: updated }));
+          } else {
+            setNodeStatus((prev) => ({
+              ...prev,
+              profile: { ...prev.profile, ...restored.profile },
+            }));
+          }
+        }
+        if (Array.isArray(restored.rooms) && restored.rooms.length > 0) {
+          setRooms(restored.rooms);
+        }
+        if (Array.isArray(restored.savedLanPeers)) {
+          setSavedLanPeers(restored.savedLanPeers);
+          localStorage.setItem(
+            "freecord_saved_lan_peers",
+            JSON.stringify(restored.savedLanPeers)
+          );
+        }
+        setIdentityBackupStatus({
+          type: "success",
+          text:
+            lang === "en"
+              ? "Identity, E2EE keys, and servers restored!"
+              : "Identidade, chaves E2EE e servidores restaurados com sucesso!",
+        });
+      } catch (err) {
+        setIdentityBackupStatus({
+          type: "error",
+          text:
+            lang === "en"
+              ? `Failed to restore backup: ${err.message}`
+              : `Falha ao restaurar backup: ${err.message}`,
+        });
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   const openServerStudio = (mode = "edit", targetRoom = currentRoom) => {
@@ -4123,6 +4564,25 @@ export default function App() {
                             <span className="message-peer-badge">
                               #{msg.author?.tag || "P2P"}
                             </span>
+                            {msg.e2eeVerified && (
+                              <span
+                                className="message-peer-badge"
+                                style={{
+                                  backgroundColor: "rgba(35, 165, 90, 0.2)",
+                                  color: "#57f287",
+                                  border: "1px solid rgba(35, 165, 90, 0.35)",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 3,
+                                }}
+                                title={`End-to-End Encrypted • Key: ${
+                                  msg.author?.keyFingerprint || "SHA256-CTR-HMAC"
+                                }`}
+                              >
+                                <Lock size={10} />
+                                <span>E2EE</span>
+                              </span>
+                            )}
                             <span className="message-timestamp">{msg.timestamp}</span>
                           </div>
 
@@ -5532,6 +5992,25 @@ return (
                             <span className="message-peer-badge">
                               #{msg.author?.tag || "P2P"}
                             </span>
+                            {msg.e2eeVerified && (
+                              <span
+                                className="message-peer-badge"
+                                style={{
+                                  backgroundColor: "rgba(35, 165, 90, 0.2)",
+                                  color: "#57f287",
+                                  border: "1px solid rgba(35, 165, 90, 0.35)",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 3,
+                                }}
+                                title={`End-to-End Encrypted • Key: ${
+                                  msg.author?.keyFingerprint || "SHA256-CTR-HMAC"
+                                }`}
+                              >
+                                <Lock size={10} />
+                                <span>E2EE</span>
+                              </span>
+                            )}
                             <span className="message-timestamp">{msg.timestamp}</span>
                           </div>
 
@@ -6830,6 +7309,17 @@ return (
               >
                 {t.tabUpdateSettings}
               </button>
+              <button
+                type="button"
+                className={settingsTab === "security" ? "btn-primary" : "btn-secondary"}
+                onClick={() => {
+                  setSettingsTab("security");
+                  setIdentityBackupStatus(null);
+                }}
+              >
+                <KeyRound size={14} />
+                <span>{lang === "en" ? "E2EE & Backup" : "E2EE & Backup"}</span>
+              </button>
             </div>
 
             {settingsTab === "media" ? (
@@ -7212,6 +7702,141 @@ return (
                   </div>
                 </div>
               </div>
+            ) : settingsTab === "security" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                <div className="media-section-card">
+                  <div className="media-section-header">
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Lock size={16} color="#23a55a" />
+                      {lang === "en"
+                        ? "End-to-End Encryption (E2EE) & Cryptographic Keys"
+                        : "Criptografia Ponta-a-Ponta (E2EE) & Chaves Criptográficas"}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 14 }}>
+                    {lang === "en"
+                      ? "Your messages are encrypted and authenticated with your local SHA-256-CTR-HMAC cryptographic identity. Export your identity backup (.freecord-id.json) to clone or restore your account, keys, and servers on another PC or Android phone."
+                      : "Suas mensagens são criptografadas e autenticadas com sua identidade criptográfica local SHA-256-CTR-HMAC. Exporte seu backup de identidade (.freecord-id.json) para clonar ou restaurar sua conta, chaves e servidores em outro PC ou celular Android."}
+                  </p>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                    <div style={{ background: "var(--bg-secondary)", padding: 12, borderRadius: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
+                        {lang === "en" ? "E2EE Key Fingerprint" : "Impressão Digital E2EE"}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: "#57f287", marginTop: 4, fontFamily: "monospace" }}>
+                        🔒 {cryptoIdentity.keyFingerprint}
+                      </div>
+                    </div>
+
+                    <div style={{ background: "var(--bg-secondary)", padding: 12, borderRadius: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>
+                        {lang === "en" ? "Cipher Suite" : "Algoritmo de Cifragem"}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 4 }}>
+                        SHA256-CTR + HMAC-SHA256
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label>{lang === "en" ? "Public Key (Hex)" : "Chave Pública (Hex)"}</label>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        className="form-input"
+                        readOnly
+                        value={cryptoIdentity.publicKey}
+                        style={{ fontFamily: "monospace", fontSize: 12 }}
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => handleCopy(cryptoIdentity.publicKey)}
+                      >
+                        {copiedText === cryptoIdentity.publicKey ? <Check size={14} /> : <Copy size={14} />}
+                        <span>{copiedText === cryptoIdentity.publicKey ? t.copied : t.copyBtn}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={identityImportInputRef}
+                    type="file"
+                    accept=".json,.freecord-id"
+                    style={{ display: "none" }}
+                    onChange={handleImportIdentityBackup}
+                  />
+
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={handleExportIdentityBackup}
+                    >
+                      <Download size={14} />
+                      <span>
+                        {lang === "en"
+                          ? "Export Identity Backup (.freecord-id)"
+                          : "Exportar Backup de Identidade (.freecord-id)"}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => identityImportInputRef.current?.click()}
+                    >
+                      <Upload size={14} />
+                      <span>
+                        {lang === "en"
+                          ? "Import / Restore Backup"
+                          : "Importar / Restaurar Backup"}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => {
+                        requestHistorySyncFromPeer();
+                        setIdentityBackupStatus({
+                          type: "success",
+                          text:
+                            lang === "en"
+                              ? "Requested offline message history sync from connected peers!"
+                              : "Sincronização de histórico offline solicitada aos peers conectados!",
+                        });
+                      }}
+                    >
+                      <RefreshCw size={14} />
+                      <span>
+                        {lang === "en"
+                          ? "Sync Offline Messages Now"
+                          : "Sincronizar Mensagens Offline Agora"}
+                      </span>
+                    </button>
+                  </div>
+
+                  {identityBackupStatus && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: 10,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        background:
+                          identityBackupStatus.type === "error"
+                            ? "rgba(242,63,67,0.2)"
+                            : "rgba(35,165,90,0.2)",
+                        color:
+                          identityBackupStatus.type === "error" ? "#fca5a5" : "#86efac",
+                      }}
+                    >
+                      {identityBackupStatus.text}
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : (
             <form onSubmit={handleSaveProfile}>
               <div className="profile-studio-grid">
@@ -7564,22 +8189,38 @@ return (
             <h3>{t.connectModalTitle}</h3>
             <p className="sub">{t.connectModalSub}</p>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               <button
                 className={connectTab === "ip" ? "btn-primary" : "btn-secondary"}
-                onClick={() => setConnectTab("ip")}
+                onClick={() => {
+                  stopQrCameraScanner();
+                  setConnectTab("ip");
+                }}
               >
                 {t.tabIp}
               </button>
               <button
+                className={connectTab === "qr" ? "btn-primary" : "btn-secondary"}
+                onClick={() => setConnectTab("qr")}
+              >
+                <QrCode size={14} />
+                <span>{lang === "en" ? "QR Code (PC ↔ Mobile)" : "QR Code (PC ↔ Celular)"}</span>
+              </button>
+              <button
                 className={connectTab === "lan" ? "btn-primary" : "btn-secondary"}
-                onClick={() => setConnectTab("lan")}
+                onClick={() => {
+                  stopQrCameraScanner();
+                  setConnectTab("lan");
+                }}
               >
                 {t.tabLan(lanPeers.length)}
               </button>
               <button
                 className={connectTab === "sdp" ? "btn-primary" : "btn-secondary"}
-                onClick={() => setConnectTab("sdp")}
+                onClick={() => {
+                  stopQrCameraScanner();
+                  setConnectTab("sdp");
+                }}
               >
                 {t.tabSdp}
               </button>
@@ -7645,6 +8286,189 @@ return (
                     }}
                   >
                     {connectStatusMsg.text}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {connectTab === "qr" && (
+              <div>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+                  {lang === "en"
+                    ? "Scan the QR Code on your PC screen using the Freecord Android app to connect in 1 second with zero typing."
+                    : "Aponte a câmera do Freecord no celular Android para o QR Code da tela do PC para conectar em 1 segundo sem digitar nada."}
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  {/* Card 1: Display this device's QR Code */}
+                  <div
+                    style={{
+                      background: "#2b2d31",
+                      padding: 14,
+                      borderRadius: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 8 }}>
+                      {lang === "en" ? "1. Your Quick-Connect QR Code" : "1. Seu QR Code de Conexão Rápida"}
+                    </div>
+                    {lanQrDataUrl ? (
+                      <img
+                        src={lanQrDataUrl}
+                        alt="Freecord P2P QR Code"
+                        style={{
+                          width: 185,
+                          height: 185,
+                          borderRadius: 10,
+                          border: "3px solid #5865f2",
+                          backgroundColor: "#fff",
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 185,
+                          height: 185,
+                          borderRadius: 10,
+                          background: "#1e1f22",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: 12,
+                          fontSize: 11,
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {lang === "en"
+                          ? "On mobile/web: generate an SDP Offer in the WebRTC tab to display a QR Code, or use the Scanner to scan your PC's QR Code!"
+                          : "No celular: use o Leitor ao lado para ler o QR Code exibido na tela do seu computador!"}
+                      </div>
+                    )}
+                    {nodeStatus.connectionStrings?.[0] && (
+                      <div style={{ fontSize: 11, color: "#86efac", marginTop: 8, fontFamily: "monospace" }}>
+                        {nodeStatus.connectionStrings[0]}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Card 2: Scan QR Code via Camera or Image */}
+                  <div
+                    style={{
+                      background: "#2b2d31",
+                      padding: 14,
+                      borderRadius: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginBottom: 8 }}>
+                      {lang === "en" ? "2. Scan Friend / PC QR Code" : "2. Ler QR Code do PC / Amigo"}
+                    </div>
+
+                    <canvas ref={qrCanvasRef} style={{ display: "none" }} />
+                    <input
+                      ref={qrImageInputRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={handleScanQrImageFile}
+                    />
+
+                    {isScanningQr ? (
+                      <div style={{ width: "100%", marginBottom: 10 }}>
+                        <video
+                          ref={qrVideoRef}
+                          muted
+                          playsInline
+                          style={{
+                            width: "100%",
+                            maxHeight: 180,
+                            borderRadius: 8,
+                            background: "#000",
+                            objectFit: "cover",
+                            border: "2px solid #23a55a",
+                          }}
+                        />
+                        <div style={{ fontSize: 11, color: "#4ade80", marginTop: 4 }}>
+                          {lang === "en"
+                            ? "Point camera at the Freecord QR Code..."
+                            : "Aponte a câmera para o QR Code do Freecord..."}
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          width: 120,
+                          height: 120,
+                          borderRadius: 12,
+                          background: "rgba(88,101,242,0.12)",
+                          border: "1px dashed rgba(88,101,242,0.45)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          marginBottom: 12,
+                        }}
+                      >
+                        <QrCode size={52} color="#5865f2" />
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                      <button
+                        type="button"
+                        className={isScanningQr ? "btn-secondary" : "btn-success"}
+                        onClick={startQrCameraScanner}
+                      >
+                        <Camera size={14} />
+                        <span>
+                          {isScanningQr
+                            ? lang === "en"
+                              ? "Stop Camera"
+                              : "Parar Câmera"
+                            : lang === "en"
+                            ? "Scan with Camera"
+                            : "Ler com a Câmera"}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => qrImageInputRef.current?.click()}
+                      >
+                        <Upload size={14} />
+                        <span>
+                          {lang === "en" ? "Scan Image" : "Ler de Print/Foto"}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {(qrScanStatus || connectStatusMsg) && (
+                  <div
+                    style={{
+                      padding: 10,
+                      borderRadius: 6,
+                      fontSize: 12,
+                      marginBottom: 12,
+                      background:
+                        (qrScanStatus || connectStatusMsg).type === "error"
+                          ? "rgba(242,63,67,0.2)"
+                          : "rgba(35,165,90,0.2)",
+                      color:
+                        (qrScanStatus || connectStatusMsg).type === "error"
+                          ? "#fca5a5"
+                          : "#86efac",
+                    }}
+                  >
+                    {(qrScanStatus || connectStatusMsg).text}
                   </div>
                 )}
               </div>
