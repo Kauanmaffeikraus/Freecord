@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v1.0.0)'
+        description: 'Release Tag (e.g. v1.2.0)'
         required: false
-        default: 'v1.1.0'
+        default: 'v1.2.0'
 
 permissions:
   contents: write
@@ -99,6 +99,8 @@ jobs:
           else
             npm version "$CLEAN_VER" --no-git-tag-version --allow-same-version
           fi
+          VER_CODE=$(node -e "const p='${CLEAN_VER}'.split('-')[0].split('.').map(n=>parseInt(n,10)||0); console.log((p[0]||1)*10000 + (p[1]||0)*100 + (p[2]||0));")
+          sed -i "s/versionCode [0-9]*/versionCode ${VER_CODE}/g" android/app/build.gradle
           sed -i "s/versionName \".*\"/versionName \"${CLEAN_VER}\"/g" android/app/build.gradle
           echo "version=${CLEAN_VER}" >> $GITHUB_OUTPUT
           echo "tag=${RAW_TAG}" >> $GITHUB_OUTPUT

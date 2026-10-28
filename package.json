@@ -1,6 +1,6 @@
 {
   "name": "freecord-ptb",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Freecord PTB — Serverless P2P Desktop & Web Communication reconstructed with REA evidence",
   "main": "electron/main.cjs",
   "author": "Kauanmaffeikraus <kauankrausmaffei@gmail.com>",
