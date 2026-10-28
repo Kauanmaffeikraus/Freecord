@@ -3,6 +3,7 @@ package com.freecord.ptb;
 import android.Manifest;
 import android.app.Activity;
 import android.app.PictureInPictureParams;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -16,29 +17,39 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.provider.MediaStore;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Rational;
 import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import com.getcapacitor.BridgeActivity;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends BridgeActivity {
     private static final int REQUEST_MEDIA_PROJECTION = 2049;
+    private static final int REQUEST_FILE_CHOOSER = 2050;
     private static MainActivity instance;
 
     private MediaProjectionManager projectionManager;
@@ -50,6 +61,8 @@ public class MainActivity extends BridgeActivity {
     private ByteBuffer reusablePixelBuffer;
 
     private ActivityResultLauncher<Intent> screenCaptureLauncher;
+    private ActivityResultLauncher<Intent> fileChooserLauncher;
+    private ValueCallback<Uri[]> filePathCallback;
     private int pendingResultCode = 0;
     private Intent pendingResultData = null;
 
@@ -62,10 +75,15 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // Register ActivityResultLauncher before super.onCreate so BridgeActivity lifecycle accepts it
+        // Register ActivityResultLaunchers before super.onCreate so BridgeActivity lifecycle accepts them
         screenCaptureLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> handleScreenCapturePermissionResult(result.getResultCode(), result.getData())
+        );
+
+        fileChooserLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> handleFileChooserResult(result.getResultCode(), result.getData())
         );
 
         super.onCreate(savedInstanceState);
@@ -80,6 +98,11 @@ public class MainActivity extends BridgeActivity {
             perms.add(Manifest.permission.MODIFY_AUDIO_SETTINGS);
             if (Build.VERSION.SDK_INT >= 33) {
                 perms.add("android.permission.POST_NOTIFICATIONS");
+                perms.add("android.permission.READ_MEDIA_IMAGES");
+                perms.add("android.permission.READ_MEDIA_VIDEO");
+                perms.add("android.permission.READ_MEDIA_AUDIO");
+            } else {
+                perms.add(Manifest.permission.READ_EXTERNAL_STORAGE);
             }
             List<String> needed = new ArrayList<>();
             for (String perm : perms) {
@@ -92,13 +115,15 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        // Allow cleartext WebSocket (ws://) & HTTP LAN P2P connections + grant WebRTC permissions
+        // Allow cleartext WebSocket (ws://) & HTTP LAN P2P connections + grant WebRTC permissions & File Chooser
         if (this.bridge != null && this.bridge.getWebView() != null) {
             WebView webView = this.bridge.getWebView();
             WebSettings webSettings = webView.getSettings();
             webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
             webSettings.setDomStorageEnabled(true);
             webSettings.setJavaScriptEnabled(true);
+            webSettings.setAllowFileAccess(true);
+            webSettings.setAllowContentAccess(true);
             webSettings.setMediaPlaybackRequiresUserGesture(false);
 
             webView.addJavascriptInterface(new FreecordAndroidBridge(), "FreecordAndroid");
@@ -113,12 +138,111 @@ public class MainActivity extends BridgeActivity {
                         }
                     });
                 }
+
+                @Override
+                public boolean onShowFileChooser(
+                        WebView webView,
+                        ValueCallback<Uri[]> filePathCallback,
+                        FileChooserParams fileChooserParams
+                ) {
+                    if (MainActivity.this.filePathCallback != null) {
+                        try {
+                            MainActivity.this.filePathCallback.onReceiveValue(null);
+                        } catch (Exception ignored) {
+                        }
+                        MainActivity.this.filePathCallback = null;
+                    }
+                    MainActivity.this.filePathCallback = filePathCallback;
+
+                    String mimeType = "*/*";
+                    if (fileChooserParams != null && fileChooserParams.getAcceptTypes() != null) {
+                        for (String raw : fileChooserParams.getAcceptTypes()) {
+                            if (raw == null) continue;
+                            String t = raw.trim().toLowerCase();
+                            if (t.startsWith("image/")) {
+                                mimeType = "image/*";
+                                break;
+                            } else if (t.startsWith("video/")) {
+                                mimeType = "video/*";
+                                break;
+                            } else if (t.startsWith("audio/")) {
+                                mimeType = "audio/*";
+                                break;
+                            }
+                        }
+                    }
+
+                    Intent contentSelectionIntent = new Intent(Intent.ACTION_GET_CONTENT);
+                    contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                    contentSelectionIntent.setType(mimeType);
+                    contentSelectionIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                    if (fileChooserParams != null
+                            && fileChooserParams.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                        contentSelectionIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    }
+
+                    Intent chooserIntent = Intent.createChooser(contentSelectionIntent, "Selecionar arquivo");
+                    try {
+                        if (fileChooserLauncher != null) {
+                            fileChooserLauncher.launch(chooserIntent);
+                        } else {
+                            startActivityForResult(chooserIntent, REQUEST_FILE_CHOOSER);
+                        }
+                        return true;
+                    } catch (Exception e) {
+                        if (MainActivity.this.filePathCallback != null) {
+                            MainActivity.this.filePathCallback.onReceiveValue(null);
+                            MainActivity.this.filePathCallback = null;
+                        }
+                        return false;
+                    }
+                }
             });
 
             // Reload once after registering JavascriptInterface so window.FreecordAndroid is bound in JS context
             if (savedInstanceState == null) {
                 webView.reload();
             }
+        }
+    }
+
+    private void handleFileChooserResult(int resultCode, Intent data) {
+        if (filePathCallback == null) return;
+        final ValueCallback<Uri[]> callback = filePathCallback;
+        filePathCallback = null;
+
+        Uri[] results = null;
+        try {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    int count = data.getClipData().getItemCount();
+                    results = new Uri[count];
+                    for (int i = 0; i < count; i++) {
+                        results[i] = data.getClipData().getItemAt(i).getUri();
+                    }
+                } else if (data.getData() != null) {
+                    results = new Uri[]{data.getData()};
+                } else {
+                    results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
+        final Uri[] finalResults = results;
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            final WebView webView = this.bridge.getWebView();
+            webView.post(() -> {
+                try {
+                    webView.onResume();
+                    webView.resumeTimers();
+                } catch (Exception ignored) {
+                }
+                callback.onReceiveValue(finalResults);
+            });
+        } else {
+            callback.onReceiveValue(finalResults);
         }
     }
 
@@ -175,11 +299,57 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean saveTextFile(final String filename, final String content, final String mimeType) {
+            if (content == null) return false;
+            final String safeName = (filename != null && !filename.isEmpty()) ? filename : "freecord-backup.json";
+            final String safeMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "application/json";
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, safeMime);
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri != null) {
+                        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                            if (os != null) {
+                                os.write(content.getBytes(StandardCharsets.UTF_8));
+                                os.flush();
+                                runOnUiThread(() -> Toast.makeText(
+                                        MainActivity.this,
+                                        "Salvo em Downloads: " + safeName,
+                                        Toast.LENGTH_LONG
+                                ).show());
+                                return true;
+                            }
+                        }
+                    }
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) dir.mkdirs();
+                    File file = new File(dir, safeName);
+                    try (FileOutputStream fos = new FileOutputStream(file)) {
+                        fos.write(content.getBytes(StandardCharsets.UTF_8));
+                        fos.flush();
+                        runOnUiThread(() -> Toast.makeText(
+                                MainActivity.this,
+                                "Salvo em Downloads: " + safeName,
+                                Toast.LENGTH_LONG
+                        ).show());
+                        return true;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            return false;
+        }
+
+        @JavascriptInterface
         public void openExternalUrl(final String url) {
             if (url == null || url.isEmpty()) return;
             runOnUiThread(() -> {
                 try {
-                    Intent browserIntent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+                    Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
                     browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     startActivity(browserIntent);
                 } catch (Exception ignored) {
@@ -308,6 +478,8 @@ public class MainActivity extends BridgeActivity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_MEDIA_PROJECTION) {
             handleScreenCapturePermissionResult(resultCode, data);
+        } else if (requestCode == REQUEST_FILE_CHOOSER) {
+            handleFileChooserResult(resultCode, data);
         }
     }
 

@@ -3995,11 +3995,29 @@ export default function App() {
         leftRoomIds,
         savedLanPeers,
       });
+      const filename = `${nodeStatus.profile.username || "freecord"}-${nodeStatus.profile.tag || "id"}.freecord-id.json`;
+      if (window.FreecordAndroid?.saveTextFile) {
+        const savedOk = window.FreecordAndroid.saveTextFile(
+          filename,
+          bundleStr,
+          "application/json"
+        );
+        if (savedOk) {
+          setIdentityBackupStatus({
+            type: "success",
+            text:
+              lang === "en"
+                ? `Identity backup saved to Downloads/${filename}!`
+                : `Backup salvo na pasta Downloads (${filename})!`,
+          });
+          return;
+        }
+      }
       const blob = new Blob([bundleStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${nodeStatus.profile.username || "freecord"}-${nodeStatus.profile.tag || "id"}.freecord-id.json`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -4032,10 +4050,18 @@ export default function App() {
             const updated = await window.DiscordNative.p2p.updateProfile(restored.profile);
             if (updated) setNodeStatus((prev) => ({ ...prev, profile: updated }));
           } else {
+            const mergedProfile = { ...nodeStatus.profile, ...restored.profile };
             setNodeStatus((prev) => ({
               ...prev,
-              profile: { ...prev.profile, ...restored.profile },
+              profile: mergedProfile,
             }));
+            try {
+              localStorage.setItem("freecord_web_profile", JSON.stringify(mergedProfile));
+            } catch {}
+            sendP2PPacket({
+              type: "PROFILE_UPDATE",
+              profile: mergedProfile,
+            });
           }
         }
         if (Array.isArray(restored.rooms) && restored.rooms.length > 0) {
@@ -8689,7 +8715,7 @@ return (
                   <input
                     ref={identityImportInputRef}
                     type="file"
-                    accept=".json,.freecord-id"
+                    accept=".json,.freecord-id,application/json,text/plain"
                     style={{ display: "none" }}
                     onChange={handleImportIdentityBackup}
                   />
@@ -8908,9 +8934,11 @@ return (
                         const file = e.target.files?.[0];
                         if (!file) return;
                         try {
-                          const dataUrl = await resizeImageToDataUrl(file, 240, 240, 0.86);
+                          const dataUrl = await readImageFileToDataUrl(file, 240, 240, 0.86);
                           setProfileForm((p) => ({ ...p, avatarUrl: dataUrl }));
-                        } catch {}
+                        } catch (err) {
+                          pushToast({ title: "Avatar", body: err?.message || "Erro ao carregar imagem" });
+                        }
                         e.target.value = "";
                       }}
                     />
@@ -8966,9 +8994,11 @@ return (
                         const file = e.target.files?.[0];
                         if (!file) return;
                         try {
-                          const dataUrl = await resizeImageToDataUrl(file, 640, 240, 0.84);
+                          const dataUrl = await readImageFileToDataUrl(file, 640, 240, 0.84);
                           setProfileForm((p) => ({ ...p, bannerUrl: dataUrl }));
-                        } catch {}
+                        } catch (err) {
+                          pushToast({ title: "Banner", body: err?.message || "Erro ao carregar imagem" });
+                        }
                         e.target.value = "";
                       }}
                     />
@@ -9917,9 +9947,11 @@ return (
                         const file = e.target.files?.[0];
                         if (!file) return;
                         try {
-                          const dataUrl = await resizeImageToDataUrl(file, 240, 240, 0.86);
+                          const dataUrl = await readImageFileToDataUrl(file, 240, 240, 0.86);
                           setServerForm((s) => ({ ...s, iconUrl: dataUrl }));
-                        } catch {}
+                        } catch (err) {
+                          pushToast({ title: "Servidor", body: err?.message || "Erro ao carregar ícone" });
+                        }
                         e.target.value = "";
                       }}
                     />
@@ -9982,9 +10014,11 @@ return (
                         const file = e.target.files?.[0];
                         if (!file) return;
                         try {
-                          const dataUrl = await resizeImageToDataUrl(file, 640, 260, 0.85);
+                          const dataUrl = await readImageFileToDataUrl(file, 640, 260, 0.85);
                           setServerForm((s) => ({ ...s, bannerUrl: dataUrl }));
-                        } catch {}
+                        } catch (err) {
+                          pushToast({ title: "Servidor", body: err?.message || "Erro ao carregar banner" });
+                        }
                         e.target.value = "";
                       }}
                     />
