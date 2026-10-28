@@ -3128,11 +3128,25 @@ export default function App() {
         targetSubnets.add(s)
       );
 
+      const isPrivateIPv4 = (candidate) => {
+        const m = String(candidate).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+        if (!m) return false;
+        const [a, b, c, d] = m.slice(1).map(Number);
+        if ([a, b, c, d].some((oct) => oct < 0 || oct > 255)) return false;
+        if (a === 10) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        return false;
+      };
+
       const probeHost = async (ip, port = 49155) => {
+        if (!isPrivateIPv4(ip)) return null;
+        const safePort = Number(port);
+        if (!Number.isInteger(safePort) || safePort < 1 || safePort > 65535) return null;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 550);
         try {
-          const res = await fetch(`http://${ip}:${port}/api/discover`, {
+          const res = await fetch(`http://${ip}:${safePort}/api/discover`, {
             method: "GET",
             signal: controller.signal,
           });
@@ -3143,7 +3157,7 @@ export default function App() {
             const peerObj = {
               ...data.profile,
               host: ip,
-              tcpPort: Number(data.tcpPort || port),
+              tcpPort: Number(data.tcpPort || safePort),
               lastSeen: Date.now(),
               isConnected: connectedPeersRef.current.some(
                 (cp) => cp.peerId === data.profile.peerId || cp.address === ip
