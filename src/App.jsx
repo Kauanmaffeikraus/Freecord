@@ -1670,18 +1670,31 @@ export default function App() {
             return [
               ...clean,
               {
+                ...(existing || {}),
                 ...p,
                 address: existing?.address || "WebRTC DataChannel",
                 port: existing?.port || 0,
                 rttMs: existing?.rttMs || 5,
                 fingerprint: existing?.fingerprint || "WEBRTC-DIRECT-SDP",
-                voiceChannelId: existing?.voiceChannelId || null,
-                voiceState: existing?.voiceState || {},
+                voiceChannelId: packet.voiceChannelId ?? existing?.voiceChannelId ?? null,
+                voiceState: packet.voiceState || existing?.voiceState || {},
               },
             ];
           });
+          setTimeout(() => {
+            sendP2PPacket({ type: "ROOM_SYNC", rooms: roomsRef.current }, p.peerId);
+            requestHistorySyncFromPeer(p.peerId);
+            if (activeVoiceChannelIdRef.current) {
+              syncVoiceStateP2P(activeVoiceChannelIdRef.current, {
+                muted: selfMute,
+                deafened: selfDeafen,
+                videoEnabled,
+                screenSharing,
+              });
+            }
+          }, 150);
         }
-        handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId });
+        handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId: packet.fromPeerId || fromPeerId });
       },
       onManualPeerConnected: (peerId, profileOverride = null) => {
         const conn = engine.connections.get(peerId);
@@ -1709,6 +1722,18 @@ export default function App() {
             },
           ];
         });
+        setTimeout(() => {
+          sendP2PPacket({ type: "ROOM_SYNC", rooms: roomsRef.current }, manualProf.peerId);
+          requestHistorySyncFromPeer(manualProf.peerId);
+          if (activeVoiceChannelIdRef.current) {
+            syncVoiceStateP2P(activeVoiceChannelIdRef.current, {
+              muted: selfMute,
+              deafened: selfDeafen,
+              videoEnabled,
+              screenSharing,
+            });
+          }
+        }, 200);
       },
     });
 
@@ -1796,16 +1821,29 @@ export default function App() {
     if (!window.DiscordNative?.p2p) return;
 
     const p2p = window.DiscordNative.p2p;
+    const mergeTcpAndManualSdpPeers = (tcpList, prevList) => {
+      const tcpPeers = Array.isArray(tcpList) ? tcpList : [];
+      const tcpIds = new Set(tcpPeers.map((p) => p.peerId));
+      const manualSdpPeers = (prevList || []).filter(
+        (p) =>
+          p?.peerId &&
+          !tcpIds.has(p.peerId) &&
+          (p.address === "WebRTC DataChannel" || p.fingerprint === "WEBRTC-DIRECT-SDP") &&
+          voiceEngineRef.current?.connections?.get(p.peerId)?.pc?.connectionState !== "closed"
+      );
+      return [...tcpPeers, ...manualSdpPeers];
+    };
+
     p2p.getStatus().then((status) => {
       if (status) {
         setNodeStatus(status);
-        setConnectedPeers(status.connectedPeers || []);
+        setConnectedPeers((prev) => mergeTcpAndManualSdpPeers(status.connectedPeers, prev));
         setLanPeers(status.lanPeers || []);
       }
     });
 
     const unsubPeers = p2p.onPeersUpdated((peers) => {
-      setConnectedPeers(peers || []);
+      setConnectedPeers((prev) => mergeTcpAndManualSdpPeers(peers, prev));
       if (Array.isArray(peers)) {
         const activeCh = activeVoiceChannelIdRef.current;
         setSpeakingMap((prev) => {
@@ -1889,10 +1927,12 @@ export default function App() {
         sentOverPrimaryTransport = true;
       } catch {}
     }
-    // 3. Only send via WebRTC DataChannel if no primary TCP/WS transport is active (or for manual SDP peers)
-    if (!sentOverPrimaryTransport || (targetPeerId && String(targetPeerId).startsWith("webrtc_"))) {
-      voiceEngineRef.current?.sendViaDataChannel(enrichedPacket, targetPeerId);
-    }
+    // 3. Always deliver to manual WebRTC SDP DataChannel peers (and fallback to all DataChannels if no TCP/WS is active)
+    voiceEngineRef.current?.sendViaDataChannel(
+      enrichedPacket,
+      targetPeerId,
+      sentOverPrimaryTransport
+    );
   };
 
   const syncVoiceStateP2P = (channelId, voiceState = {}) => {
@@ -1913,9 +1953,7 @@ export default function App() {
         sentOverPrimaryTransport = true;
       } catch {}
     }
-    if (!sentOverPrimaryTransport) {
-      voiceEngineRef.current?.sendViaDataChannel(packet, null);
-    }
+    voiceEngineRef.current?.sendViaDataChannel(packet, null, sentOverPrimaryTransport);
   };
 
   const requestHistorySyncFromPeer = (targetPeerId = null) => {
@@ -3145,6 +3183,7 @@ export default function App() {
                   ...remoteProf,
                   address: host,
                   port: Number(port),
+                  addresses: Array.isArray(packet.addresses) ? packet.addresses : [host],
                   rttMs: 2,
                   fingerprint: remoteProf.keyFingerprint || "P2P-LAN-DIRECT",
                   voiceChannelId: packet.voiceChannelId || null,
@@ -3156,13 +3195,48 @@ export default function App() {
                   return [...clean, peerEntry];
                 });
 
-                // Save to remembered LAN peers
+                setLanPeers((prev) => {
+                  const filtered = prev.filter((p) => p.peerId !== remoteProf.peerId);
+                  return [
+                    {
+                      ...remoteProf,
+                      host,
+                      tcpPort: Number(packet.tcpPort || port),
+                      addresses: Array.isArray(packet.addresses) ? packet.addresses : [host],
+                      lastSeen: Date.now(),
+                      isConnected: true,
+                    },
+                    ...filtered,
+                  ];
+                });
+
+                // Save to remembered LAN peers (persisting all candidate LAN IPs for fast auto-reconnect)
                 try {
                   const saved = JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+                  const existingEntry = saved.find((s) => s.peerId === remoteProf.peerId || (s.host === host && s.port === Number(port)));
+                  const mergedAddresses = Array.from(
+                    new Set([
+                      host,
+                      ...(Array.isArray(packet.addresses) ? packet.addresses : []),
+                      ...(Array.isArray(existingEntry?.addresses) ? existingEntry.addresses : []),
+                    ].filter(Boolean))
+                  );
                   const updated = [
-                    { host, port: Number(port), name: remoteProf.displayName || remoteProf.username, peerId: remoteProf.peerId, tag: remoteProf.tag, timestamp: Date.now() },
-                    ...saved.filter((s) => s.host !== host || s.port !== Number(port))
-                  ].slice(0, 8);
+                    {
+                      host,
+                      port: Number(packet.tcpPort || port),
+                      addresses: mergedAddresses,
+                      name: remoteProf.displayName || remoteProf.username,
+                      peerId: remoteProf.peerId,
+                      tag: remoteProf.tag,
+                      avatarColor: remoteProf.avatarColor,
+                      avatarUrl: remoteProf.avatarUrl || null,
+                      timestamp: Date.now(),
+                    },
+                    ...saved.filter(
+                      (s) => s.peerId !== remoteProf.peerId && (s.host !== host || s.port !== Number(port))
+                    ),
+                  ].slice(0, 12);
                   localStorage.setItem("freecord_saved_lan_peers", JSON.stringify(updated));
                   setSavedLanPeers(updated);
                 } catch {}
@@ -3193,8 +3267,19 @@ export default function App() {
                 }
 
                 setTimeout(() => {
+                  try {
+                    if (ws.readyState === 1) {
+                      ws.send(
+                        JSON.stringify({
+                          type: "ROOM_SYNC",
+                          fromPeerId: selfPeerIdRef.current,
+                          rooms: roomsRef.current,
+                        })
+                      );
+                    }
+                  } catch {}
                   requestHistorySyncFromPeer(remoteProf.peerId);
-                }, 300);
+                }, 250);
               }
               return;
             }
@@ -3333,11 +3418,12 @@ export default function App() {
           clearTimeout(timer);
           if (!res.ok) return null;
           const data = await res.json();
-          if (data?.ok && data?.profile?.peerId && data.profile.peerId !== selfPeerIdRef.current) {
+          if (data?.profile?.peerId && data.profile.peerId !== selfPeerIdRef.current) {
+            const peerPort = Number(data.tcpPort || port);
             const peerObj = {
               ...data.profile,
               host: ip,
-              tcpPort: Number(data.tcpPort || port),
+              tcpPort: peerPort,
               lastSeen: Date.now(),
               isConnected: connectedPeersRef.current.some(
                 (cp) => cp.peerId === data.profile.peerId || cp.address === ip
@@ -3347,6 +3433,24 @@ export default function App() {
               const filtered = prev.filter((p) => p.peerId !== peerObj.peerId);
               return [peerObj, ...filtered];
             });
+
+            // Auto-reconnect if this peer was previously paired & saved by the user!
+            const savedList = (() => {
+              try {
+                return JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+              } catch {
+                return [];
+              }
+            })();
+            const isRemembered = savedList.some(
+              (s) => s.peerId === peerObj.peerId || s.host === ip
+            );
+            if (
+              isRemembered &&
+              (!mobileWsRef.current || mobileWsRef.current.readyState !== 1)
+            ) {
+              connectViaWebSocket(ip, peerPort).catch(() => {});
+            }
             return peerObj;
           }
         } catch {
@@ -3358,14 +3462,17 @@ export default function App() {
       // Probe saved hosts first on port 49155 and their remembered port
       const priorityTargets = [];
       for (const sp of savedLanPeers || []) {
-        if (sp?.host) {
-          priorityTargets.push([sp.host, 49155]);
-          if (sp.port && sp.port !== 49155) priorityTargets.push([sp.host, sp.port]);
+        const candidateHosts = Array.from(
+          new Set([sp?.host, ...(Array.isArray(sp?.addresses) ? sp.addresses : [])].filter(Boolean))
+        );
+        for (const h of candidateHosts) {
+          priorityTargets.push([h, 49155]);
+          if (sp.port && sp.port !== 49155) priorityTargets.push([h, sp.port]);
         }
       }
       await Promise.all(priorityTargets.map(([h, p]) => probeHost(h, p)));
 
-      // Probe primary subnet IPs in fast batches of 32
+      // Probe primary subnet IPs in fast batches of 36
       const primarySubnets = Array.from(targetSubnets).slice(0, 3);
       for (const subnet of primarySubnets) {
         const ips = [];
@@ -3382,6 +3489,64 @@ export default function App() {
       setIsScanningLanHttp(false);
     }
   };
+
+  // Automatic Background Reconnection to Remembered Peers on Startup & Network Changes (Android / Browser)
+  useEffect(() => {
+    if (window.DiscordNative?.p2p) return;
+    let cancelled = false;
+    let isAttempting = false;
+
+    const tryAutoReconnectSavedPeers = async (withFullSubnetScan = false) => {
+      if (cancelled || isAttempting) return;
+      if (mobileWsRef.current && mobileWsRef.current.readyState === 1) return;
+
+      isAttempting = true;
+      try {
+        const saved = JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+        if (Array.isArray(saved) && saved.length > 0) {
+          for (const sp of saved) {
+            if (cancelled) break;
+            if (mobileWsRef.current && mobileWsRef.current.readyState === 1) break;
+            const rawHosts = Array.from(
+              new Set([sp.host, ...(Array.isArray(sp.addresses) ? sp.addresses : [])].filter(Boolean))
+            );
+            const sortedEndpoints = sortEndpointsByLanPriority(
+              rawHosts.map((h) => `${h}:${sp.port || 49155}`)
+            );
+            for (const ep of sortedEndpoints.slice(0, 4)) {
+              const [cHost, cPortStr] = ep.split(":");
+              const cPort = Number(cPortStr || sp.port || 49155);
+              if (!cHost || !cPort) continue;
+              try {
+                await connectViaWebSocket(cHost, cPort);
+                return;
+              } catch {}
+            }
+          }
+        }
+        if (withFullSubnetScan && (!mobileWsRef.current || mobileWsRef.current.readyState !== 1)) {
+          await scanLanForDesktopNodes();
+        }
+      } catch {
+      } finally {
+        isAttempting = false;
+      }
+    };
+
+    const initialTimer = setTimeout(() => {
+      tryAutoReconnectSavedPeers(true);
+    }, 450);
+
+    const intervalId = setInterval(() => {
+      tryAutoReconnectSavedPeers(false);
+    }, 6500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initialTimer);
+      clearInterval(intervalId);
+    };
+  }, []);
 
   // Phase 1: Generate LAN Pairing QR Code when Connect Modal opens
   useEffect(() => {
@@ -8933,8 +9098,16 @@ return (
                     <button
                       className="btn-primary"
                       onClick={async () => {
+                        const myEndpoints = sortEndpointsByLanPriority(
+                          nodeStatus.connectionStrings || []
+                        );
                         const res = await voiceEngineRef.current?.createManualInviteOffer(
-                          nodeStatus.profile
+                          {
+                            ...nodeStatus.profile,
+                            cryptoPubKey: cryptoIdentity.publicKey,
+                            keyFingerprint: cryptoIdentity.keyFingerprint,
+                          },
+                          myEndpoints
                         );
                         if (res) setGeneratedInviteCode(res.inviteCode);
                       }}
@@ -8974,10 +9147,70 @@ return (
                     style={{ marginTop: 8 }}
                     onClick={async () => {
                       try {
+                        const myEndpoints = sortEndpointsByLanPriority(
+                          nodeStatus.connectionStrings || []
+                        );
                         const res = await voiceEngineRef.current?.acceptManualInviteCode(
                           incomingInviteInput,
-                          nodeStatus.profile
+                          {
+                            ...nodeStatus.profile,
+                            cryptoPubKey: cryptoIdentity.publicKey,
+                            keyFingerprint: cryptoIdentity.keyFingerprint,
+                          },
+                          myEndpoints
                         );
+                        const remoteEndpoints = sortEndpointsByLanPriority(
+                          res?.remoteProfile?.endpoints || []
+                        );
+                        if (res?.remoteProfile && remoteEndpoints.length > 0) {
+                          const [primaryHost, primaryPortStr] = remoteEndpoints[0].split(":");
+                          const primaryPort = Number(primaryPortStr || 49155);
+                          if (primaryHost && primaryPort) {
+                            try {
+                              const saved = JSON.parse(
+                                localStorage.getItem("freecord_saved_lan_peers") || "[]"
+                              );
+                              const allAddrs = remoteEndpoints
+                                .map((ep) => ep.split(":")[0])
+                                .filter(Boolean);
+                              const updated = [
+                                {
+                                  host: primaryHost,
+                                  port: primaryPort,
+                                  addresses: allAddrs,
+                                  name:
+                                    res.remoteProfile.displayName ||
+                                    res.remoteProfile.username ||
+                                    "Peer",
+                                  peerId: res.remoteProfile.peerId,
+                                  tag: res.remoteProfile.tag || "0000",
+                                  timestamp: Date.now(),
+                                },
+                                ...saved.filter(
+                                  (s) =>
+                                    s.peerId !== res.remoteProfile.peerId &&
+                                    (s.host !== primaryHost || s.port !== primaryPort)
+                                ),
+                              ].slice(0, 12);
+                              localStorage.setItem(
+                                "freecord_saved_lan_peers",
+                                JSON.stringify(updated)
+                              );
+                              setSavedLanPeers(updated);
+                            } catch {}
+                            // Background LAN upgrade if reachable on local Wi-Fi
+                            for (const ep of remoteEndpoints.slice(0, 3)) {
+                              const [cHost, cPortStr] = ep.split(":");
+                              const cPort = Number(cPortStr || 49155);
+                              if (cHost && cPort) {
+                                handleConnectByHostPort(cHost, cPort)
+                                  .then(() => {})
+                                  .catch(() => {});
+                                break;
+                              }
+                            }
+                          }
+                        }
                         if (res.mode === "answer-generated") {
                           setGeneratedAnswerCode(res.answerCode);
                           setConnectStatusMsg({
@@ -8989,8 +9222,21 @@ return (
                           });
                           if (res.remoteProfile) {
                             setConnectedPeers((prev) => {
-                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
-                              return [...clean, res.remoteProfile];
+                              const existing = prev.find(
+                                (p) => p.peerId === res.remoteProfile.peerId
+                              );
+                              const clean = prev.filter(
+                                (p) => p.peerId !== res.remoteProfile.peerId
+                              );
+                              return [
+                                ...clean,
+                                {
+                                  ...(existing || {}),
+                                  ...res.remoteProfile,
+                                  voiceChannelId: existing?.voiceChannelId || null,
+                                  voiceState: existing?.voiceState || {},
+                                },
+                              ];
                             });
                           }
                         } else {
@@ -9003,8 +9249,21 @@ return (
                           });
                           if (res.remoteProfile) {
                             setConnectedPeers((prev) => {
-                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
-                              return [...clean, res.remoteProfile];
+                              const existing = prev.find(
+                                (p) => p.peerId === res.remoteProfile.peerId
+                              );
+                              const clean = prev.filter(
+                                (p) => p.peerId !== res.remoteProfile.peerId
+                              );
+                              return [
+                                ...clean,
+                                {
+                                  ...(existing || {}),
+                                  ...res.remoteProfile,
+                                  voiceChannelId: existing?.voiceChannelId || null,
+                                  voiceState: existing?.voiceState || {},
+                                },
+                              ];
                             });
                           }
                           setIncomingInviteInput("");

@@ -899,9 +899,129 @@ export class WebRTCVoiceEngine {
     return this.localScreenStream;
   }
 
+  stopAndroidNativeScreenCapture() {
+    if (this.androidCaptureActive) {
+      this.androidCaptureActive = false;
+      try {
+        window.FreecordAndroid?.stopScreenCapture?.();
+      } catch {}
+    }
+    window.__onAndroidScreenFrame = null;
+    window.__onAndroidScreenCaptureState = null;
+    this.androidScreenCanvas = null;
+  }
+
+  async startAndroidNativeScreenCapture(maxDim = 960, fps = 15) {
+    return new Promise((resolve, reject) => {
+      if (!window.FreecordAndroid?.startScreenCapture) {
+        reject(new Error("Android MediaProjection bridge indisponivel"));
+        return;
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 720;
+      canvas.height = 1280;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#111214";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      this.androidScreenCanvas = canvas;
+      const frameImg = new Image();
+      let lastRelaySentAt = 0;
+      let settled = false;
+
+      const timeoutId = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error("Tempo esgotado aguardando permissao de captura de tela"));
+        }
+      }, 45000);
+
+      window.__onAndroidScreenFrame = (dataUrl, width, height) => {
+        if (!this.androidCaptureActive || !dataUrl) return;
+        const now = Date.now();
+        if (this.inVoiceChannel && this.onFrameSend && now - lastRelaySentAt >= 210) {
+          lastRelaySentAt = now;
+          try {
+            this.onFrameSend({
+              kind: "screen",
+              dataUrl,
+              timestamp: now,
+            });
+          } catch {}
+        }
+        frameImg.onload = () => {
+          if (!this.androidScreenCanvas) return;
+          if (
+            width > 0 &&
+            height > 0 &&
+            (this.androidScreenCanvas.width !== width || this.androidScreenCanvas.height !== height)
+          ) {
+            this.androidScreenCanvas.width = width;
+            this.androidScreenCanvas.height = height;
+          }
+          const c = this.androidScreenCanvas.getContext("2d");
+          if (c) {
+            c.drawImage(
+              frameImg,
+              0,
+              0,
+              this.androidScreenCanvas.width,
+              this.androidScreenCanvas.height
+            );
+          }
+        };
+        frameImg.src = dataUrl;
+      };
+
+      window.__onAndroidScreenCaptureState = (state, detail) => {
+        if (state === "started") {
+          clearTimeout(timeoutId);
+          this.androidCaptureActive = true;
+          if (!settled) {
+            settled = true;
+            const stream =
+              typeof canvas.captureStream === "function"
+                ? canvas.captureStream(Math.min(25, Math.max(10, fps)))
+                : new MediaStream();
+            resolve(stream);
+          }
+        } else if (state === "denied" || state === "error") {
+          clearTimeout(timeoutId);
+          this.stopAndroidNativeScreenCapture();
+          if (!settled) {
+            settled = true;
+            reject(new Error(detail || "Captura de tela cancelada"));
+          }
+        } else if (state === "stopped") {
+          this.androidCaptureActive = false;
+          if (this.localScreenStream) {
+            this.localScreenStream.getTracks().forEach((t) => t.stop());
+            this.localScreenStream = null;
+          }
+          this.activeDesktopSourceId = null;
+          this.updateFrameRelayLoop();
+          this.syncTracksWithPeers();
+        }
+      };
+
+      try {
+        window.FreecordAndroid.startScreenCapture(maxDim, Math.min(20, Math.max(10, fps)));
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      }
+    });
+  }
+
   async setDesktopSource(sourceId = null, options = {}) {
     if (!sourceId) {
       this.activeDesktopSourceId = null;
+      this.stopAndroidNativeScreenCapture();
       this.cleanupScreenAudioGraph();
       if (this.localScreenStream) {
         this.localScreenStream.getTracks().forEach((t) => t.stop());
@@ -923,6 +1043,7 @@ export class WebRTCVoiceEngine {
     const fps = this.screenFrameRate || 30;
     const captureAudio = options.captureAudio !== false;
 
+    this.stopAndroidNativeScreenCapture();
     if (this.localScreenStream) {
       this.localScreenStream.getTracks().forEach((t) => t.stop());
       this.localScreenStream = null;
@@ -995,7 +1116,12 @@ export class WebRTCVoiceEngine {
             });
           }
         }
-      } else {
+      } else if (typeof window !== "undefined" && window.FreecordAndroid?.startScreenCapture) {
+        this.localScreenStream = await this.startAndroidNativeScreenCapture(
+          Math.min(1280, Math.max(res.width || 960, res.height || 960)),
+          Math.min(20, fps || 15)
+        );
+      } else if (typeof navigator.mediaDevices?.getDisplayMedia === "function") {
         this.localScreenStream = await navigator.mediaDevices.getDisplayMedia({
           video: {
             width: { ideal: res.width, max: res.width },
@@ -1004,6 +1130,8 @@ export class WebRTCVoiceEngine {
           },
           audio: captureAudio,
         });
+      } else {
+        throw new Error("Compartilhamento de tela nao suportado neste navegador/WebView.");
       }
 
       this.activeDesktopSourceId = sourceId;
@@ -1442,9 +1570,15 @@ export class WebRTCVoiceEngine {
   }
 
   createPeerConnection(peerId, isInitiator = false, forceReset = false) {
-    if (this.connections.has(peerId) && !forceReset) {
+    if (this.connections.has(peerId)) {
       const existing = this.connections.get(peerId);
+      const hasOpenManualDc =
+        existing.isManualSdp &&
+        existing.dataChannel &&
+        (existing.dataChannel.readyState === "open" ||
+          existing.dataChannel.readyState === "connecting");
       if (
+        (!forceReset || hasOpenManualDc) &&
         existing.pc.connectionState !== "closed" &&
         existing.pc.signalingState !== "closed"
       ) {
@@ -1490,6 +1624,9 @@ export class WebRTCVoiceEngine {
       peerId,
       pc,
       dataChannel: null,
+      isManualSdp: Boolean(oldConn?.isManualSdp),
+      manualProfile: oldConn?.manualProfile || null,
+      pendingManualOffer: Boolean(oldConn?.pendingManualOffer),
       remoteStream: new MediaStream(),
       remoteScreenAudioStream: new MediaStream(),
       remoteAudioTracks: new Map(), // trackId -> MediaStreamTrack
@@ -1583,7 +1720,7 @@ export class WebRTCVoiceEngine {
                 sdpMLineIndex: e.candidate.sdpMLineIndex,
                 usernameFragment: e.candidate.usernameFragment,
               };
-        this.onSignalSend?.(peerId, {
+        this.onSignalSend?.(conn.peerId, {
           signalType: "ice-candidate",
           candidate: plainCandidate,
         });
@@ -1591,7 +1728,7 @@ export class WebRTCVoiceEngine {
     };
 
     pc.ontrack = (e) => {
-      if (!this.inVoiceChannel && !conn.pendingManualOffer && !conn.manualProfile) return;
+      if (!this.inVoiceChannel && !conn.isManualSdp && !conn.pendingManualOffer && !conn.manualProfile) return;
       const tracks = new Set();
       if (e.track) tracks.add(e.track);
       if (e.streams && e.streams[0]) {
@@ -1630,7 +1767,7 @@ export class WebRTCVoiceEngine {
           });
           track.onunmute = () => {
             this.rebuildRemoteVideoStreams(conn);
-            this.onSignalSend?.(peerId, {
+            this.onSignalSend?.(conn.peerId, {
               signalType: "request-keyframe",
               mid,
             });
@@ -1640,7 +1777,7 @@ export class WebRTCVoiceEngine {
             this.rebuildRemoteVideoStreams(conn);
           };
           // Immediately request keyframe on track discovery so the video decoder receives an I-frame right away
-          this.onSignalSend?.(peerId, {
+          this.onSignalSend?.(conn.peerId, {
             signalType: "request-keyframe",
             mid,
           });
@@ -1665,14 +1802,16 @@ export class WebRTCVoiceEngine {
 
   bindDataChannel(conn, dc) {
     conn.dataChannel = dc;
-    const isManualSdpPeer =
+    const isManualSdpPeer = () =>
+      Boolean(conn.isManualSdp) ||
       Boolean(conn.manualProfile) ||
       Boolean(conn.pendingManualOffer) ||
       String(conn.peerId).startsWith("manual_") ||
       String(conn.peerId).startsWith("webrtc_");
 
     dc.onopen = () => {
-      if (!isManualSdpPeer) return;
+      if (!isManualSdpPeer()) return;
+      conn.isManualSdp = true;
       try {
         if (this.localProfile) {
           dc.send(
@@ -1694,11 +1833,14 @@ export class WebRTCVoiceEngine {
     };
   }
 
-  sendViaDataChannel(packet, targetPeerId = null) {
+  sendViaDataChannel(packet, targetPeerId = null, onlyManualSdp = false) {
     const raw = JSON.stringify(packet);
     if (raw.length > 60000) return 0;
     let sent = 0;
     for (const [id, conn] of this.connections.entries()) {
+      if (onlyManualSdp && !conn.isManualSdp && !conn.manualProfile && !String(id).startsWith("webrtc_")) {
+        continue;
+      }
       if (targetPeerId && id !== targetPeerId && conn.manualProfile?.peerId !== targetPeerId) continue;
       if (conn.dataChannel && conn.dataChannel.readyState === "open") {
         try {
@@ -2377,10 +2519,12 @@ export class WebRTCVoiceEngine {
   }
 
   // Serverless Manual WebRTC SDP Invite Code (for Browser-to-Browser or strict NAT without port forwarding)
-  async createManualInviteOffer(localProfile) {
+  async createManualInviteOffer(localProfile, endpoints = []) {
     this.localProfile = localProfile;
     const tempPeerId = `manual_offer_${Date.now()}`;
     const conn = this.createPeerConnection(tempPeerId, true, true);
+    conn.isManualSdp = true;
+    conn.pendingManualOffer = true;
 
     const offer = await conn.pc.createOffer();
     await conn.pc.setLocalDescription(offer);
@@ -2397,17 +2541,17 @@ export class WebRTCVoiceEngine {
       avatarColor: localProfile.avatarColor,
       avatarUrl: localProfile.avatarUrl,
       status: localProfile.status,
+      endpoints: Array.isArray(endpoints) ? endpoints.slice(0, 6) : [],
       sdp: conn.pc.localDescription,
     };
 
-    conn.pendingManualOffer = true;
     return {
       tempPeerId,
       inviteCode: safeEncodeToken(tokenPayload),
     };
   }
 
-  async acceptManualInviteCode(inviteCode, localProfile) {
+  async acceptManualInviteCode(inviteCode, localProfile, endpoints = []) {
     this.localProfile = localProfile;
     const decoded = safeDecodeToken(inviteCode);
     if (!decoded || !decoded.sdp) {
@@ -2417,6 +2561,7 @@ export class WebRTCVoiceEngine {
     if (decoded.kind === "offer") {
       const remotePeerId = decoded.peerId || `webrtc_${Math.random().toString(36).slice(2, 8)}`;
       const conn = this.createPeerConnection(remotePeerId, false, true);
+      conn.isManualSdp = true;
       conn.manualProfile = {
         peerId: remotePeerId,
         displayName: decoded.displayName || decoded.username || "WebRTC Peer",
@@ -2429,6 +2574,7 @@ export class WebRTCVoiceEngine {
         port: 0,
         rttMs: 5,
         fingerprint: "WEBRTC-DIRECT-SDP",
+        endpoints: Array.isArray(decoded.endpoints) ? decoded.endpoints : [],
       };
 
       await conn.pc.setRemoteDescription(new RTCSessionDescription(decoded.sdp));
@@ -2446,6 +2592,7 @@ export class WebRTCVoiceEngine {
         avatarColor: localProfile.avatarColor,
         avatarUrl: localProfile.avatarUrl,
         status: localProfile.status,
+        endpoints: Array.isArray(endpoints) ? endpoints.slice(0, 6) : [],
         sdp: conn.pc.localDescription,
       };
 
@@ -2472,6 +2619,7 @@ export class WebRTCVoiceEngine {
       targetConn.peerId = decoded.peerId;
       this.connections.set(decoded.peerId, targetConn);
       targetConn.pendingManualOffer = false;
+      targetConn.isManualSdp = true;
 
       targetConn.manualProfile = {
         peerId: decoded.peerId,
@@ -2485,6 +2633,7 @@ export class WebRTCVoiceEngine {
         port: 0,
         rttMs: 5,
         fingerprint: "WEBRTC-DIRECT-SDP",
+        endpoints: Array.isArray(decoded.endpoints) ? decoded.endpoints : [],
       };
 
       await targetConn.pc.setRemoteDescription(new RTCSessionDescription(decoded.sdp));
@@ -2561,7 +2710,7 @@ export class WebRTCVoiceEngine {
     }, 600);
   }
 
-  destroyPeer(peerId) {
+  destroyPeer(peerId, preserveManualDataChannel = true) {
     const conn = this.connections.get(peerId);
     if (!conn) return;
     if (conn.speakingDecayTimer) {
@@ -2611,6 +2760,45 @@ export class WebRTCVoiceEngine {
         conn.remoteScreenAudioStream.getTracks().forEach((t) => t.stop());
       } catch {}
     }
+
+    const shouldKeepManualPeer =
+      preserveManualDataChannel &&
+      (conn.isManualSdp || conn.manualProfile || conn.pendingManualOffer) &&
+      conn.pc.connectionState !== "closed";
+
+    if (shouldKeepManualPeer) {
+      try {
+        conn.audioSender?.replaceTrack(null).catch(() => {});
+        conn.screenAudioSender?.replaceTrack(null).catch(() => {});
+        conn.cameraSender?.replaceTrack(null).catch(() => {});
+        conn.screenSender?.replaceTrack(null).catch(() => {});
+      } catch {}
+      conn.remoteAudioTracks.clear();
+      conn.remoteAudioEntries.clear();
+      conn.remoteVideoEntries.clear();
+      conn.remoteCameraStream = null;
+      conn.remoteScreenStream = null;
+      conn.remoteCameraFrameUrl = null;
+      conn.remoteScreenFrameUrl = null;
+      conn.remoteSpeaking = false;
+      conn.analyser = null;
+      if (conn.audioEl) {
+        try {
+          conn.audioEl.pause();
+          conn.audioEl.srcObject = null;
+        } catch {}
+      }
+      if (conn.screenAudioEl) {
+        try {
+          conn.screenAudioEl.pause();
+          conn.screenAudioEl.srcObject = null;
+        } catch {}
+      }
+      this.updateFallbackProcessorState();
+      this.updateFrameRelayLoop();
+      return;
+    }
+
     try {
       conn.pc.ontrack = null;
       conn.pc.onicecandidate = null;
@@ -2643,15 +2831,22 @@ export class WebRTCVoiceEngine {
     this.updateFrameRelayLoop();
   }
 
-  destroyAll() {
+  destroyAll(preserveManualDataChannel = true) {
     this.inVoiceChannel = false;
+    this.stopAndroidNativeScreenCapture();
     this.cleanupScreenAudioGraph();
     for (const peerId of Array.from(this.connections.keys())) {
-      this.destroyPeer(peerId);
+      this.destroyPeer(peerId, preserveManualDataChannel);
+    }
+    const preservedEls = new Set();
+    for (const conn of this.connections.values()) {
+      if (conn.audioEl) preservedEls.add(conn.audioEl);
+      if (conn.screenAudioEl) preservedEls.add(conn.screenAudioEl);
     }
     const bin = getAudioBinContainer();
     if (bin) {
       bin.querySelectorAll("audio").forEach((el) => {
+        if (preservedEls.has(el)) return;
         try {
           el.pause();
           el.muted = true;
