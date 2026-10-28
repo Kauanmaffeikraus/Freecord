@@ -6,10 +6,59 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const http = require("node:http");
+const { exec } = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const { WebSocketServer } = require("ws");
+
+function closeSocket(s) {
+  if (!s) return;
+  try {
+    if (typeof s.destroy === "function") s.destroy();
+    else if (typeof s.terminate === "function") s.terminate();
+    else if (typeof s.close === "function") s.close();
+  } catch {}
+}
 
 const DISCOVERY_PORTS = [49150, 49151, 49152, 49153];
+const DEFAULT_TCP_PORTS = [49155, 49156, 49157, 49158, 49159, 49160, 49161, 49162, 49163, 49164, 49165];
 const MULTICAST_ADDR = "239.255.42.99";
+
+function scoreInterfacePriority(name = "", address = "", mac = "") {
+  const n = String(name).toLowerCase();
+  const addr = String(address);
+  const m = String(mac).toLowerCase();
+
+  // VirtualBox Host-Only (0a:00:27 or 192.168.56.x)
+  if (m.startsWith("0a:00:27") || addr.startsWith("192.168.56.")) return 10;
+  // WSL / Hyper-V / Docker vEthernet
+  if (n.includes("vethernet") || n.includes("wsl") || n.includes("hyper-v") || n.includes("docker") || m.startsWith("00:15:5d")) return 15;
+  // VPN tunnels (Radmin 26.x, Hamachi 25.x, Tailscale 100.x, ZeroTier)
+  if (
+    n.includes("radmin") ||
+    n.includes("hamachi") ||
+    n.includes("zerotier") ||
+    n.includes("tailscale") ||
+    n.includes("vpn") ||
+    n.includes("tap") ||
+    n.includes("tun") ||
+    addr.startsWith("26.") ||
+    addr.startsWith("25.") ||
+    addr.startsWith("100.")
+  ) {
+    return 30;
+  }
+  // Physical Wi-Fi or Ethernet on standard home LAN (192.168.x.x or 10.x.x.x)
+  if (addr.startsWith("192.168.")) {
+    if (n.includes("wi-fi") || n.includes("wifi") || n.includes("wlan") || n.includes("ethernet")) {
+      return 100;
+    }
+    return 90;
+  }
+  if (addr.startsWith("10.")) return 80;
+  if (addr.startsWith("172.")) return 60;
+  return 50;
+}
 
 function getLocalIPv4Addresses() {
   const interfaces = os.networkInterfaces();
@@ -18,18 +67,31 @@ function getLocalIPv4Addresses() {
     if (!infos) continue;
     for (const info of infos) {
       if (info.family === "IPv4" && !info.internal) {
+        const priority = scoreInterfacePriority(name, info.address, info.mac);
         results.push({
           interface: name,
           address: info.address,
           netmask: info.netmask,
+          priority,
+          isVirtualOrVpn: priority <= 30,
         });
       }
     }
   }
+  results.sort((a, b) => b.priority - a.priority);
   if (results.length === 0) {
-    results.push({ interface: "Loopback", address: "127.0.0.1", netmask: "255.0.0.0" });
+    results.push({ interface: "Loopback", address: "127.0.0.1", netmask: "255.0.0.0", priority: 1 });
   }
   return results;
+}
+
+function ensureWindowsFirewallAllowed(tcpPort) {
+  if (process.platform !== "win32") return;
+  try {
+    const ruleName = "Freecord_P2P_LAN_Allow";
+    const cmd = `netsh advfirewall firewall show rule name="${ruleName}" >nul 2>&1 || netsh advfirewall firewall add rule name="${ruleName}" dir=in action=allow protocol=TCP localport=49150-49165,${tcpPort} profile=any`;
+    exec(cmd, () => {});
+  } catch {}
 }
 
 function computePairwiseFingerprint(peerIdA, peerIdB) {
@@ -159,22 +221,142 @@ class P2PNode extends EventEmitter {
 
   startTcpServer() {
     return new Promise((resolve, reject) => {
+      // 1. Create HTTP & WebSocket server for Web/Mobile/Android clients
+      this.httpServer = http.createServer((req, res) => {
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "*");
+        if (req.method === "OPTIONS") {
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        if (req.url === "/api/status" || req.url === "/api/discover") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(this.getNodeStatus()));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      this.wss = new WebSocketServer({ server: this.httpServer });
+      this.wss.on("connection", (ws, req) => {
+        this.handleWebSocketConnection(ws, req);
+      });
+
+      // 2. Create Unified TCP server that peeks at the first byte:
+      // If HTTP verb ('G', 'P', 'O', 'H', 'D'), forward to httpServer.
+      // Otherwise handle as raw TCP socket.
       this.tcpServer = net.createServer((socket) => {
-        this.handleSocketConnection(socket, false);
+        socket.once("data", (chunk) => {
+          const firstByte = chunk[0];
+          if (
+            firstByte === 0x47 || // G (GET)
+            firstByte === 0x50 || // P (POST)
+            firstByte === 0x4f || // O (OPTIONS)
+            firstByte === 0x48 || // H (HEAD)
+            firstByte === 0x44    // D (DELETE)
+          ) {
+            socket.unshift(chunk);
+            this.httpServer.emit("connection", socket);
+          } else {
+            socket.unshift(chunk);
+            this.handleSocketConnection(socket, false);
+          }
+        });
       });
 
-      this.tcpServer.on("error", (err) => {
-        console.error("[Freecord P2P] TCP Server Error:", err.message);
-      });
+      const startIdx = Math.max(0, (Number(this.instanceId) || 1) - 1);
+      const candidatePorts = [...DEFAULT_TCP_PORTS.slice(startIdx), 0];
 
-      // Listen on 0.0.0.0 so both LAN/VPN peers and localhost instances can connect
-      this.tcpServer.listen(0, "0.0.0.0", () => {
-        const addr = this.tcpServer.address();
-        this.tcpPort = addr.port;
-        console.log(`[Freecord P2P] TCP Mesh Node listening on 0.0.0.0:${this.tcpPort}`);
-        resolve(this.tcpPort);
-      });
+      const tryListenPort = (idx) => {
+        const portToTry = candidatePorts[idx] ?? 0;
+        const onListenError = (err) => {
+          if (err.code === "EADDRINUSE" && idx + 1 < candidatePorts.length) {
+            tryListenPort(idx + 1);
+          } else {
+            console.error("[Freecord P2P] TCP Server Error:", err.message);
+          }
+        };
+        this.tcpServer.once("error", onListenError);
+        this.tcpServer.listen(portToTry, "0.0.0.0", () => {
+          this.tcpServer.removeListener("error", onListenError);
+          const addr = this.tcpServer.address();
+          this.tcpPort = addr.port;
+          ensureWindowsFirewallAllowed(this.tcpPort);
+          console.log(`[Freecord P2P] Unified TCP & WebSocket P2P Node listening on 0.0.0.0:${this.tcpPort}`);
+          resolve(this.tcpPort);
+        });
+      };
+
+      tryListenPort(0);
     });
+  }
+
+  handleWebSocketConnection(ws, req) {
+    const remoteHost = req.socket?.remoteAddress?.replace(/^::ffff:/, "") || "127.0.0.1";
+    const remotePort = req.socket?.remotePort || 0;
+    let associatedPeerId = null;
+
+    const sendRaw = (obj) => {
+      if (ws.readyState !== 1) return false;
+      try {
+        ws.send(JSON.stringify(obj));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Send HELLO handshake immediately
+    sendRaw({
+      type: "HELLO",
+      profile: this.profile,
+      tcpPort: this.tcpPort,
+      addresses: getLocalIPv4Addresses().map((a) => a.address),
+      voiceChannelId: this.currentVoiceChannelId || null,
+      voiceState: this.currentVoiceState || {},
+      timestamp: Date.now(),
+    });
+
+    ws.on("message", (data) => {
+      try {
+        const packet = JSON.parse(data.toString("utf8"));
+        this.handlePacket(ws, sendRaw, packet, {
+          isInitiator: false,
+          remoteHostOverride: remoteHost,
+          remotePortOverride: remotePort,
+          getAssociatedPeerId: () => associatedPeerId,
+          setAssociatedPeerId: (id) => {
+            associatedPeerId = id;
+          },
+          onHandshakeResolve: null,
+        });
+      } catch (err) {
+        console.warn("[Freecord P2P] WebSocket packet parse error:", err.message);
+      }
+    });
+
+    const cleanup = () => {
+      if (associatedPeerId && this.peers.get(associatedPeerId)?.socket === ws) {
+        const departing = this.peers.get(associatedPeerId);
+        this.peers.delete(associatedPeerId);
+        for (const [chId, set] of this.voicePresence.entries()) {
+          if (set.has(associatedPeerId)) {
+            set.delete(associatedPeerId);
+          }
+        }
+        this.emit("peers-updated", this.getConnectedPeersList());
+        this.emit("peer-disconnected", {
+          peerId: associatedPeerId,
+          profile: departing?.info,
+        });
+      }
+    };
+
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
   }
 
   startUdpDiscovery() {
@@ -336,7 +518,7 @@ class P2PNode extends EventEmitter {
       const socket = net.createConnection({ host: cleanHost, port: cleanPort, timeout: 6000 });
 
       const onError = (err) => {
-        socket.destroy();
+        closeSocket(socket);
         reject(new Error(`Falha ao conectar em ${cleanHost}:${cleanPort} (${err.message})`));
       };
 
@@ -428,13 +610,14 @@ class P2PNode extends EventEmitter {
 
   handlePacket(socket, sendRaw, packet, ctx) {
     switch (packet.type) {
-      case "HELLO": {
+      case "HELLO":
+      case "HELLO_ACK": {
         const remoteProfile = packet.profile;
         if (!remoteProfile || !remoteProfile.peerId) return;
         const remotePeerId = remoteProfile.peerId;
 
         if (remotePeerId === this.profile.peerId) {
-          socket.destroy();
+          closeSocket(socket);
           return;
         }
 
@@ -444,13 +627,13 @@ class P2PNode extends EventEmitter {
           if (existing.socket !== socket && !existing.socket.destroyed) {
             // Deterministic tie-breaker by peerId
             if (ctx.isInitiator && this.profile.peerId < remotePeerId) {
-              socket.destroy();
+              closeSocket(socket);
               if (ctx.onHandshakeResolve) {
                 ctx.onHandshakeResolve(this.serializePeer(existing));
               }
               return;
             } else {
-              existing.socket.destroy();
+              closeSocket(existing.socket);
             }
           }
         }
@@ -564,12 +747,19 @@ class P2PNode extends EventEmitter {
       case "CHAT_REACTION":
       case "TYPING_STATE":
       case "ROOM_SYNC":
+      case "HISTORY_SYNC_REQUEST":
+      case "HISTORY_SYNC_RESPONSE":
+      case "DM_CALL_RING":
+      case "DM_CALL_ACCEPT":
+      case "DM_CALL_REJECT":
+      case "DM_CALL_END":
       case "VOICE_STATE":
       case "VOICE_SPEAKING":
       case "WEBRTC_SIGNAL":
       case "MEDIA_FRAME":
-      case "AUDIO_CHUNK": {
-        const senderId = ctx.getAssociatedPeerId();
+      case "AUDIO_CHUNK":
+      default: {
+        const senderId = ctx.getAssociatedPeerId() || packet.fromPeerId;
         if (!senderId) return;
         if (packet.type === "VOICE_STATE") {
           const peer = this.peers.get(senderId);
@@ -639,7 +829,7 @@ class P2PNode extends EventEmitter {
   disconnectPeer(peerId) {
     const peer = this.peers.get(peerId);
     if (peer) {
-      peer.socket.destroy();
+      closeSocket(peer.socket);
       this.peers.delete(peerId);
       this.emit("peers-updated", this.getConnectedPeersList());
       return true;
@@ -666,6 +856,8 @@ class P2PNode extends EventEmitter {
       statusEmoji: info.statusEmoji || "⚡",
       customStatus: info.customStatus || "",
       badges: Array.isArray(info.badges) ? info.badges : ["P2P Node"],
+      cryptoPubKey: info.cryptoPubKey || "",
+      keyFingerprint: info.keyFingerprint || "",
       address: peer.address,
       port: peer.port,
       addresses: peer.addresses || [peer.address],
@@ -708,13 +900,23 @@ class P2PNode extends EventEmitter {
     if (this.pingTimer) clearInterval(this.pingTimer);
     for (const peer of this.peers.values()) {
       try {
-        peer.socket.destroy();
+        closeSocket(peer.socket);
       } catch {}
     }
     this.peers.clear();
     if (this.udpSocket) {
       try {
         this.udpSocket.close();
+      } catch {}
+    }
+    if (this.wss) {
+      try {
+        this.wss.close();
+      } catch {}
+    }
+    if (this.httpServer) {
+      try {
+        this.httpServer.close();
       } catch {}
     }
     if (this.tcpServer) {
