@@ -1790,11 +1790,115 @@ export default function App() {
     };
   }, []);
 
-  // Listen for Auto-Updater status from Electron Main Process
+  const compareSemver = (a, b) => {
+    const pa = String(a || "0.0.0")
+      .replace(/^v/i, "")
+      .split("-")[0]
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+    const pb = String(b || "0.0.0")
+      .replace(/^v/i, "")
+      .split("-")[0]
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+      if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    }
+    return 0;
+  };
+
+  const checkGitHubReleaseForDevice = async (currentVer = appVersion, silent = false) => {
+    try {
+      const headers = { Accept: "application/vnd.github+json" };
+      let res = await fetch(
+        "https://api.github.com/repos/Kauanmaffeikraus/Freecord/releases/latest",
+        { headers }
+      );
+      let release = null;
+      if (res.ok) {
+        release = await res.json();
+      } else {
+        const listRes = await fetch(
+          "https://api.github.com/repos/Kauanmaffeikraus/Freecord/releases?per_page=5",
+          { headers }
+        );
+        if (listRes.ok) {
+          const list = await listRes.json();
+          if (Array.isArray(list) && list.length > 0) {
+            release = list.find((r) => !r.draft) || list[0];
+          }
+        }
+      }
+
+      if (!release || !release.tag_name) {
+        if (!silent) {
+          setUpdateStatus({ status: "not-available", version: currentVer });
+        }
+        return;
+      }
+
+      const latestVer = String(release.tag_name).replace(/^v/i, "");
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+      const isAndroidDevice = Boolean(
+        window.FreecordAndroid ||
+          window.Capacitor?.isNativePlatform?.() ||
+          /Android/i.test(ua)
+      );
+      const isLinuxDevice = !isAndroidDevice && /Linux/i.test(ua);
+
+      let matchedAsset = null;
+      if (isAndroidDevice) {
+        matchedAsset =
+          assets.find((a) => /Freecord-Android-v.*\.apk$/i.test(a.name)) ||
+          assets.find((a) => /\.apk$/i.test(a.name));
+      } else if (isLinuxDevice) {
+        matchedAsset =
+          assets.find((a) => /\.AppImage$/i.test(a.name)) ||
+          assets.find((a) => /\.deb$/i.test(a.name));
+      } else {
+        matchedAsset = assets.find((a) => /\.exe$/i.test(a.name));
+      }
+
+      if (compareSemver(latestVer, currentVer) > 0) {
+        setUpdateStatus({
+          status: "available",
+          version: latestVer,
+          downloadUrl: matchedAsset?.browser_download_url || release.html_url,
+          assetName: matchedAsset?.name || null,
+        });
+      } else if (!silent) {
+        setUpdateStatus({
+          status: "not-available",
+          version: currentVer,
+        });
+      }
+    } catch (err) {
+      if (!silent) {
+        setUpdateStatus({ status: "error", message: err.message });
+      }
+    }
+  };
+
+  // Listen for Auto-Updater status from Electron Main Process & Android Native Version
   useEffect(() => {
+    let detectedVer = "1.0.0";
+    try {
+      const androidVer = window.FreecordAndroid?.getAppVersion?.();
+      if (androidVer) {
+        detectedVer = String(androidVer);
+        setAppVersion(detectedVer);
+      }
+    } catch {}
+
     window.DiscordNative?.app?.getVersion?.().then?.((v) => {
-      if (v) setAppVersion(v);
+      if (v) {
+        detectedVer = String(v);
+        setAppVersion(detectedVer);
+      }
     });
+
     const unsub = window.DiscordNative?.updater?.onUpdateStatus?.((statusObj) => {
       if (statusObj) {
         setUpdateStatus(statusObj);
@@ -1803,24 +1907,36 @@ export default function App() {
         }
       }
     });
-    return () => unsub?.();
+
+    // Automatically check for updates on startup for Android / Web clients as well
+    const timer = setTimeout(() => {
+      if (!window.DiscordNative?.updater) {
+        checkGitHubReleaseForDevice(detectedVer, true);
+      }
+    }, 5000);
+
+    return () => {
+      clearTimeout(timer);
+      unsub?.();
+    };
   }, []);
 
   const handleCheckForUpdates = async () => {
     setIsCheckingUpdate(true);
     setUpdateStatus({ status: "checking" });
     try {
-      const res = await window.DiscordNative?.updater?.checkForUpdates?.();
-      if (res?.dev) {
-        setUpdateStatus({
-          status: "dev",
-          message: res.message || "Auto-updater operates in packaged builds.",
-        });
-      } else if (!res?.ok && res?.error) {
-        setUpdateStatus({ status: "error", message: res.error });
+      if (window.DiscordNative?.updater?.checkForUpdates) {
+        const res = await window.DiscordNative.updater.checkForUpdates();
+        if (res?.dev || (!res?.ok && res?.error)) {
+          await checkGitHubReleaseForDevice(appVersion, false);
+        } else if (res?.status === "available" || res?.status === "not-available") {
+          setUpdateStatus(res);
+        }
+      } else {
+        await checkGitHubReleaseForDevice(appVersion, false);
       }
-    } catch (err) {
-      setUpdateStatus({ status: "error", message: err.message });
+    } catch {
+      await checkGitHubReleaseForDevice(appVersion, false);
     } finally {
       setIsCheckingUpdate(false);
     }
@@ -7760,6 +7876,32 @@ return (
                     <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
                   </div>
 
+                  <div className="mobile-menu-item" onClick={() => openProfileStudio("updates")}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Download size={18} color="#38bdf8" />
+                      <span>
+                        {t.tabUpdateSettings} (v{appVersion})
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {(updateStatus?.status === "available" || updateStatus?.status === "downloaded") && (
+                        <span
+                          style={{
+                            background: "#23a55a",
+                            color: "#fff",
+                            fontSize: 10,
+                            fontWeight: 800,
+                            padding: "2px 6px",
+                            borderRadius: 999,
+                          }}
+                        >
+                          v{updateStatus.version}
+                        </span>
+                      )}
+                      <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
+                    </div>
+                  </div>
+
                   <div className="mobile-menu-item" onClick={handleToggleLanguage}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                       <Globe size={18} color="#f59e0b" />
@@ -8450,6 +8592,27 @@ return (
                         onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
                       >
                         {t.restartAndInstallBtn}
+                      </button>
+                    )}
+
+                    {updateStatus?.status === "available" && updateStatus?.downloadUrl && (
+                      <button
+                        type="button"
+                        className="btn-success"
+                        onClick={() => {
+                          if (window.FreecordAndroid?.openExternalUrl) {
+                            window.FreecordAndroid.openExternalUrl(updateStatus.downloadUrl);
+                          } else {
+                            window.open(updateStatus.downloadUrl, "_blank", "noopener,noreferrer");
+                          }
+                        }}
+                      >
+                        <Download size={14} />
+                        <span>
+                          {lang === "en"
+                            ? `Download Update (v${updateStatus.version})`
+                            : `Baixar e Instalar Atualização (v${updateStatus.version})`}
+                        </span>
                       </button>
                     )}
 

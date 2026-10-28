@@ -166,6 +166,28 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public String getAppVersion() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            } catch (Exception e) {
+                return "1.0.0";
+            }
+        }
+
+        @JavascriptInterface
+        public void openExternalUrl(final String url) {
+            if (url == null || url.isEmpty()) return;
+            runOnUiThread(() -> {
+                try {
+                    Intent browserIntent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+                    browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(browserIntent);
+                } catch (Exception ignored) {
+                }
+            });
+        }
+
+        @JavascriptInterface
         public boolean enterPipMode() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 runOnUiThread(() -> {

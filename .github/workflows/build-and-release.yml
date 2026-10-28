@@ -36,6 +36,15 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
+      - name: Sync Version from Git Tag
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          CLEAN_VER="${RAW_TAG#v}"
+          if [[ "$CLEAN_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            npm version "$CLEAN_VER" --no-git-tag-version --allow-same-version
+          fi
+
       - name: Build Web Application
         run: npm run build
 
@@ -76,6 +85,22 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
+      - name: Sync Version from Git Tag
+        id: ver
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          CLEAN_VER="${RAW_TAG#v}"
+          if [[ ! "$CLEAN_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            CLEAN_VER=$(node -p "require('./package.json').version")
+            RAW_TAG="v${CLEAN_VER}"
+          else
+            npm version "$CLEAN_VER" --no-git-tag-version --allow-same-version
+          fi
+          sed -i "s/versionName \".*\"/versionName \"${CLEAN_VER}\"/g" android/app/build.gradle
+          echo "version=${CLEAN_VER}" >> $GITHUB_OUTPUT
+          echo "tag=${RAW_TAG}" >> $GITHUB_OUTPUT
+
       - name: Build Web Application
         run: npm run build
 
@@ -90,11 +115,17 @@ jobs:
           cd ..
           mkdir -p release
           cp android/app/build/outputs/apk/debug/app-debug.apk release/Freecord-debug.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk "release/Freecord-Android-v${{ steps.ver.outputs.version }}.apk"
 
       - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          files: release/Freecord-debug.apk
+          tag_name: ${{ steps.ver.outputs.tag }}
+          draft: false
+          prerelease: false
+          files: |
+            release/Freecord-debug.apk
+            release/Freecord-Android-v${{ steps.ver.outputs.version }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
