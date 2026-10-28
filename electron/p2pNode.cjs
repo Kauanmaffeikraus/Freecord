@@ -113,12 +113,14 @@ class P2PNode extends EventEmitter {
     this.stateFile = path.join(dataDir, `freecord-state-${this.instanceId}.json`);
 
     this.profile = this.loadInitialProfile();
+    this.knownPeers = this.loadKnownPeers();
     this.tcpServer = null;
     this.tcpPort = 0;
     this.udpSocket = null;
     this.udpBoundPort = 0;
     this.beaconTimer = null;
     this.pingTimer = null;
+    this.reconnectTimer = null;
 
     // Map<peerId, { socket, info, address, port, connectedAt, rttMs, fingerprint, buffer }>
     this.peers = new Map();
@@ -194,9 +196,80 @@ class P2PNode extends EventEmitter {
         existing = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
       }
       existing.profile = this.profile;
+      existing.knownPeers = Array.from((this.knownPeers || new Map()).values());
       fs.writeFileSync(this.stateFile, JSON.stringify(existing, null, 2), "utf8");
     } catch (err) {
       console.warn("[Freecord P2P] Failed to save profile:", err.message);
+    }
+  }
+
+  loadKnownPeers() {
+    const map = new Map();
+    try {
+      if (fs.existsSync(this.stateFile)) {
+        const saved = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
+        if (Array.isArray(saved?.knownPeers)) {
+          for (const item of saved.knownPeers) {
+            if (item && item.peerId && item.peerId !== this.profile?.peerId) {
+              map.set(item.peerId, item);
+            }
+          }
+        }
+      }
+    } catch {}
+    return map;
+  }
+
+  saveKnownPeer(peerEntry, listeningTcpPort = 0) {
+    if (!peerEntry?.peerId || peerEntry.peerId === this.profile.peerId) return;
+    const prev = this.knownPeers.get(peerEntry.peerId) || {};
+    const portToSave = Number(listeningTcpPort || prev.tcpPort || 0);
+    const candidateAddrs = Array.from(
+      new Set([
+        peerEntry.address,
+        ...(Array.isArray(peerEntry.addresses) ? peerEntry.addresses : []),
+        ...(Array.isArray(prev.addresses) ? prev.addresses : []),
+      ].filter((a) => a && a !== "0.0.0.0" && a !== "WebRTC DataChannel"))
+    );
+    const updated = {
+      peerId: peerEntry.peerId,
+      username: peerEntry.info?.username || prev.username || "Peer",
+      displayName: peerEntry.info?.displayName || peerEntry.info?.username || prev.displayName || "Peer",
+      tag: peerEntry.info?.tag || prev.tag || "0000",
+      avatarColor: peerEntry.info?.avatarColor || prev.avatarColor || "#5865F2",
+      avatarUrl: peerEntry.info?.avatarUrl || prev.avatarUrl || null,
+      status: peerEntry.info?.status || "online",
+      customStatus: peerEntry.info?.customStatus || "",
+      host: peerEntry.address || prev.host || candidateAddrs[0] || "",
+      tcpPort: portToSave,
+      addresses: candidateAddrs,
+      lastSeen: Date.now(),
+    };
+    this.knownPeers.set(peerEntry.peerId, updated);
+    try {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      let existing = {};
+      if (fs.existsSync(this.stateFile)) {
+        existing = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
+      }
+      existing.profile = this.profile;
+      existing.knownPeers = Array.from(this.knownPeers.values()).slice(-30);
+      fs.writeFileSync(this.stateFile, JSON.stringify(existing, null, 2), "utf8");
+    } catch {}
+  }
+
+  reconnectKnownPeers() {
+    if (!this.knownPeers || this.knownPeers.size === 0) return;
+    for (const [peerId, rec] of this.knownPeers.entries()) {
+      if (this.peers.has(peerId)) continue;
+      const port = Number(rec.tcpPort || 0);
+      if (!port || port <= 0) continue;
+      const hosts = Array.from(
+        new Set([rec.host, ...(Array.isArray(rec.addresses) ? rec.addresses : [])].filter(Boolean))
+      );
+      for (const h of hosts.slice(0, 3)) {
+        this.connectToPeer(h, port).catch(() => {});
+      }
     }
   }
 
@@ -213,8 +286,15 @@ class P2PNode extends EventEmitter {
       this.pingConnectedPeers();
     }, 4000);
 
-    // Immediate initial beacon
-    setTimeout(() => this.broadcastPresenceBeacon(), 300);
+    this.reconnectTimer = setInterval(() => {
+      this.reconnectKnownPeers();
+    }, 7000);
+
+    // Immediate initial beacon & auto-reconnect to known peers
+    setTimeout(() => {
+      this.broadcastPresenceBeacon();
+      this.reconnectKnownPeers();
+    }, 350);
 
     return this.getNodeStatus();
   }
@@ -669,6 +749,7 @@ class P2PNode extends EventEmitter {
         };
 
         this.peers.set(remotePeerId, peerEntry);
+        this.saveKnownPeer(peerEntry, Number(packet.tcpPort || 0));
 
         if (packet.voiceChannelId) {
           if (!this.voicePresence.has(packet.voiceChannelId)) {
@@ -700,6 +781,18 @@ class P2PNode extends EventEmitter {
         }
         if (knownEndpoints.length > 0) {
           sendRaw({ type: "PEER_EXCHANGE", peers: knownEndpoints });
+        }
+
+        if (packet.type === "HELLO") {
+          sendRaw({
+            type: "HELLO_ACK",
+            profile: this.profile,
+            tcpPort: this.tcpPort,
+            addresses: getLocalIPv4Addresses().map((a) => a.address),
+            voiceChannelId: this.currentVoiceChannelId || null,
+            voiceState: this.currentVoiceState || {},
+            timestamp: Date.now(),
+          });
         }
 
         if (ctx.onHandshakeResolve) {
@@ -761,11 +854,34 @@ class P2PNode extends EventEmitter {
       default: {
         const senderId = ctx.getAssociatedPeerId() || packet.fromPeerId;
         if (!senderId) return;
+
+        // If packet is addressed to a specific 3rd peer in the mesh, relay it
+        if (packet.targetPeerId && packet.targetPeerId !== this.profile.peerId) {
+          const targetPeer = this.peers.get(packet.targetPeerId);
+          if (targetPeer) {
+            targetPeer.sendRaw({ ...packet, fromPeerId: senderId });
+          }
+          return;
+        }
+
         if (packet.type === "VOICE_STATE") {
           const peer = this.peers.get(senderId);
           if (peer) {
             peer.voiceChannelId = packet.channelId || null;
-            peer.voiceState = packet.voiceState || {};
+            peer.voiceState = { ...(peer.voiceState || {}), ...(packet.voiceState || {}), speaking: false };
+            this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "DM_CALL_RING" || packet.type === "DM_CALL_ACCEPT") {
+          const peer = this.peers.get(senderId);
+          if (peer && packet.channelId) {
+            peer.voiceChannelId = packet.channelId;
+            this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "DM_CALL_END" || packet.type === "DM_CALL_REJECT") {
+          const peer = this.peers.get(senderId);
+          if (peer && (!packet.channelId || peer.voiceChannelId === packet.channelId)) {
+            peer.voiceChannelId = null;
+            peer.voiceState = { ...(peer.voiceState || {}), speaking: false };
             this.emit("peers-updated", this.getConnectedPeersList());
           }
         } else if (packet.type === "VOICE_SPEAKING") {
@@ -791,17 +907,23 @@ class P2PNode extends EventEmitter {
   }
 
   broadcast(packet, targetPeerId = null) {
+    const enriched = {
+      fromPeerId: this.profile.peerId,
+      ...(targetPeerId ? { targetPeerId } : {}),
+      ...packet,
+    };
+
     if (targetPeerId) {
       const peer = this.peers.get(targetPeerId);
       if (peer) {
-        return peer.sendRaw(packet);
+        return peer.sendRaw(enriched);
       }
       return false;
     }
 
     let count = 0;
     for (const peer of this.peers.values()) {
-      if (peer.sendRaw(packet)) count++;
+      if (peer.sendRaw(enriched)) count++;
     }
     return count;
   }
@@ -874,15 +996,30 @@ class P2PNode extends EventEmitter {
   }
 
   getLanPeersList() {
-    return Array.from(this.discoveredLanPeers.values()).map((p) => ({
-      ...p,
-      isConnected: this.peers.has(p.peerId),
-    }));
+    const merged = new Map();
+    if (this.knownPeers) {
+      for (const [peerId, rec] of this.knownPeers.entries()) {
+        merged.set(peerId, {
+          ...rec,
+          isConnected: this.peers.has(peerId),
+          isSaved: true,
+        });
+      }
+    }
+    for (const [peerId, rec] of this.discoveredLanPeers.entries()) {
+      merged.set(peerId, {
+        ...(merged.get(peerId) || {}),
+        ...rec,
+        isConnected: this.peers.has(peerId),
+      });
+    }
+    return Array.from(merged.values());
   }
 
   getNodeStatus() {
     const localInterfaces = getLocalIPv4Addresses();
     return {
+      ok: true,
       instanceId: this.instanceId,
       profile: this.profile,
       tcpPort: this.tcpPort,
@@ -898,6 +1035,7 @@ class P2PNode extends EventEmitter {
   stop() {
     if (this.beaconTimer) clearInterval(this.beaconTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.reconnectTimer) clearInterval(this.reconnectTimer);
     for (const peer of this.peers.values()) {
       try {
         closeSocket(peer.socket);

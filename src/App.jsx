@@ -837,9 +837,10 @@ function VideoStreamView({
   return (
     <div
       style={{
+        position: "absolute",
+        inset: 0,
         width: "100%",
         height: "100%",
-        position: "relative",
         overflow: "hidden",
         backgroundColor: "#08080a",
       }}
@@ -1287,6 +1288,7 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined") return false;
     return Boolean(
+      window.FreecordAndroid ||
       window.Capacitor?.isNativePlatform?.() ||
       window.innerWidth <= 768
     );
@@ -1298,6 +1300,7 @@ export default function App() {
   useEffect(() => {
     const handleResize = () => {
       const mobile = Boolean(
+        window.FreecordAndroid ||
         window.Capacitor?.isNativePlatform?.() ||
         window.innerWidth <= 768
       );
@@ -1352,6 +1355,7 @@ export default function App() {
   const [speakingMap, setSpeakingMap] = useState({});
   const [localCameraStream, setLocalCameraStream] = useState(null);
   const [localScreenStream, setLocalScreenStream] = useState(null);
+  const [localScreenFrameUrl, setLocalScreenFrameUrl] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [peerVolumes, setPeerVolumes] = useState({});
   const [peerScreenVolumes, setPeerScreenVolumes] = useState({});
@@ -1362,6 +1366,9 @@ export default function App() {
   const [stageTheaterMode, setStageTheaterMode] = useState(false);
   const [tileMinWidth, setTileMinWidth] = useState(340);
   const [spotlightTileId, setSpotlightTileId] = useState(null);
+  const [fullscreenTileId, setFullscreenTileId] = useState(null);
+  const [inAppPipTileId, setInAppPipTileId] = useState(null);
+  const [isAndroidSystemPip, setIsAndroidSystemPip] = useState(false);
   const [tileFitMap, setTileFitMap] = useState({});
   const [tileZoomMap, setTileZoomMap] = useState({});
   const [showWebcamPipOverlay, setShowWebcamPipOverlay] = useState(true);
@@ -1592,26 +1599,26 @@ export default function App() {
       localPeerId: selfPeerIdRef.current,
       onSignalSend: (targetPeerId, signal) => {
         if (!activeVoiceChannelIdRef.current) return;
-        if (window.DiscordNative?.p2p) {
-          window.DiscordNative.p2p.send(
-            {
-              type: "WEBRTC_SIGNAL",
-              voiceChannelId: activeVoiceChannelIdRef.current,
-              signal,
-            },
-            targetPeerId
-          );
-        }
+        sendP2PPacket(
+          {
+            type: "WEBRTC_SIGNAL",
+            fromPeerId: selfPeerIdRef.current,
+            voiceChannelId: activeVoiceChannelIdRef.current,
+            signal,
+          },
+          targetPeerId
+        );
       },
       onFrameSend: (framePacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
-        if (!activeCh || !window.DiscordNative?.p2p) return;
+        if (!activeCh) return;
         const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
           if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
-            window.DiscordNative.p2p.send(
+            sendP2PPacket(
               {
                 type: "MEDIA_FRAME",
+                fromPeerId: selfPeerIdRef.current,
                 voiceChannelId: activeCh,
                 ...framePacket,
               },
@@ -1622,13 +1629,14 @@ export default function App() {
       },
       onAudioChunkSend: (chunkPacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
-        if (!activeCh || !window.DiscordNative?.p2p) return;
+        if (!activeCh) return;
         const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
           if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
-            window.DiscordNative.p2p.send(
+            sendP2PPacket(
               {
                 type: "AUDIO_CHUNK",
+                fromPeerId: selfPeerIdRef.current,
                 voiceChannelId: activeCh,
                 ...chunkPacket,
               },
@@ -1646,8 +1654,9 @@ export default function App() {
         if (!activeVoiceChannelIdRef.current && who !== "self") return;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
         if (who === "self" && activeVoiceChannelIdRef.current) {
-          window.DiscordNative?.p2p?.send({
+          sendP2PPacket({
             type: "VOICE_SPEAKING",
+            fromPeerId: selfPeerIdRef.current,
             voiceChannelId: activeVoiceChannelIdRef.current,
             speaking: Boolean(isSpeaking),
           });
@@ -1659,26 +1668,43 @@ export default function App() {
       onStatsUpdate: (stats) => {
         setRtcStats(stats);
       },
+      onLocalScreenFrame: (dataUrl) => {
+        setLocalScreenFrameUrl(dataUrl || null);
+      },
       onDataChannelMessage: (fromPeerId, packet) => {
         if (packet.type === "HELLO" && packet.profile) {
           const p = packet.profile;
           setConnectedPeers((prev) => {
+            const existing = prev.find((item) => item.peerId === p.peerId);
             const clean = prev.filter((item) => item.peerId !== p.peerId && !item.peerId.startsWith("manual_offer_"));
             return [
               ...clean,
               {
+                ...(existing || {}),
                 ...p,
-                address: "WebRTC DataChannel",
-                port: 0,
-                rttMs: 5,
-                fingerprint: "WEBRTC-DIRECT-SDP",
-                voiceChannelId: null,
-                voiceState: {},
+                address: existing?.address || "WebRTC DataChannel",
+                port: existing?.port || 0,
+                rttMs: existing?.rttMs || 5,
+                fingerprint: existing?.fingerprint || "WEBRTC-DIRECT-SDP",
+                voiceChannelId: packet.voiceChannelId ?? existing?.voiceChannelId ?? null,
+                voiceState: packet.voiceState || existing?.voiceState || {},
               },
             ];
           });
+          setTimeout(() => {
+            sendP2PPacket({ type: "ROOM_SYNC", rooms: roomsRef.current }, p.peerId);
+            requestHistorySyncFromPeer(p.peerId);
+            if (activeVoiceChannelIdRef.current) {
+              syncVoiceStateP2P(activeVoiceChannelIdRef.current, {
+                muted: selfMute,
+                deafened: selfDeafen,
+                videoEnabled,
+                screenSharing,
+              });
+            }
+          }, 150);
         }
-        handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId });
+        handleIncomingP2PEventRef.current?.({ ...packet, fromPeerId: packet.fromPeerId || fromPeerId });
       },
       onManualPeerConnected: (peerId, profileOverride = null) => {
         const conn = engine.connections.get(peerId);
@@ -1690,20 +1716,34 @@ export default function App() {
           avatarColor: "#57F287",
         };
         setConnectedPeers((prev) => {
+          const existing = prev.find((p) => p.peerId === manualProf.peerId);
           const clean = prev.filter((p) => p.peerId !== manualProf.peerId && !p.peerId.startsWith("manual_offer_"));
           return [
             ...clean,
             {
+              ...(existing || {}),
               ...manualProf,
-              address: "WebRTC DataChannel",
-              port: 0,
-              rttMs: 5,
-              fingerprint: "WEBRTC-DIRECT-SDP",
-              voiceChannelId: null,
-              voiceState: {},
+              address: existing?.address || "WebRTC DataChannel",
+              port: existing?.port || 0,
+              rttMs: existing?.rttMs || 5,
+              fingerprint: existing?.fingerprint || "WEBRTC-DIRECT-SDP",
+              voiceChannelId: existing?.voiceChannelId || null,
+              voiceState: existing?.voiceState || {},
             },
           ];
         });
+        setTimeout(() => {
+          sendP2PPacket({ type: "ROOM_SYNC", rooms: roomsRef.current }, manualProf.peerId);
+          requestHistorySyncFromPeer(manualProf.peerId);
+          if (activeVoiceChannelIdRef.current) {
+            syncVoiceStateP2P(activeVoiceChannelIdRef.current, {
+              muted: selfMute,
+              deafened: selfDeafen,
+              videoEnabled,
+              screenSharing,
+            });
+          }
+        }, 200);
       },
     });
 
@@ -1750,11 +1790,115 @@ export default function App() {
     };
   }, []);
 
-  // Listen for Auto-Updater status from Electron Main Process
+  const compareSemver = (a, b) => {
+    const pa = String(a || "0.0.0")
+      .replace(/^v/i, "")
+      .split("-")[0]
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+    const pb = String(b || "0.0.0")
+      .replace(/^v/i, "")
+      .split("-")[0]
+      .split(".")
+      .map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+      if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    }
+    return 0;
+  };
+
+  const checkGitHubReleaseForDevice = async (currentVer = appVersion, silent = false) => {
+    try {
+      const headers = { Accept: "application/vnd.github+json" };
+      let res = await fetch(
+        "https://api.github.com/repos/Kauanmaffeikraus/Freecord/releases/latest",
+        { headers }
+      );
+      let release = null;
+      if (res.ok) {
+        release = await res.json();
+      } else {
+        const listRes = await fetch(
+          "https://api.github.com/repos/Kauanmaffeikraus/Freecord/releases?per_page=5",
+          { headers }
+        );
+        if (listRes.ok) {
+          const list = await listRes.json();
+          if (Array.isArray(list) && list.length > 0) {
+            release = list.find((r) => !r.draft) || list[0];
+          }
+        }
+      }
+
+      if (!release || !release.tag_name) {
+        if (!silent) {
+          setUpdateStatus({ status: "not-available", version: currentVer });
+        }
+        return;
+      }
+
+      const latestVer = String(release.tag_name).replace(/^v/i, "");
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+      const isAndroidDevice = Boolean(
+        window.FreecordAndroid ||
+          window.Capacitor?.isNativePlatform?.() ||
+          /Android/i.test(ua)
+      );
+      const isLinuxDevice = !isAndroidDevice && /Linux/i.test(ua);
+
+      let matchedAsset = null;
+      if (isAndroidDevice) {
+        matchedAsset =
+          assets.find((a) => /Freecord-Android-v.*\.apk$/i.test(a.name)) ||
+          assets.find((a) => /\.apk$/i.test(a.name));
+      } else if (isLinuxDevice) {
+        matchedAsset =
+          assets.find((a) => /\.AppImage$/i.test(a.name)) ||
+          assets.find((a) => /\.deb$/i.test(a.name));
+      } else {
+        matchedAsset = assets.find((a) => /\.exe$/i.test(a.name));
+      }
+
+      if (compareSemver(latestVer, currentVer) > 0) {
+        setUpdateStatus({
+          status: "available",
+          version: latestVer,
+          downloadUrl: matchedAsset?.browser_download_url || release.html_url,
+          assetName: matchedAsset?.name || null,
+        });
+      } else if (!silent) {
+        setUpdateStatus({
+          status: "not-available",
+          version: currentVer,
+        });
+      }
+    } catch (err) {
+      if (!silent) {
+        setUpdateStatus({ status: "error", message: err.message });
+      }
+    }
+  };
+
+  // Listen for Auto-Updater status from Electron Main Process & Android Native Version
   useEffect(() => {
+    let detectedVer = "1.0.0";
+    try {
+      const androidVer = window.FreecordAndroid?.getAppVersion?.();
+      if (androidVer) {
+        detectedVer = String(androidVer);
+        setAppVersion(detectedVer);
+      }
+    } catch {}
+
     window.DiscordNative?.app?.getVersion?.().then?.((v) => {
-      if (v) setAppVersion(v);
+      if (v) {
+        detectedVer = String(v);
+        setAppVersion(detectedVer);
+      }
     });
+
     const unsub = window.DiscordNative?.updater?.onUpdateStatus?.((statusObj) => {
       if (statusObj) {
         setUpdateStatus(statusObj);
@@ -1763,24 +1907,36 @@ export default function App() {
         }
       }
     });
-    return () => unsub?.();
+
+    // Automatically check for updates on startup for Android / Web clients as well
+    const timer = setTimeout(() => {
+      if (!window.DiscordNative?.updater) {
+        checkGitHubReleaseForDevice(detectedVer, true);
+      }
+    }, 5000);
+
+    return () => {
+      clearTimeout(timer);
+      unsub?.();
+    };
   }, []);
 
   const handleCheckForUpdates = async () => {
     setIsCheckingUpdate(true);
     setUpdateStatus({ status: "checking" });
     try {
-      const res = await window.DiscordNative?.updater?.checkForUpdates?.();
-      if (res?.dev) {
-        setUpdateStatus({
-          status: "dev",
-          message: res.message || "Auto-updater operates in packaged builds.",
-        });
-      } else if (!res?.ok && res?.error) {
-        setUpdateStatus({ status: "error", message: res.error });
+      if (window.DiscordNative?.updater?.checkForUpdates) {
+        const res = await window.DiscordNative.updater.checkForUpdates();
+        if (res?.dev || (!res?.ok && res?.error)) {
+          await checkGitHubReleaseForDevice(appVersion, false);
+        } else if (res?.status === "available" || res?.status === "not-available") {
+          setUpdateStatus(res);
+        }
+      } else {
+        await checkGitHubReleaseForDevice(appVersion, false);
       }
-    } catch (err) {
-      setUpdateStatus({ status: "error", message: err.message });
+    } catch {
+      await checkGitHubReleaseForDevice(appVersion, false);
     } finally {
       setIsCheckingUpdate(false);
     }
@@ -1791,21 +1947,38 @@ export default function App() {
     if (!window.DiscordNative?.p2p) return;
 
     const p2p = window.DiscordNative.p2p;
+    const mergeTcpAndManualSdpPeers = (tcpList, prevList) => {
+      const tcpPeers = Array.isArray(tcpList) ? tcpList : [];
+      const tcpIds = new Set(tcpPeers.map((p) => p.peerId));
+      const manualSdpPeers = (prevList || []).filter(
+        (p) =>
+          p?.peerId &&
+          !tcpIds.has(p.peerId) &&
+          (p.address === "WebRTC DataChannel" || p.fingerprint === "WEBRTC-DIRECT-SDP") &&
+          voiceEngineRef.current?.connections?.get(p.peerId)?.pc?.connectionState !== "closed"
+      );
+      return [...tcpPeers, ...manualSdpPeers];
+    };
+
     p2p.getStatus().then((status) => {
       if (status) {
         setNodeStatus(status);
-        setConnectedPeers(status.connectedPeers || []);
+        setConnectedPeers((prev) => mergeTcpAndManualSdpPeers(status.connectedPeers, prev));
         setLanPeers(status.lanPeers || []);
       }
     });
 
     const unsubPeers = p2p.onPeersUpdated((peers) => {
-      setConnectedPeers(peers || []);
+      setConnectedPeers((prev) => mergeTcpAndManualSdpPeers(peers, prev));
       if (Array.isArray(peers)) {
+        const activeCh = activeVoiceChannelIdRef.current;
         setSpeakingMap((prev) => {
+          if (!activeCh) return {};
           const next = { ...prev };
           for (const p of peers) {
-            if (p.voiceState && typeof p.voiceState.speaking === "boolean") {
+            if (p.voiceChannelId !== activeCh) {
+              next[p.peerId] = false;
+            } else if (p.voiceState && typeof p.voiceState.speaking === "boolean") {
               next[p.peerId] = p.voiceState.speaking;
             }
           }
@@ -1862,18 +2035,51 @@ export default function App() {
   }, [rooms, activeVoiceChannelId, selfMute, selfDeafen, videoEnabled, screenSharing]);
 
   const sendP2PPacket = (packet, targetPeerId = null) => {
+    const enrichedPacket = {
+      fromPeerId: selfPeerIdRef.current,
+      ...(targetPeerId ? { targetPeerId } : {}),
+      ...packet,
+    };
+    let sentOverPrimaryTransport = false;
     // 1. Send via Electron Native P2P if available
     if (window.DiscordNative?.p2p) {
-      window.DiscordNative.p2p.send(packet, targetPeerId);
+      window.DiscordNative.p2p.send(enrichedPacket, targetPeerId);
+      sentOverPrimaryTransport = true;
     }
-    // 2. Send via WebRTC DataChannel (always forwards to connected browser/mobile peers)
-    voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
-    // 3. Send via Mobile WebSocket if connected to a desktop node
+    // 2. Send via Mobile WebSocket if connected to a desktop node
+    if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
+      try {
+        mobileWsRef.current.send(JSON.stringify(enrichedPacket));
+        sentOverPrimaryTransport = true;
+      } catch {}
+    }
+    // 3. Always deliver to manual WebRTC SDP DataChannel peers (and fallback to all DataChannels if no TCP/WS is active)
+    voiceEngineRef.current?.sendViaDataChannel(
+      enrichedPacket,
+      targetPeerId,
+      sentOverPrimaryTransport
+    );
+  };
+
+  const syncVoiceStateP2P = (channelId, voiceState = {}) => {
+    let sentOverPrimaryTransport = false;
+    if (window.DiscordNative?.p2p) {
+      window.DiscordNative.p2p.setVoiceState(channelId, voiceState);
+      sentOverPrimaryTransport = true;
+    }
+    const packet = {
+      type: "VOICE_STATE",
+      fromPeerId: selfPeerIdRef.current,
+      channelId: channelId || null,
+      voiceState: voiceState || {},
+    };
     if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
       try {
         mobileWsRef.current.send(JSON.stringify(packet));
+        sentOverPrimaryTransport = true;
       } catch {}
     }
+    voiceEngineRef.current?.sendViaDataChannel(packet, null, sentOverPrimaryTransport);
   };
 
   const requestHistorySyncFromPeer = (targetPeerId = null) => {
@@ -2134,13 +2340,73 @@ export default function App() {
         break;
       }
 
+      case "VOICE_STATE": {
+        if (!event.fromPeerId) break;
+        const nextChannelId = event.channelId || null;
+        const nextVoiceState = event.voiceState || {};
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId
+              ? {
+                  ...p,
+                  voiceChannelId: nextChannelId,
+                  voiceState: { ...(p.voiceState || {}), ...nextVoiceState },
+                }
+              : p
+          )
+        );
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || nextChannelId !== activeCh) {
+          setSpeakingMap((prev) => {
+            if (!prev[event.fromPeerId]) return prev;
+            return { ...prev, [event.fromPeerId]: false };
+          });
+        } else if (typeof nextVoiceState.speaking === "boolean") {
+          setSpeakingMap((prev) => ({
+            ...prev,
+            [event.fromPeerId]: nextVoiceState.speaking,
+          }));
+        }
+        if (nextChannelId) {
+          setOutgoingDmCall((prev) => {
+            if (prev && prev.channelId === nextChannelId) {
+              if (notificationsEnabledRef.current) {
+                playSynthesizedUiSound("call_join");
+              }
+              return null;
+            }
+            return prev;
+          });
+        }
+        break;
+      }
+
       case "DM_CALL_RING": {
         if (!event.fromPeerId || !event.channelId) break;
-        if (activeVoiceChannelIdRef.current === event.channelId) {
+        // If we are already in this call (or simultaneously calling the same peer), pair immediately!
+        if (
+          activeVoiceChannelIdRef.current === event.channelId ||
+          outgoingDmCallRef.current?.channelId === event.channelId
+        ) {
+          setOutgoingDmCall(null);
+          setIncomingDmCall(null);
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? { ...p, voiceChannelId: event.channelId }
+                : p
+            )
+          );
           sendP2PPacket(
             { type: "DM_CALL_ACCEPT", channelId: event.channelId },
             event.fromPeerId
           );
+          syncVoiceStateP2P(event.channelId, {
+            muted: selfMute,
+            deafened: selfDeafen,
+            videoEnabled,
+            screenSharing,
+          });
           break;
         }
         const caller =
@@ -2150,6 +2416,13 @@ export default function App() {
             displayName: "Peer",
             username: "peer",
           };
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId
+              ? { ...p, voiceChannelId: event.channelId }
+              : p
+          )
+        );
         setIncomingDmCall({
           fromPeerId: event.fromPeerId,
           caller,
@@ -2175,6 +2448,16 @@ export default function App() {
       case "DM_CALL_ACCEPT": {
         if (!event.channelId) break;
         setOutgoingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        setIncomingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        if (event.fromPeerId) {
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? { ...p, voiceChannelId: event.channelId }
+                : p
+            )
+          );
+        }
         if (notificationsEnabledRef.current) {
           playSynthesizedUiSound("call_join");
         }
@@ -2197,6 +2480,15 @@ export default function App() {
           }
           return prev;
         });
+        if (event.fromPeerId) {
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId && p.voiceChannelId === event.channelId
+                ? { ...p, voiceChannelId: null }
+                : p
+            )
+          );
+        }
         if (notificationsEnabledRef.current) {
           playSynthesizedUiSound("call_leave");
         }
@@ -2213,25 +2505,31 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.signal) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId && senderPeer.voiceChannelId !== activeCh) {
-          break;
-        }
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
+              ? { ...p, voiceChannelId: activeCh }
+              : p
+          )
+        );
         voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
         break;
       }
 
       case "VOICE_SPEAKING": {
-        if (event.fromPeerId) {
-          setSpeakingMap((prev) => ({
-            ...prev,
-            [event.fromPeerId]: Boolean(event.speaking),
-          }));
-          voiceEngineRef.current?.setRemotePeerSpeaking(
-            event.fromPeerId,
-            Boolean(event.speaking)
-          );
-        }
+        const activeCh = activeVoiceChannelIdRef.current;
+        if (!activeCh || !event.fromPeerId) break;
+        if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
+        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
+        if (!senderPeer || senderPeer.voiceChannelId !== activeCh) break;
+        setSpeakingMap((prev) => ({
+          ...prev,
+          [event.fromPeerId]: Boolean(event.speaking),
+        }));
+        voiceEngineRef.current?.setRemotePeerSpeaking(
+          event.fromPeerId,
+          Boolean(event.speaking)
+        );
         break;
       }
 
@@ -2239,8 +2537,6 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.kind || !event.dataUrl) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
         voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
         break;
       }
@@ -2249,8 +2545,6 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.pcmBase64) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
         voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
         break;
       }
@@ -2290,6 +2584,12 @@ export default function App() {
 
     for (const peer of connectedPeers) {
       if (peer.voiceChannelId === activeVoiceChannelId) {
+        setOutgoingDmCall((prev) =>
+          prev && prev.channelId === activeVoiceChannelId ? null : prev
+        );
+        setIncomingDmCall((prev) =>
+          prev && prev.channelId === activeVoiceChannelId ? null : prev
+        );
         const existing = engine.connections.get(peer.peerId);
         if (
           !existing ||
@@ -2532,6 +2832,9 @@ export default function App() {
     activeVoiceChannelIdRef.current = voiceChannel.id;
     engine.setInVoiceChannel(true);
     setActiveVoiceChannelId(voiceChannel.id);
+    try {
+      window.FreecordAndroid?.startVoiceCallService?.(voiceChannel.name || "Chamada P2P");
+    } catch {}
     await engine.startLocalVoice();
 
     const vState = {
@@ -2540,9 +2843,9 @@ export default function App() {
       videoEnabled,
       screenSharing,
     };
-    window.DiscordNative?.p2p?.setVoiceState(voiceChannel.id, vState);
+    syncVoiceStateP2P(voiceChannel.id, vState);
 
-    for (const peer of connectedPeers) {
+    for (const peer of connectedPeersRef.current) {
       if (peer.voiceChannelId === voiceChannel.id) {
         await engine.negotiateWithPeer(peer.peerId);
       }
@@ -2556,6 +2859,9 @@ export default function App() {
     }
     setOutgoingDmCall(null);
     activeVoiceChannelIdRef.current = null;
+    try {
+      window.FreecordAndroid?.stopVoiceCallService?.();
+    } catch {}
     const engine = voiceEngineRef.current;
     engine?.setInVoiceChannel(false);
     engine?.destroyAll();
@@ -2564,12 +2870,18 @@ export default function App() {
     setScreenSharing(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
+    setLocalScreenFrameUrl(null);
     setSpotlightTileId(null);
+    setFullscreenTileId(null);
+    setInAppPipTileId(null);
+    try {
+      window.FreecordAndroid?.setImmersiveFullscreen?.(false);
+    } catch {}
     setRemoteStreams({});
     setSpeakingMap({});
     setMicInputLevel(0);
-    window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
-    window.DiscordNative?.p2p?.setVoiceState(null, { speaking: false });
+    sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
+    syncVoiceStateP2P(null, { speaking: false });
   };
 
   const handleStartDmCall = async (peer, withVideo = false) => {
@@ -2580,6 +2892,13 @@ export default function App() {
 
     const dmCallId = getDmCallChannelId(peer.peerId);
     const peerLabel = peer.displayName || peer.username || "Peer";
+
+    // If the target peer is already ringing us on this exact DM call channel, accept it directly!
+    if (incomingDmCall && incomingDmCall.channelId === dmCallId) {
+      await handleAcceptDmCall(withVideo);
+      return;
+    }
+
     await handleJoinVoiceChannel({
       id: dmCallId,
       name: `PV @${peerLabel}`,
@@ -2591,10 +2910,16 @@ export default function App() {
       }, 200);
     }
 
-    const peerAlreadyInCall = connectedPeers.some(
+    const peerAlreadyInCall = connectedPeersRef.current.some(
       (p) => p.peerId === peer.peerId && p.voiceChannelId === dmCallId
     );
-    if (!peerAlreadyInCall) {
+    if (peerAlreadyInCall) {
+      setOutgoingDmCall(null);
+      sendP2PPacket(
+        { type: "DM_CALL_ACCEPT", channelId: dmCallId },
+        peer.peerId
+      );
+    } else {
       setOutgoingDmCall({
         peer,
         channelId: dmCallId,
@@ -2617,8 +2942,15 @@ export default function App() {
     if (!incomingDmCall) return;
     const { fromPeerId, caller, channelId } = incomingDmCall;
     setIncomingDmCall(null);
+    setOutgoingDmCall(null);
     setSelectedRoomId("dm_hub");
     setSelectedDmPeerId(fromPeerId);
+
+    setConnectedPeers((prev) =>
+      prev.map((p) =>
+        p.peerId === fromPeerId ? { ...p, voiceChannelId: channelId } : p
+      )
+    );
 
     const callerLabel = caller?.displayName || caller?.username || "Peer";
     await handleJoinVoiceChannel({
@@ -2664,10 +2996,10 @@ export default function App() {
     voiceEngineRef.current?.setSelfMute(next);
     if (next) {
       setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
-      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+      sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
     }
     if (activeVoiceChannelId) {
-      window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+      syncVoiceStateP2P(activeVoiceChannelId, {
         muted: next,
         deafened: selfDeafen,
         videoEnabled,
@@ -2683,11 +3015,11 @@ export default function App() {
     if (next) {
       setSelfMute(true);
       setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
-      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+      sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
     }
     voiceEngineRef.current?.setSelfDeafen(next);
     if (activeVoiceChannelId) {
-      window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+      syncVoiceStateP2P(activeVoiceChannelId, {
         muted: next ? true : selfMute,
         deafened: next,
         videoEnabled,
@@ -2719,7 +3051,7 @@ export default function App() {
         setLocalCameraStream(camStream);
       }
       if (activeVoiceChannelId) {
-        window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+        syncVoiceStateP2P(activeVoiceChannelId, {
           muted: selfMute,
           deafened: selfDeafen,
           videoEnabled: !videoEnabled,
@@ -2736,11 +3068,12 @@ export default function App() {
       await voiceEngineRef.current?.setDesktopSource(null);
       setScreenSharing(false);
       setLocalScreenStream(null);
+      setLocalScreenFrameUrl(null);
       if (spotlightTileId === "self_screen") {
         setSpotlightTileId(null);
       }
       if (activeVoiceChannelId) {
-        window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+        syncVoiceStateP2P(activeVoiceChannelId, {
           muted: selfMute,
           deafened: selfDeafen,
           videoEnabled,
@@ -2871,7 +3204,7 @@ export default function App() {
         setSpotlightTileId("self_screen");
         setShowScreenPicker(false);
         if (activeVoiceChannelId) {
-          window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+          syncVoiceStateP2P(activeVoiceChannelId, {
             muted: selfMute,
             deafened: selfDeafen,
             videoEnabled,
@@ -2879,8 +3212,17 @@ export default function App() {
           });
         }
       }
-    } catch {
+    } catch (err) {
       setShowScreenPicker(false);
+      const msg = String(err?.message || "");
+      if (msg && !msg.toLowerCase().includes("cancel") && !msg.toLowerCase().includes("permission denied")) {
+        pushToast({
+          authorName: "Compartilhamento de Tela",
+          avatarColor: "#f23f43",
+          channelName: "Sistema",
+          text: msg,
+        });
+      }
     }
   };
 
@@ -2900,6 +3242,15 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   };
 
+  useEffect(() => {
+    window.__onAndroidPipChanged = (inPip) => {
+      setIsAndroidSystemPip(Boolean(inPip));
+    };
+    return () => {
+      window.__onAndroidPipChanged = null;
+    };
+  }, []);
+
   const toggleElementFullscreen = (el) => {
     if (!el) return;
     if (document.fullscreenElement) {
@@ -2909,16 +3260,63 @@ export default function App() {
     }
   };
 
-  const toggleVideoPiP = async (videoId) => {
+  const handleToggleTileFullscreen = (tile) => {
+    if (!tile) return;
+    const isLeaving = fullscreenTileId === tile.id;
+    const nextId = isLeaving ? null : tile.id;
+    setFullscreenTileId(nextId);
+    if (!isLeaving) {
+      setSpotlightTileId(tile.id);
+    }
     try {
-      const videoEl = document.getElementById(videoId);
-      if (!videoEl) return;
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else if (typeof videoEl.requestPictureInPicture === "function") {
-        await videoEl.requestPictureInPicture();
+      window.FreecordAndroid?.setImmersiveFullscreen?.(!isLeaving);
+    } catch {}
+    try {
+      if (isLeaving) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.().catch(() => {});
+        }
+      } else if (!window.FreecordAndroid) {
+        const el = document.getElementById(`tile_box_${tile.id}`) || document.documentElement;
+        el?.requestFullscreen?.().catch(() => {});
       }
     } catch {}
+  };
+
+  const handleToggleTilePiP = async (tile, videoId) => {
+    if (!tile) return;
+    setSpotlightTileId(tile.id);
+    setInAppPipTileId((prev) => (prev === tile.id ? null : tile.id));
+
+    // 1. On Android Native App: enter native Android Picture-in-Picture floating window
+    if (window.FreecordAndroid?.enterPipMode) {
+      setFullscreenTileId(tile.id);
+      setInAppPipTileId(tile.id);
+      try {
+        window.FreecordAndroid.enterPipMode();
+        return;
+      } catch {}
+    }
+
+    // 2. Try standard HTML5 Video PiP on Desktop / Browser if supported
+    try {
+      const videoEl = document.getElementById(videoId);
+      if (videoEl && typeof videoEl.requestPictureInPicture === "function") {
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+          return;
+        } else if (videoEl.readyState >= 1) {
+          await videoEl.requestPictureInPicture();
+          return;
+        }
+      }
+    } catch {}
+
+    // 3. Fallback: minimize mobile call stage into the floating In-App Video PiP player
+    if (isMobile && mobileTab === "call") {
+      setInAppPipTileId(tile.id);
+      setMobileTab("servers");
+    }
   };
 
   const connectViaWebSocket = (host, port) => {
@@ -2934,6 +3332,7 @@ export default function App() {
         mobileWsRef.current = ws;
 
         let resolved = false;
+        let remoteWsPeerId = null;
         const timer = setTimeout(() => {
           if (!resolved) {
             resolved = true;
@@ -2950,6 +3349,13 @@ export default function App() {
               cryptoPubKey: cryptoIdentity.publicKey,
               keyFingerprint: cryptoIdentity.keyFingerprint,
             },
+            voiceChannelId: activeVoiceChannelIdRef.current || null,
+            voiceState: {
+              muted: selfMute,
+              deafened: selfDeafen,
+              videoEnabled,
+              screenSharing,
+            },
             timestamp: Date.now(),
           }));
         };
@@ -2957,13 +3363,31 @@ export default function App() {
         ws.onmessage = (e) => {
           try {
             const packet = JSON.parse(e.data);
+            if (packet.type === "PING") {
+              try {
+                ws.send(JSON.stringify({ type: "PONG", sentAt: packet.sentAt }));
+              } catch {}
+              return;
+            }
+            if (packet.type === "PROFILE_UPDATE" && packet.profile?.peerId) {
+              setConnectedPeers((prev) =>
+                prev.map((p) =>
+                  p.peerId === packet.profile.peerId
+                    ? { ...p, ...packet.profile }
+                    : p
+                )
+              );
+              return;
+            }
             if (packet.type === "HELLO" || packet.type === "HELLO_ACK") {
               const remoteProf = packet.profile;
               if (remoteProf && remoteProf.peerId) {
+                remoteWsPeerId = remoteProf.peerId;
                 const peerEntry = {
                   ...remoteProf,
                   address: host,
                   port: Number(port),
+                  addresses: Array.isArray(packet.addresses) ? packet.addresses : [host],
                   rttMs: 2,
                   fingerprint: remoteProf.keyFingerprint || "P2P-LAN-DIRECT",
                   voiceChannelId: packet.voiceChannelId || null,
@@ -2975,13 +3399,48 @@ export default function App() {
                   return [...clean, peerEntry];
                 });
 
-                // Save to remembered LAN peers
+                setLanPeers((prev) => {
+                  const filtered = prev.filter((p) => p.peerId !== remoteProf.peerId);
+                  return [
+                    {
+                      ...remoteProf,
+                      host,
+                      tcpPort: Number(packet.tcpPort || port),
+                      addresses: Array.isArray(packet.addresses) ? packet.addresses : [host],
+                      lastSeen: Date.now(),
+                      isConnected: true,
+                    },
+                    ...filtered,
+                  ];
+                });
+
+                // Save to remembered LAN peers (persisting all candidate LAN IPs for fast auto-reconnect)
                 try {
                   const saved = JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+                  const existingEntry = saved.find((s) => s.peerId === remoteProf.peerId || (s.host === host && s.port === Number(port)));
+                  const mergedAddresses = Array.from(
+                    new Set([
+                      host,
+                      ...(Array.isArray(packet.addresses) ? packet.addresses : []),
+                      ...(Array.isArray(existingEntry?.addresses) ? existingEntry.addresses : []),
+                    ].filter(Boolean))
+                  );
                   const updated = [
-                    { host, port: Number(port), name: remoteProf.displayName || remoteProf.username, peerId: remoteProf.peerId, tag: remoteProf.tag, timestamp: Date.now() },
-                    ...saved.filter((s) => s.host !== host || s.port !== Number(port))
-                  ].slice(0, 8);
+                    {
+                      host,
+                      port: Number(packet.tcpPort || port),
+                      addresses: mergedAddresses,
+                      name: remoteProf.displayName || remoteProf.username,
+                      peerId: remoteProf.peerId,
+                      tag: remoteProf.tag,
+                      avatarColor: remoteProf.avatarColor,
+                      avatarUrl: remoteProf.avatarUrl || null,
+                      timestamp: Date.now(),
+                    },
+                    ...saved.filter(
+                      (s) => s.peerId !== remoteProf.peerId && (s.host !== host || s.port !== Number(port))
+                    ),
+                  ].slice(0, 12);
                   localStorage.setItem("freecord_saved_lan_peers", JSON.stringify(updated));
                   setSavedLanPeers(updated);
                 } catch {}
@@ -3000,25 +3459,49 @@ export default function App() {
                       cryptoPubKey: cryptoIdentity.publicKey,
                       keyFingerprint: cryptoIdentity.keyFingerprint,
                     },
+                    voiceChannelId: activeVoiceChannelIdRef.current || null,
+                    voiceState: {
+                      muted: selfMute,
+                      deafened: selfDeafen,
+                      videoEnabled,
+                      screenSharing,
+                    },
                     timestamp: Date.now(),
                   }));
                 }
 
                 setTimeout(() => {
+                  try {
+                    if (ws.readyState === 1) {
+                      ws.send(
+                        JSON.stringify({
+                          type: "ROOM_SYNC",
+                          fromPeerId: selfPeerIdRef.current,
+                          rooms: roomsRef.current,
+                        })
+                      );
+                    }
+                  } catch {}
                   requestHistorySyncFromPeer(remoteProf.peerId);
-                }, 300);
+                }, 250);
               }
+              return;
             }
 
+            const enrichedPacket = {
+              ...packet,
+              fromPeerId: packet.fromPeerId || remoteWsPeerId || host,
+            };
+
             // Route WebRTC signaling and media frames
-            if (packet.type === "VOICE_SIGNAL") {
-              voiceEngineRef.current?.handleIncomingSignal(packet.fromPeerId || host, packet.signal);
-            } else if (packet.type === "VOICE_MEDIA_FRAME") {
-              voiceEngineRef.current?.handleIncomingMediaFrame(packet.fromPeerId || host, packet);
-            } else if (packet.type === "VOICE_AUDIO_CHUNK") {
-              voiceEngineRef.current?.handleIncomingAudioChunk(packet.fromPeerId || host, packet);
+            if (enrichedPacket.type === "VOICE_SIGNAL") {
+              voiceEngineRef.current?.handleIncomingSignal(enrichedPacket.fromPeerId, enrichedPacket.signal);
+            } else if (enrichedPacket.type === "VOICE_MEDIA_FRAME") {
+              voiceEngineRef.current?.handleIncomingMediaFrame(enrichedPacket.fromPeerId, enrichedPacket);
+            } else if (enrichedPacket.type === "VOICE_AUDIO_CHUNK") {
+              voiceEngineRef.current?.handleIncomingAudioChunk(enrichedPacket.fromPeerId, enrichedPacket);
             } else {
-              handleIncomingP2PEventRef.current?.(packet);
+              handleIncomingP2PEventRef.current?.(enrichedPacket);
             }
           } catch (err) {
             console.warn("[Freecord WS] Error processing packet:", err);
@@ -3034,7 +3517,29 @@ export default function App() {
         };
 
         ws.onclose = () => {
-          setConnectedPeers((prev) => prev.filter((p) => p.address !== host || p.port !== Number(port)));
+          if (mobileWsRef.current === ws) {
+            mobileWsRef.current = null;
+          }
+          // When user is in an active voice/video call or switching apps on Android,
+          // do NOT immediately tear down the call or remove the peer! Reconnect fast instead.
+          if (activeVoiceChannelIdRef.current) {
+            setTimeout(() => {
+              if (!mobileWsRef.current || mobileWsRef.current.readyState > 1) {
+                connectViaWebSocket(host, port).catch(() => {});
+              }
+            }, 600);
+            setTimeout(() => {
+              if (!mobileWsRef.current || mobileWsRef.current.readyState !== 1) {
+                setConnectedPeers((prev) =>
+                  prev.filter((p) => p.address !== host || p.port !== Number(port))
+                );
+              }
+            }, 15000);
+          } else {
+            setConnectedPeers((prev) =>
+              prev.filter((p) => p.address !== host || p.port !== Number(port))
+            );
+          }
         };
       } catch (err) {
         reject(err);
@@ -3128,36 +3633,23 @@ export default function App() {
         targetSubnets.add(s)
       );
 
-      const isPrivateIPv4 = (candidate) => {
-        const m = String(candidate).match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-        if (!m) return false;
-        const [a, b, c, d] = m.slice(1).map(Number);
-        if ([a, b, c, d].some((oct) => oct < 0 || oct > 255)) return false;
-        if (a === 10) return true;
-        if (a === 172 && b >= 16 && b <= 31) return true;
-        if (a === 192 && b === 168) return true;
-        return false;
-      };
-
       const probeHost = async (ip, port = 49155) => {
-        if (!isPrivateIPv4(ip)) return null;
-        const safePort = Number(port);
-        if (!Number.isInteger(safePort) || safePort < 1 || safePort > 65535) return null;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 550);
         try {
-          const res = await fetch(`http://${ip}:${safePort}/api/discover`, {
+          const res = await fetch(`http://${ip}:${port}/api/discover`, {
             method: "GET",
             signal: controller.signal,
           });
           clearTimeout(timer);
           if (!res.ok) return null;
           const data = await res.json();
-          if (data?.ok && data?.profile?.peerId && data.profile.peerId !== selfPeerIdRef.current) {
+          if (data?.profile?.peerId && data.profile.peerId !== selfPeerIdRef.current) {
+            const peerPort = Number(data.tcpPort || port);
             const peerObj = {
               ...data.profile,
               host: ip,
-              tcpPort: Number(data.tcpPort || safePort),
+              tcpPort: peerPort,
               lastSeen: Date.now(),
               isConnected: connectedPeersRef.current.some(
                 (cp) => cp.peerId === data.profile.peerId || cp.address === ip
@@ -3167,6 +3659,24 @@ export default function App() {
               const filtered = prev.filter((p) => p.peerId !== peerObj.peerId);
               return [peerObj, ...filtered];
             });
+
+            // Auto-reconnect if this peer was previously paired & saved by the user!
+            const savedList = (() => {
+              try {
+                return JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+              } catch {
+                return [];
+              }
+            })();
+            const isRemembered = savedList.some(
+              (s) => s.peerId === peerObj.peerId || s.host === ip
+            );
+            if (
+              isRemembered &&
+              (!mobileWsRef.current || mobileWsRef.current.readyState !== 1)
+            ) {
+              connectViaWebSocket(ip, peerPort).catch(() => {});
+            }
             return peerObj;
           }
         } catch {
@@ -3178,14 +3688,17 @@ export default function App() {
       // Probe saved hosts first on port 49155 and their remembered port
       const priorityTargets = [];
       for (const sp of savedLanPeers || []) {
-        if (sp?.host) {
-          priorityTargets.push([sp.host, 49155]);
-          if (sp.port && sp.port !== 49155) priorityTargets.push([sp.host, sp.port]);
+        const candidateHosts = Array.from(
+          new Set([sp?.host, ...(Array.isArray(sp?.addresses) ? sp.addresses : [])].filter(Boolean))
+        );
+        for (const h of candidateHosts) {
+          priorityTargets.push([h, 49155]);
+          if (sp.port && sp.port !== 49155) priorityTargets.push([h, sp.port]);
         }
       }
       await Promise.all(priorityTargets.map(([h, p]) => probeHost(h, p)));
 
-      // Probe primary subnet IPs in fast batches of 32
+      // Probe primary subnet IPs in fast batches of 36
       const primarySubnets = Array.from(targetSubnets).slice(0, 3);
       for (const subnet of primarySubnets) {
         const ips = [];
@@ -3202,6 +3715,64 @@ export default function App() {
       setIsScanningLanHttp(false);
     }
   };
+
+  // Automatic Background Reconnection to Remembered Peers on Startup & Network Changes (Android / Browser)
+  useEffect(() => {
+    if (window.DiscordNative?.p2p) return;
+    let cancelled = false;
+    let isAttempting = false;
+
+    const tryAutoReconnectSavedPeers = async (withFullSubnetScan = false) => {
+      if (cancelled || isAttempting) return;
+      if (mobileWsRef.current && mobileWsRef.current.readyState === 1) return;
+
+      isAttempting = true;
+      try {
+        const saved = JSON.parse(localStorage.getItem("freecord_saved_lan_peers") || "[]");
+        if (Array.isArray(saved) && saved.length > 0) {
+          for (const sp of saved) {
+            if (cancelled) break;
+            if (mobileWsRef.current && mobileWsRef.current.readyState === 1) break;
+            const rawHosts = Array.from(
+              new Set([sp.host, ...(Array.isArray(sp.addresses) ? sp.addresses : [])].filter(Boolean))
+            );
+            const sortedEndpoints = sortEndpointsByLanPriority(
+              rawHosts.map((h) => `${h}:${sp.port || 49155}`)
+            );
+            for (const ep of sortedEndpoints.slice(0, 4)) {
+              const [cHost, cPortStr] = ep.split(":");
+              const cPort = Number(cPortStr || sp.port || 49155);
+              if (!cHost || !cPort) continue;
+              try {
+                await connectViaWebSocket(cHost, cPort);
+                return;
+              } catch {}
+            }
+          }
+        }
+        if (withFullSubnetScan && (!mobileWsRef.current || mobileWsRef.current.readyState !== 1)) {
+          await scanLanForDesktopNodes();
+        }
+      } catch {
+      } finally {
+        isAttempting = false;
+      }
+    };
+
+    const initialTimer = setTimeout(() => {
+      tryAutoReconnectSavedPeers(true);
+    }, 450);
+
+    const intervalId = setInterval(() => {
+      tryAutoReconnectSavedPeers(false);
+    }, 6500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initialTimer);
+      clearInterval(intervalId);
+    };
+  }, []);
 
   // Phase 1: Generate LAN Pairing QR Code when Connect Modal opens
   useEffect(() => {
@@ -3830,10 +4401,18 @@ export default function App() {
         setNodeStatus((prev) => ({ ...prev, profile: updated }));
       }
     } else {
+      const mergedProfile = { ...nodeStatus.profile, ...sanitized };
       setNodeStatus((prev) => ({
         ...prev,
-        profile: { ...prev.profile, ...sanitized },
+        profile: mergedProfile,
       }));
+      try {
+        localStorage.setItem("freecord_web_profile", JSON.stringify(mergedProfile));
+      } catch {}
+      sendP2PPacket({
+        type: "PROFILE_UPDATE",
+        profile: mergedProfile,
+      });
     }
     setShowProfileModal(false);
   };
@@ -3858,7 +4437,7 @@ export default function App() {
           ...p,
           displayName: p.displayName || p.username,
           isSelf: false,
-          speaking: Boolean(speakingMap[p.peerId]),
+          speaking: Boolean(activeVoiceChannelId === vcId && speakingMap[p.peerId]),
           screenSharing: Boolean(p.voiceState?.screenSharing),
           videoEnabled: Boolean(p.voiceState?.videoEnabled),
           muted: Boolean(p.voiceState?.muted),
@@ -3877,13 +4456,14 @@ export default function App() {
     const tiles = [];
 
     // 1. Local Go Live Screen Share Tile (if active)
-    if (screenSharing && localScreenStream) {
+    if (screenSharing && (localScreenStream || localScreenFrameUrl)) {
       tiles.push({
         id: "self_screen",
         peerId: nodeStatus.profile.peerId,
         isSelf: true,
         kind: "screen",
         stream: localScreenStream,
+        frameUrl: localScreenFrameUrl,
         profile: nodeStatus.profile,
         label: `${selfDisplayName} ${t.youSuffix}`,
         badge: `${t.screenBadge} • ${screenResolution.toUpperCase()} ${screenFps}FPS`,
@@ -3995,7 +4575,7 @@ export default function App() {
           : peer.voiceState?.screenSharing && !hasRemoteScreen
           ? t.liveBadge
           : null,
-        speaking: Boolean(speakingMap[peer.peerId]),
+        speaking: Boolean(!isCallPending && speakingMap[peer.peerId]),
       });
     }
 
@@ -4005,6 +4585,7 @@ export default function App() {
     outgoingDmCall,
     screenSharing,
     localScreenStream,
+    localScreenFrameUrl,
     videoEnabled,
     localCameraStream,
     nodeStatus.profile,
@@ -4036,6 +4617,23 @@ export default function App() {
     () => stageTiles.find((tile) => tile.id === spotlightTileId) || null,
     [stageTiles, spotlightTileId]
   );
+
+  const activeFullscreenTile = useMemo(
+    () => stageTiles.find((tile) => tile.id === fullscreenTileId) || null,
+    [stageTiles, fullscreenTileId]
+  );
+
+  const activeInAppPipTile = useMemo(() => {
+    if (inAppPipTileId) {
+      const found = stageTiles.find((tile) => tile.id === inAppPipTileId);
+      if (found && (found.stream || found.frameUrl)) return found;
+    }
+    return (
+      stageTiles.find((tile) => tile.kind === "screen" && (tile.stream || tile.frameUrl)) ||
+      stageTiles.find((tile) => tile.kind === "camera" && (tile.stream || tile.frameUrl)) ||
+      null
+    );
+  }, [stageTiles, inAppPipTileId]);
 
   // Find an active webcam stream to display in the floating PiP overlay when a Screen Share is spotlighted
   const activeWebcamTileForPip = useMemo(() => {
@@ -4071,6 +4669,9 @@ export default function App() {
         className={`video-tile ${tile.speaking ? "speaking" : ""} ${
           isSpotlight ? "spotlight-tile" : ""
         }`}
+        onClick={() =>
+          setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+        }
         onDoubleClick={() =>
           setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
         }
@@ -4142,28 +4743,26 @@ export default function App() {
                 <span>{Math.round(zoom * 100)}%</span>
               </button>
 
-              {tile.stream && (
-                <button
-                  type="button"
-                  className="tile-ctrl-btn"
-                  onClick={() => toggleVideoPiP(videoDomId)}
-                  title={t.pipBtn}
-                >
-                  <PictureInPicture2 size={12} />
-                </button>
-              )}
+              <button
+                type="button"
+                className={`tile-ctrl-btn ${inAppPipTileId === tile.id ? "active" : ""}`}
+                onClick={() => handleToggleTilePiP(tile, videoDomId)}
+                title={t.pipBtn}
+              >
+                <PictureInPicture2 size={12} />
+                <span>PiP</span>
+              </button>
             </>
           )}
 
           <button
             type="button"
-            className="tile-ctrl-btn"
-            onClick={() =>
-              toggleElementFullscreen(document.getElementById(`tile_box_${tile.id}`))
-            }
+            className={`tile-ctrl-btn ${fullscreenTileId === tile.id ? "active" : ""}`}
+            onClick={() => handleToggleTileFullscreen(tile)}
             title={t.tileFullscreenBtn}
           >
-            <Maximize2 size={12} />
+            {fullscreenTileId === tile.id ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span>{lang === "en" ? "Full" : "Tela Cheia"}</span>
           </button>
         </div>
 
@@ -6405,7 +7004,11 @@ return (
                   <div className="peer-card-left">
                     <UserAvatar
                       profile={peer}
-                      speaking={Boolean(speakingMap[peer.peerId])}
+                      speaking={Boolean(
+                        activeVoiceChannelId &&
+                          peer.voiceChannelId === activeVoiceChannelId &&
+                          speakingMap[peer.peerId]
+                      )}
                       showStatus={true}
                     />
                     <div className="peer-card-meta">
@@ -7071,13 +7674,77 @@ return (
                   </button>
                 </div>
 
-                <div className="mobile-call-grid">
-                  {stageTiles.map((tile) => (
-                    <div key={tile.id} className="mobile-call-tile">
-                      {renderStageTile(tile, false)}
+                {/* Quick Foreground Focus Bar on Mobile: switch between Grid and any Camera/Screen Share */}
+                {stageTiles.length > 0 && (
+                  <div className="mobile-call-focus-bar">
+                    <button
+                      type="button"
+                      className={`mobile-focus-pill ${!activeSpotlightTile ? "active" : ""}`}
+                      onClick={() => setSpotlightTileId(null)}
+                    >
+                      <LayoutGrid size={13} />
+                      <span>{lang === "en" ? "Grid" : "Grade"}</span>
+                    </button>
+                    {stageTiles.map((tile) => (
+                      <button
+                        key={`focus_pill_${tile.id}`}
+                        type="button"
+                        className={`mobile-focus-pill ${spotlightTileId === tile.id ? "active" : ""}`}
+                        onClick={() =>
+                          setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+                        }
+                      >
+                        {tile.kind === "screen" ? <Monitor size={13} /> : <Video size={13} />}
+                        <span>
+                          {tile.kind === "screen"
+                            ? `${lang === "en" ? "Screen" : "Tela"}: ${tile.label}`
+                            : `${lang === "en" ? "Cam" : "Câmera"}: ${tile.label}`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {activeSpotlightTile ? (
+                  <div className="mobile-call-spotlight-layout">
+                    <div className="mobile-call-spotlight-main">
+                      {renderStageTile(activeSpotlightTile, true)}
+
+                      {/* Floating PiP Webcam when focusing a Screen Share on Mobile */}
+                      {activeSpotlightTile.kind === "screen" &&
+                        activeWebcamTileForPip &&
+                        showWebcamPipOverlay && (
+                          <div
+                            className="floating-webcam-pip mobile-floating-pip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSpotlightTileId(activeWebcamTileForPip.id);
+                            }}
+                            title={lang === "en" ? "Tap to focus camera" : "Toque para focar câmera"}
+                          >
+                            <VideoStreamView
+                              videoId={`mobile_pip_${activeWebcamTileForPip.id}`}
+                              stream={activeWebcamTileForPip.stream}
+                              frameUrl={activeWebcamTileForPip.frameUrl}
+                              muted={true}
+                              fitMode="cover"
+                            />
+                            <div className="floating-webcam-pip-label">
+                              📷 {activeWebcamTileForPip.label}
+                            </div>
+                          </div>
+                        )}
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ) : (
+                  <div className="mobile-call-grid">
+                    {stageTiles.map((tile) => (
+                      <div key={tile.id} className="mobile-call-tile">
+                        {renderStageTile(tile, false)}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="mobile-call-controls">
                   <button
@@ -7209,6 +7876,32 @@ return (
                     <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
                   </div>
 
+                  <div className="mobile-menu-item" onClick={() => openProfileStudio("updates")}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <Download size={18} color="#38bdf8" />
+                      <span>
+                        {t.tabUpdateSettings} (v{appVersion})
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {(updateStatus?.status === "available" || updateStatus?.status === "downloaded") && (
+                        <span
+                          style={{
+                            background: "#23a55a",
+                            color: "#fff",
+                            fontSize: 10,
+                            fontWeight: 800,
+                            padding: "2px 6px",
+                            borderRadius: 999,
+                          }}
+                        >
+                          v{updateStatus.version}
+                        </span>
+                      )}
+                      <ChevronLeft size={16} style={{ transform: "rotate(180deg)", color: "var(--text-muted)" }} />
+                    </div>
+                  </div>
+
                   <div className="mobile-menu-item" onClick={handleToggleLanguage}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                       <Globe size={18} color="#f59e0b" />
@@ -7240,6 +7933,53 @@ return (
               </div>
             )}
           </div>
+
+          {/* Floating In-App Video/Screen PiP Mini-Player when outside Call Tab */}
+          {activeVoiceChannelId && mobileTab !== "call" && activeInAppPipTile && (
+            <div
+              className="in-app-floating-pip-player"
+              onClick={() => {
+                setSpotlightTileId(activeInAppPipTile.id);
+                setMobileTab("call");
+              }}
+            >
+              <VideoStreamView
+                videoId={`in_app_pip_${activeInAppPipTile.id}`}
+                stream={activeInAppPipTile.stream}
+                frameUrl={activeInAppPipTile.frameUrl}
+                muted={true}
+                fitMode="contain"
+              />
+              <div className="in-app-floating-pip-bar" onClick={(e) => e.stopPropagation()}>
+                <span className="in-app-floating-pip-title">
+                  {activeInAppPipTile.kind === "screen" ? "🖥️" : "📷"} {activeInAppPipTile.label}
+                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {window.FreecordAndroid?.enterPipMode && (
+                    <button
+                      type="button"
+                      className="tile-ctrl-btn"
+                      onClick={() => handleToggleTilePiP(activeInAppPipTile, `in_app_pip_${activeInAppPipTile.id}`)}
+                      title="PiP"
+                    >
+                      <PictureInPicture2 size={11} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="tile-ctrl-btn"
+                    onClick={() => {
+                      setSpotlightTileId(activeInAppPipTile.id);
+                      setMobileTab("call");
+                    }}
+                    title="Expandir"
+                  >
+                    <Maximize2 size={11} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Floating Mini-Call Bar */}
           {activeVoiceChannelId && mobileTab !== "call" && (
@@ -7372,6 +8112,27 @@ return (
           )}
         </div>
       )}
+
+      {/* True Edge-to-Edge Fullscreen Video/Screen Overlay (and Android System PiP view) */}
+      {(activeFullscreenTile || (isAndroidSystemPip && (activeSpotlightTile || activeInAppPipTile))) && (() => {
+        const fsTile = activeFullscreenTile || activeSpotlightTile || activeInAppPipTile;
+        if (!fsTile) return null;
+        return (
+          <div className={`true-fullscreen-stage-overlay ${isAndroidSystemPip ? "android-pip-mode" : ""}`}>
+            {renderStageTile(fsTile, true)}
+            {!isAndroidSystemPip && (
+              <button
+                type="button"
+                className="true-fullscreen-exit-btn"
+                onClick={() => handleToggleTileFullscreen(fsTile)}
+              >
+                <Minimize2 size={16} />
+                <span>{lang === "en" ? "Exit Fullscreen" : "Sair da Tela Cheia"}</span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Modal: Inspected User Profile Card Popout */}
       {inspectedProfile && (
@@ -7831,6 +8592,27 @@ return (
                         onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
                       >
                         {t.restartAndInstallBtn}
+                      </button>
+                    )}
+
+                    {updateStatus?.status === "available" && updateStatus?.downloadUrl && (
+                      <button
+                        type="button"
+                        className="btn-success"
+                        onClick={() => {
+                          if (window.FreecordAndroid?.openExternalUrl) {
+                            window.FreecordAndroid.openExternalUrl(updateStatus.downloadUrl);
+                          } else {
+                            window.open(updateStatus.downloadUrl, "_blank", "noopener,noreferrer");
+                          }
+                        }}
+                      >
+                        <Download size={14} />
+                        <span>
+                          {lang === "en"
+                            ? `Download Update (v${updateStatus.version})`
+                            : `Baixar e Instalar Atualização (v${updateStatus.version})`}
+                        </span>
                       </button>
                     )}
 
@@ -8741,8 +9523,16 @@ return (
                     <button
                       className="btn-primary"
                       onClick={async () => {
+                        const myEndpoints = sortEndpointsByLanPriority(
+                          nodeStatus.connectionStrings || []
+                        );
                         const res = await voiceEngineRef.current?.createManualInviteOffer(
-                          nodeStatus.profile
+                          {
+                            ...nodeStatus.profile,
+                            cryptoPubKey: cryptoIdentity.publicKey,
+                            keyFingerprint: cryptoIdentity.keyFingerprint,
+                          },
+                          myEndpoints
                         );
                         if (res) setGeneratedInviteCode(res.inviteCode);
                       }}
@@ -8782,10 +9572,70 @@ return (
                     style={{ marginTop: 8 }}
                     onClick={async () => {
                       try {
+                        const myEndpoints = sortEndpointsByLanPriority(
+                          nodeStatus.connectionStrings || []
+                        );
                         const res = await voiceEngineRef.current?.acceptManualInviteCode(
                           incomingInviteInput,
-                          nodeStatus.profile
+                          {
+                            ...nodeStatus.profile,
+                            cryptoPubKey: cryptoIdentity.publicKey,
+                            keyFingerprint: cryptoIdentity.keyFingerprint,
+                          },
+                          myEndpoints
                         );
+                        const remoteEndpoints = sortEndpointsByLanPriority(
+                          res?.remoteProfile?.endpoints || []
+                        );
+                        if (res?.remoteProfile && remoteEndpoints.length > 0) {
+                          const [primaryHost, primaryPortStr] = remoteEndpoints[0].split(":");
+                          const primaryPort = Number(primaryPortStr || 49155);
+                          if (primaryHost && primaryPort) {
+                            try {
+                              const saved = JSON.parse(
+                                localStorage.getItem("freecord_saved_lan_peers") || "[]"
+                              );
+                              const allAddrs = remoteEndpoints
+                                .map((ep) => ep.split(":")[0])
+                                .filter(Boolean);
+                              const updated = [
+                                {
+                                  host: primaryHost,
+                                  port: primaryPort,
+                                  addresses: allAddrs,
+                                  name:
+                                    res.remoteProfile.displayName ||
+                                    res.remoteProfile.username ||
+                                    "Peer",
+                                  peerId: res.remoteProfile.peerId,
+                                  tag: res.remoteProfile.tag || "0000",
+                                  timestamp: Date.now(),
+                                },
+                                ...saved.filter(
+                                  (s) =>
+                                    s.peerId !== res.remoteProfile.peerId &&
+                                    (s.host !== primaryHost || s.port !== primaryPort)
+                                ),
+                              ].slice(0, 12);
+                              localStorage.setItem(
+                                "freecord_saved_lan_peers",
+                                JSON.stringify(updated)
+                              );
+                              setSavedLanPeers(updated);
+                            } catch {}
+                            // Background LAN upgrade if reachable on local Wi-Fi
+                            for (const ep of remoteEndpoints.slice(0, 3)) {
+                              const [cHost, cPortStr] = ep.split(":");
+                              const cPort = Number(cPortStr || 49155);
+                              if (cHost && cPort) {
+                                handleConnectByHostPort(cHost, cPort)
+                                  .then(() => {})
+                                  .catch(() => {});
+                                break;
+                              }
+                            }
+                          }
+                        }
                         if (res.mode === "answer-generated") {
                           setGeneratedAnswerCode(res.answerCode);
                           setConnectStatusMsg({
@@ -8797,8 +9647,21 @@ return (
                           });
                           if (res.remoteProfile) {
                             setConnectedPeers((prev) => {
-                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
-                              return [...clean, res.remoteProfile];
+                              const existing = prev.find(
+                                (p) => p.peerId === res.remoteProfile.peerId
+                              );
+                              const clean = prev.filter(
+                                (p) => p.peerId !== res.remoteProfile.peerId
+                              );
+                              return [
+                                ...clean,
+                                {
+                                  ...(existing || {}),
+                                  ...res.remoteProfile,
+                                  voiceChannelId: existing?.voiceChannelId || null,
+                                  voiceState: existing?.voiceState || {},
+                                },
+                              ];
                             });
                           }
                         } else {
@@ -8811,8 +9674,21 @@ return (
                           });
                           if (res.remoteProfile) {
                             setConnectedPeers((prev) => {
-                              const clean = prev.filter((p) => p.peerId !== res.remoteProfile.peerId);
-                              return [...clean, res.remoteProfile];
+                              const existing = prev.find(
+                                (p) => p.peerId === res.remoteProfile.peerId
+                              );
+                              const clean = prev.filter(
+                                (p) => p.peerId !== res.remoteProfile.peerId
+                              );
+                              return [
+                                ...clean,
+                                {
+                                  ...(existing || {}),
+                                  ...res.remoteProfile,
+                                  voiceChannelId: existing?.voiceChannelId || null,
+                                  voiceState: existing?.voiceState || {},
+                                },
+                              ];
                             });
                           }
                           setIncomingInviteInput("");

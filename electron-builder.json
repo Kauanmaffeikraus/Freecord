@@ -15,9 +15,11 @@
   "publish": {
     "provider": "github",
     "owner": "Kauanmaffeikraus",
-    "repo": "Freecord"
+    "repo": "Freecord",
+    "releaseType": "release"
   },
   "win": {
+    "artifactName": "${productName}-Setup-${version}.${ext}",
     "target": [
       {
         "target": "nsis",
@@ -36,6 +38,7 @@
     "shortcutName": "Freecord"
   },
   "linux": {
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "target": [
       {
         "target": "AppImage",
