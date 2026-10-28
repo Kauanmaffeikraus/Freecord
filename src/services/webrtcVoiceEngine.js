@@ -1665,14 +1665,23 @@ export class WebRTCVoiceEngine {
 
   bindDataChannel(conn, dc) {
     conn.dataChannel = dc;
+    const isManualSdpPeer =
+      Boolean(conn.manualProfile) ||
+      Boolean(conn.pendingManualOffer) ||
+      String(conn.peerId).startsWith("manual_") ||
+      String(conn.peerId).startsWith("webrtc_");
+
     dc.onopen = () => {
+      if (!isManualSdpPeer) return;
       try {
         if (this.localProfile) {
-          dc.send(JSON.stringify({
-            type: "HELLO",
-            profile: this.localProfile,
-            timestamp: Date.now(),
-          }));
+          dc.send(
+            JSON.stringify({
+              type: "HELLO",
+              profile: this.localProfile,
+              timestamp: Date.now(),
+            })
+          );
         }
       } catch {}
       this.onManualPeerConnected?.(conn.peerId, conn.manualProfile);

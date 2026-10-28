@@ -787,14 +787,26 @@ class P2PNode extends EventEmitter {
           const peer = this.peers.get(senderId);
           if (peer) {
             peer.voiceChannelId = packet.channelId || null;
-            peer.voiceState = packet.voiceState || {};
+            peer.voiceState = { ...(peer.voiceState || {}), ...(packet.voiceState || {}), speaking: false };
+            this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "DM_CALL_RING" || packet.type === "DM_CALL_ACCEPT") {
+          const peer = this.peers.get(senderId);
+          if (peer && packet.channelId) {
+            peer.voiceChannelId = packet.channelId;
+            this.emit("peers-updated", this.getConnectedPeersList());
+          }
+        } else if (packet.type === "DM_CALL_END" || packet.type === "DM_CALL_REJECT") {
+          const peer = this.peers.get(senderId);
+          if (peer && (!packet.channelId || peer.voiceChannelId === packet.channelId)) {
+            peer.voiceChannelId = null;
+            peer.voiceState = { ...(peer.voiceState || {}), speaking: false };
             this.emit("peers-updated", this.getConnectedPeersList());
           }
         } else if (packet.type === "VOICE_SPEAKING") {
           const peer = this.peers.get(senderId);
           if (peer) {
             peer.voiceState = { ...(peer.voiceState || {}), speaking: Boolean(packet.speaking) };
-            this.emit("peers-updated", this.getConnectedPeersList());
           }
         }
         this.emit("p2p-event", {
