@@ -332,6 +332,11 @@ const I18N = {
     tileFullscreenBtn: "Fullscreen",
     pipBtn: "Popout PiP",
     webcamPipToggle: "Webcam PiP Overlay",
+    hideWebcamBtn: "Hide Cam",
+    showWebcamBtn: "Show Cam",
+    hideAllWebcamsBtn: "Hide Webcams",
+    showAllWebcamsBtn: "Show Webcams",
+    webcamHiddenBadge: "WEBCAM HIDDEN",
     fitContainBtn: "Fit",
     fitCoverBtn: "Fill",
     cameraBadge: "WEBCAM",
@@ -579,6 +584,11 @@ const I18N = {
     tileFullscreenBtn: "Tela Cheia",
     pipBtn: "Janela PiP",
     webcamPipToggle: "Webcam PiP Flutuante",
+    hideWebcamBtn: "Ocultar Câm",
+    showWebcamBtn: "Ver Câm",
+    hideAllWebcamsBtn: "Ocultar Webcams",
+    showAllWebcamsBtn: "Mostrar Webcams",
+    webcamHiddenBadge: "WEBCAM OCULTA",
     fitContainBtn: "Ajustar",
     fitCoverBtn: "Preencher",
     cameraBadge: "WEBCAM",
@@ -1371,9 +1381,21 @@ export default function App() {
   const [isAndroidSystemPip, setIsAndroidSystemPip] = useState(false);
   const [tileFitMap, setTileFitMap] = useState({});
   const [tileZoomMap, setTileZoomMap] = useState({});
+  const [hiddenWebcamsMap, setHiddenWebcamsMap] = useState({});
+  const [hideAllWebcams, setHideAllWebcams] = useState(false);
   const [showWebcamPipOverlay, setShowWebcamPipOverlay] = useState(true);
   const [webcamPipWidth, setWebcamPipWidth] = useState(230);
   const stageContainerRef = useRef(null);
+
+  const togglePeerWebcamHidden = (peerId) => {
+    if (!peerId) return;
+    if (hideAllWebcams) {
+      setHideAllWebcams(false);
+      setHiddenWebcamsMap((prev) => ({ ...prev, [peerId]: false }));
+    } else {
+      setHiddenWebcamsMap((prev) => ({ ...prev, [peerId]: !prev[peerId] }));
+    }
+  };
 
   // Modals
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -4498,15 +4520,21 @@ export default function App() {
     }
 
     // 2. Local Webcam / Avatar Tile (always separate from Screen Share so both show simultaneously)
+    const hasSelfCam = Boolean(videoEnabled && localCameraStream);
+    const isSelfCamHidden = Boolean(
+      hasSelfCam && (hideAllWebcams || hiddenWebcamsMap[nodeStatus.profile.peerId])
+    );
     tiles.push({
       id: "self_camera",
       peerId: nodeStatus.profile.peerId,
       isSelf: true,
       kind: "camera",
-      stream: videoEnabled ? localCameraStream : null,
+      hasCameraFeed: hasSelfCam,
+      webcamHidden: isSelfCamHidden,
+      stream: hasSelfCam && !isSelfCamHidden ? localCameraStream : null,
       profile: nodeStatus.profile,
       label: `${selfDisplayName} ${t.youSuffix}`,
-      badge: videoEnabled ? t.cameraBadge : null,
+      badge: hasSelfCam ? (isSelfCamHidden ? t.webcamHiddenBadge : t.cameraBadge) : null,
       speaking: Boolean(speakingMap[nodeStatus.profile.peerId]),
     });
 
@@ -4560,6 +4588,10 @@ export default function App() {
         (peerCameraStream && peerCameraStream.getVideoTracks().length > 0) ||
         Boolean(peerCameraFrameUrl);
 
+      const isPeerCamHidden = Boolean(
+        hasRemoteCamera && (hideAllWebcams || hiddenWebcamsMap[peer.peerId])
+      );
+
       const peerName = peer.displayName || peer.username;
 
       if (hasRemoteScreen) {
@@ -4587,17 +4619,23 @@ export default function App() {
         peerId: peer.peerId,
         isSelf: false,
         kind: "camera",
+        hasCameraFeed: hasRemoteCamera,
+        webcamHidden: isPeerCamHidden,
         stream:
-          peerCameraStream && peerCameraStream.getVideoTracks().length > 0
+          !isPeerCamHidden &&
+          peerCameraStream &&
+          peerCameraStream.getVideoTracks().length > 0
             ? peerCameraStream
             : null,
-        frameUrl: peerCameraFrameUrl,
+        frameUrl: !isPeerCamHidden ? peerCameraFrameUrl : null,
         profile: peer,
         label: peerName,
         badge: isCallPending
           ? "📞 Chamando..."
           : hasRemoteCamera
-          ? t.cameraBadge
+          ? isPeerCamHidden
+            ? t.webcamHiddenBadge
+            : t.cameraBadge
           : peer.voiceState?.screenSharing && !hasRemoteScreen
           ? t.liveBadge
           : null,
@@ -4621,8 +4659,15 @@ export default function App() {
     speakingMap,
     connectedPeers,
     remoteStreams,
+    hideAllWebcams,
+    hiddenWebcamsMap,
     lang,
   ]);
+
+  const hasAnyActiveWebcam = useMemo(
+    () => stageTiles.some((tItem) => tItem.kind === "camera" && tItem.hasCameraFeed),
+    [stageTiles]
+  );
 
   // Automatically spotlight a remote screen share when it starts if nothing is currently spotlighted
   useEffect(() => {
@@ -4717,15 +4762,43 @@ export default function App() {
             }
           />
         ) : (
-          <UserAvatar
-            profile={tile.profile}
-            speaking={tile.speaking}
-            onClick={() => setInspectedProfile(tile.profile)}
-            style={{ width: isSpotlight ? 96 : 68, height: isSpotlight ? 96 : 68, fontSize: isSpotlight ? 32 : 24 }}
-          />
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 10,
+            }}
+          >
+            <UserAvatar
+              profile={tile.profile}
+              speaking={tile.speaking}
+              onClick={() => setInspectedProfile(tile.profile)}
+              style={{
+                width: isSpotlight ? 96 : 68,
+                height: isSpotlight ? 96 : 68,
+                fontSize: isSpotlight ? 32 : 24,
+              }}
+            />
+            {tile.webcamHidden && (
+              <button
+                type="button"
+                className="tile-ctrl-btn active"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePeerWebcamHidden(tile.peerId);
+                }}
+                title={t.showWebcamBtn}
+              >
+                <Video size={12} />
+                <span>{t.showWebcamBtn}</span>
+              </button>
+            )}
+          </div>
         )}
 
-        {/* Top-Right Hover Controls: Spotlight/Focus, Fit/Fill, Zoom, PiP, Fullscreen */}
+        {/* Top-Right Hover Controls: Spotlight/Focus, Hide/Show Webcam, Fit/Fill, Zoom, PiP, Fullscreen */}
         <div className="video-tile-actions" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
@@ -4738,6 +4811,18 @@ export default function App() {
             {spotlightTileId === tile.id ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
             <span>{spotlightTileId === tile.id ? t.unspotlightBtn : t.spotlightBtn}</span>
           </button>
+
+          {tile.kind === "camera" && tile.hasCameraFeed && (
+            <button
+              type="button"
+              className={`tile-ctrl-btn ${tile.webcamHidden ? "active" : ""}`}
+              onClick={() => togglePeerWebcamHidden(tile.peerId)}
+              title={tile.webcamHidden ? t.showWebcamBtn : t.hideWebcamBtn}
+            >
+              {tile.webcamHidden ? <Video size={12} /> : <VideoOff size={12} />}
+              <span>{tile.webcamHidden ? t.showWebcamBtn : t.hideWebcamBtn}</span>
+            </button>
+          )}
 
           {hasVisualMedia && (
             <>
@@ -4840,6 +4925,15 @@ export default function App() {
                     {["P", "M", "G"][idx]}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className="tile-ctrl-btn"
+                  style={{ padding: "2px 5px", fontSize: 9 }}
+                  onClick={() => togglePeerWebcamHidden(activeWebcamTileForPip.peerId)}
+                  title={t.hideWebcamBtn}
+                >
+                  <VideoOff size={10} />
+                </button>
               </div>
             </div>
           )}
@@ -5088,6 +5182,19 @@ export default function App() {
                         >
                           <PictureInPicture2 size={14} />
                           <span>{t.webcamPipToggle}</span>
+                        </button>
+                      )}
+
+                      {/* Hide / Show All Webcams Toggle */}
+                      {hasAnyActiveWebcam && (
+                        <button
+                          type="button"
+                          className={hideAllWebcams ? "btn-primary" : "btn-secondary"}
+                          onClick={() => setHideAllWebcams((v) => !v)}
+                          title={hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}
+                        >
+                          {hideAllWebcams ? <Video size={14} /> : <VideoOff size={14} />}
+                          <span>{hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}</span>
                         </button>
                       )}
 
@@ -6519,6 +6626,19 @@ return (
                         </button>
                       )}
 
+                      {/* Hide / Show All Webcams Toggle */}
+                      {hasAnyActiveWebcam && (
+                        <button
+                          type="button"
+                          className={hideAllWebcams ? "btn-primary" : "btn-secondary"}
+                          onClick={() => setHideAllWebcams((v) => !v)}
+                          title={hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}
+                        >
+                          {hideAllWebcams ? <Video size={14} /> : <VideoOff size={14} />}
+                          <span>{hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}</span>
+                        </button>
+                      )}
+
                       {/* Theater Mode Toggle */}
                       <button
                         type="button"
@@ -7728,6 +7848,16 @@ return (
                         </span>
                       </button>
                     ))}
+                    {hasAnyActiveWebcam && (
+                      <button
+                        type="button"
+                        className={`mobile-focus-pill ${hideAllWebcams ? "active" : ""}`}
+                        onClick={() => setHideAllWebcams((v) => !v)}
+                      >
+                        {hideAllWebcams ? <Video size={13} /> : <VideoOff size={13} />}
+                        <span>{hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}</span>
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -7735,31 +7865,6 @@ return (
                   <div className="mobile-call-spotlight-layout">
                     <div className="mobile-call-spotlight-main">
                       {renderStageTile(activeSpotlightTile, true)}
-
-                      {/* Floating PiP Webcam when focusing a Screen Share on Mobile */}
-                      {activeSpotlightTile.kind === "screen" &&
-                        activeWebcamTileForPip &&
-                        showWebcamPipOverlay && (
-                          <div
-                            className="floating-webcam-pip mobile-floating-pip"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSpotlightTileId(activeWebcamTileForPip.id);
-                            }}
-                            title={lang === "en" ? "Tap to focus camera" : "Toque para focar câmera"}
-                          >
-                            <VideoStreamView
-                              videoId={`mobile_pip_${activeWebcamTileForPip.id}`}
-                              stream={activeWebcamTileForPip.stream}
-                              frameUrl={activeWebcamTileForPip.frameUrl}
-                              muted={true}
-                              fitMode="cover"
-                            />
-                            <div className="floating-webcam-pip-label">
-                              📷 {activeWebcamTileForPip.label}
-                            </div>
-                          </div>
-                        )}
                     </div>
                   </div>
                 ) : (
