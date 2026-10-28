@@ -71,6 +71,7 @@ export class WebRTCVoiceEngine {
     onStatsUpdate,
     onDataChannelMessage,
     onManualPeerConnected,
+    onLocalScreenFrame,
   }) {
     this.localPeerId = localPeerId;
     this.onSignalSend = onSignalSend;
@@ -82,6 +83,7 @@ export class WebRTCVoiceEngine {
     this.onStatsUpdate = onStatsUpdate;
     this.onDataChannelMessage = onDataChannelMessage;
     this.onManualPeerConnected = onManualPeerConnected;
+    this.onLocalScreenFrame = onLocalScreenFrame;
 
     // Map<peerId, PeerConnectionEntry>
     this.connections = new Map();
@@ -900,6 +902,10 @@ export class WebRTCVoiceEngine {
   }
 
   stopAndroidNativeScreenCapture() {
+    if (this.androidCanvasRefreshTimer) {
+      clearInterval(this.androidCanvasRefreshTimer);
+      this.androidCanvasRefreshTimer = null;
+    }
     if (this.androidCaptureActive) {
       this.androidCaptureActive = false;
       try {
@@ -909,6 +915,7 @@ export class WebRTCVoiceEngine {
     window.__onAndroidScreenFrame = null;
     window.__onAndroidScreenCaptureState = null;
     this.androidScreenCanvas = null;
+    this.onLocalScreenFrame?.(null);
   }
 
   async startAndroidNativeScreenCapture(maxDim = 960, fps = 15) {
@@ -916,6 +923,11 @@ export class WebRTCVoiceEngine {
       if (!window.FreecordAndroid?.startScreenCapture) {
         reject(new Error("Android MediaProjection bridge indisponivel"));
         return;
+      }
+
+      if (this.androidCanvasRefreshTimer) {
+        clearInterval(this.androidCanvasRefreshTimer);
+        this.androidCanvasRefreshTimer = null;
       }
 
       const canvas = document.createElement("canvas");
@@ -928,6 +940,7 @@ export class WebRTCVoiceEngine {
       }
       this.androidScreenCanvas = canvas;
       const frameImg = new Image();
+      let hasDecodedFrame = false;
       let lastRelaySentAt = 0;
       let settled = false;
 
@@ -938,10 +951,26 @@ export class WebRTCVoiceEngine {
         }
       }, 45000);
 
+      // Keep canvas.captureStream emitting frames even when the screen is static
+      this.androidCanvasRefreshTimer = setInterval(() => {
+        if (!this.androidCaptureActive || !this.androidScreenCanvas || !hasDecodedFrame) return;
+        const c = this.androidScreenCanvas.getContext("2d");
+        if (c && frameImg.complete && frameImg.naturalWidth > 0) {
+          c.drawImage(
+            frameImg,
+            0,
+            0,
+            this.androidScreenCanvas.width,
+            this.androidScreenCanvas.height
+          );
+        }
+      }, 150);
+
       window.__onAndroidScreenFrame = (dataUrl, width, height) => {
         if (!this.androidCaptureActive || !dataUrl) return;
+        this.onLocalScreenFrame?.(dataUrl);
         const now = Date.now();
-        if (this.inVoiceChannel && this.onFrameSend && now - lastRelaySentAt >= 210) {
+        if (this.onFrameSend && now - lastRelaySentAt >= 180) {
           lastRelaySentAt = now;
           try {
             this.onFrameSend({
@@ -952,6 +981,7 @@ export class WebRTCVoiceEngine {
           } catch {}
         }
         frameImg.onload = () => {
+          hasDecodedFrame = true;
           if (!this.androidScreenCanvas) return;
           if (
             width > 0 &&
@@ -996,6 +1026,11 @@ export class WebRTCVoiceEngine {
           }
         } else if (state === "stopped") {
           this.androidCaptureActive = false;
+          this.onLocalScreenFrame?.(null);
+          if (this.androidCanvasRefreshTimer) {
+            clearInterval(this.androidCanvasRefreshTimer);
+            this.androidCanvasRefreshTimer = null;
+          }
           if (this.localScreenStream) {
             this.localScreenStream.getTracks().forEach((t) => t.stop());
             this.localScreenStream = null;

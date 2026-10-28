@@ -1352,6 +1352,7 @@ export default function App() {
   const [speakingMap, setSpeakingMap] = useState({});
   const [localCameraStream, setLocalCameraStream] = useState(null);
   const [localScreenStream, setLocalScreenStream] = useState(null);
+  const [localScreenFrameUrl, setLocalScreenFrameUrl] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
   const [peerVolumes, setPeerVolumes] = useState({});
   const [peerScreenVolumes, setPeerScreenVolumes] = useState({});
@@ -1660,6 +1661,9 @@ export default function App() {
       },
       onStatsUpdate: (stats) => {
         setRtcStats(stats);
+      },
+      onLocalScreenFrame: (dataUrl) => {
+        setLocalScreenFrameUrl(dataUrl || null);
       },
       onDataChannelMessage: (fromPeerId, packet) => {
         if (packet.type === "HELLO" && packet.profile) {
@@ -2706,6 +2710,9 @@ export default function App() {
     activeVoiceChannelIdRef.current = voiceChannel.id;
     engine.setInVoiceChannel(true);
     setActiveVoiceChannelId(voiceChannel.id);
+    try {
+      window.FreecordAndroid?.startVoiceCallService?.(voiceChannel.name || "Chamada P2P");
+    } catch {}
     await engine.startLocalVoice();
 
     const vState = {
@@ -2730,6 +2737,9 @@ export default function App() {
     }
     setOutgoingDmCall(null);
     activeVoiceChannelIdRef.current = null;
+    try {
+      window.FreecordAndroid?.stopVoiceCallService?.();
+    } catch {}
     const engine = voiceEngineRef.current;
     engine?.setInVoiceChannel(false);
     engine?.destroyAll();
@@ -2738,6 +2748,7 @@ export default function App() {
     setScreenSharing(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
+    setLocalScreenFrameUrl(null);
     setSpotlightTileId(null);
     setRemoteStreams({});
     setSpeakingMap({});
@@ -2930,6 +2941,7 @@ export default function App() {
       await voiceEngineRef.current?.setDesktopSource(null);
       setScreenSharing(false);
       setLocalScreenStream(null);
+      setLocalScreenFrameUrl(null);
       if (spotlightTileId === "self_screen") {
         setSpotlightTileId(null);
       }
@@ -3073,8 +3085,17 @@ export default function App() {
           });
         }
       }
-    } catch {
+    } catch (err) {
       setShowScreenPicker(false);
+      const msg = String(err?.message || "");
+      if (msg && !msg.toLowerCase().includes("cancel") && !msg.toLowerCase().includes("permission denied")) {
+        pushToast({
+          authorName: "Compartilhamento de Tela",
+          avatarColor: "#f23f43",
+          channelName: "Sistema",
+          text: msg,
+        });
+      }
     }
   };
 
@@ -3313,7 +3334,29 @@ export default function App() {
         };
 
         ws.onclose = () => {
-          setConnectedPeers((prev) => prev.filter((p) => p.address !== host || p.port !== Number(port)));
+          if (mobileWsRef.current === ws) {
+            mobileWsRef.current = null;
+          }
+          // When user is in an active voice/video call or switching apps on Android,
+          // do NOT immediately tear down the call or remove the peer! Reconnect fast instead.
+          if (activeVoiceChannelIdRef.current) {
+            setTimeout(() => {
+              if (!mobileWsRef.current || mobileWsRef.current.readyState > 1) {
+                connectViaWebSocket(host, port).catch(() => {});
+              }
+            }, 600);
+            setTimeout(() => {
+              if (!mobileWsRef.current || mobileWsRef.current.readyState !== 1) {
+                setConnectedPeers((prev) =>
+                  prev.filter((p) => p.address !== host || p.port !== Number(port))
+                );
+              }
+            }, 15000);
+          } else {
+            setConnectedPeers((prev) =>
+              prev.filter((p) => p.address !== host || p.port !== Number(port))
+            );
+          }
         };
       } catch (err) {
         reject(err);
@@ -4230,13 +4273,14 @@ export default function App() {
     const tiles = [];
 
     // 1. Local Go Live Screen Share Tile (if active)
-    if (screenSharing && localScreenStream) {
+    if (screenSharing && (localScreenStream || localScreenFrameUrl)) {
       tiles.push({
         id: "self_screen",
         peerId: nodeStatus.profile.peerId,
         isSelf: true,
         kind: "screen",
         stream: localScreenStream,
+        frameUrl: localScreenFrameUrl,
         profile: nodeStatus.profile,
         label: `${selfDisplayName} ${t.youSuffix}`,
         badge: `${t.screenBadge} • ${screenResolution.toUpperCase()} ${screenFps}FPS`,
@@ -4358,6 +4402,7 @@ export default function App() {
     outgoingDmCall,
     screenSharing,
     localScreenStream,
+    localScreenFrameUrl,
     videoEnabled,
     localCameraStream,
     nodeStatus.profile,
@@ -4424,6 +4469,9 @@ export default function App() {
         className={`video-tile ${tile.speaking ? "speaking" : ""} ${
           isSpotlight ? "spotlight-tile" : ""
         }`}
+        onClick={() =>
+          setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+        }
         onDoubleClick={() =>
           setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
         }
@@ -7428,13 +7476,96 @@ return (
                   </button>
                 </div>
 
-                <div className="mobile-call-grid">
-                  {stageTiles.map((tile) => (
-                    <div key={tile.id} className="mobile-call-tile">
-                      {renderStageTile(tile, false)}
+                {/* Quick Foreground Focus Bar on Mobile: switch between Grid and any Camera/Screen Share */}
+                {stageTiles.length > 0 && (
+                  <div className="mobile-call-focus-bar">
+                    <button
+                      type="button"
+                      className={`mobile-focus-pill ${!activeSpotlightTile ? "active" : ""}`}
+                      onClick={() => setSpotlightTileId(null)}
+                    >
+                      <LayoutGrid size={13} />
+                      <span>{lang === "en" ? "Grid" : "Grade"}</span>
+                    </button>
+                    {stageTiles.map((tile) => (
+                      <button
+                        key={`focus_pill_${tile.id}`}
+                        type="button"
+                        className={`mobile-focus-pill ${spotlightTileId === tile.id ? "active" : ""}`}
+                        onClick={() =>
+                          setSpotlightTileId((prev) => (prev === tile.id ? null : tile.id))
+                        }
+                      >
+                        {tile.kind === "screen" ? <Monitor size={13} /> : <Video size={13} />}
+                        <span>
+                          {tile.kind === "screen"
+                            ? `${lang === "en" ? "Screen" : "Tela"}: ${tile.label}`
+                            : `${lang === "en" ? "Cam" : "Câmera"}: ${tile.label}`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {activeSpotlightTile ? (
+                  <div className="mobile-call-spotlight-layout">
+                    <div className="mobile-call-spotlight-main">
+                      {renderStageTile(activeSpotlightTile, true)}
+
+                      {/* Floating PiP Webcam when focusing a Screen Share on Mobile */}
+                      {activeSpotlightTile.kind === "screen" &&
+                        activeWebcamTileForPip &&
+                        showWebcamPipOverlay && (
+                          <div
+                            className="floating-webcam-pip mobile-floating-pip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSpotlightTileId(activeWebcamTileForPip.id);
+                            }}
+                            title={lang === "en" ? "Tap to focus camera" : "Toque para focar câmera"}
+                          >
+                            <VideoStreamView
+                              videoId={`mobile_pip_${activeWebcamTileForPip.id}`}
+                              stream={activeWebcamTileForPip.stream}
+                              frameUrl={activeWebcamTileForPip.frameUrl}
+                              muted={true}
+                              fitMode="cover"
+                            />
+                            <div className="floating-webcam-pip-label">
+                              📷 {activeWebcamTileForPip.label}
+                            </div>
+                          </div>
+                        )}
                     </div>
-                  ))}
-                </div>
+
+                    {stageTiles.length > 1 && (
+                      <div className="mobile-call-spotlight-dock">
+                        {stageTiles
+                          .filter((tile) => tile.id !== activeSpotlightTile.id)
+                          .map((tile) => (
+                            <div
+                              key={tile.id}
+                              className="mobile-call-dock-item"
+                              onClickCapture={(e) => {
+                                e.stopPropagation();
+                                setSpotlightTileId(tile.id);
+                              }}
+                            >
+                              {renderStageTile(tile, false)}
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mobile-call-grid">
+                    {stageTiles.map((tile) => (
+                      <div key={tile.id} className="mobile-call-tile">
+                        {renderStageTile(tile, false)}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="mobile-call-controls">
                   <button

@@ -9,6 +9,7 @@ import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.media.AudioManager;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
@@ -24,9 +25,13 @@ import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import com.getcapacitor.BridgeActivity;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends BridgeActivity {
     private static final int REQUEST_MEDIA_PROJECTION = 2049;
@@ -38,33 +43,48 @@ public class MainActivity extends BridgeActivity {
     private ImageReader imageReader;
     private HandlerThread captureThread;
     private Handler captureHandler;
+    private ByteBuffer reusablePixelBuffer;
+
+    private ActivityResultLauncher<Intent> screenCaptureLauncher;
+    private int pendingResultCode = 0;
+    private Intent pendingResultData = null;
+
     private volatile boolean isCapturingScreen = false;
+    private volatile boolean isVoiceCallActive = false;
+    private String activeVoiceChannelName = "Chamada P2P";
     private int requestedMaxDim = 960;
     private int requestedFps = 15;
     private long lastFrameSentAt = 0L;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // Register ActivityResultLauncher before super.onCreate so BridgeActivity lifecycle accepts it
+        screenCaptureLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> handleScreenCapturePermissionResult(result.getResultCode(), result.getData())
+        );
+
         super.onCreate(savedInstanceState);
         instance = this;
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
 
-        // Prompt for Android OS runtime permissions if needed
+        // Prompt for Android OS runtime permissions (Microphone, Camera, Notifications on Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            String[] permissions = new String[]{
-                Manifest.permission.RECORD_AUDIO,
-                Manifest.permission.CAMERA,
-                Manifest.permission.MODIFY_AUDIO_SETTINGS
-            };
-            boolean needPrompt = false;
-            for (String perm : permissions) {
+            List<String> perms = new ArrayList<>();
+            perms.add(Manifest.permission.RECORD_AUDIO);
+            perms.add(Manifest.permission.CAMERA);
+            perms.add(Manifest.permission.MODIFY_AUDIO_SETTINGS);
+            if (Build.VERSION.SDK_INT >= 33) {
+                perms.add("android.permission.POST_NOTIFICATIONS");
+            }
+            List<String> needed = new ArrayList<>();
+            for (String perm : perms) {
                 if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED) {
-                    needPrompt = true;
-                    break;
+                    needed.add(perm);
                 }
             }
-            if (needPrompt) {
-                requestPermissions(permissions, 1001);
+            if (!needed.isEmpty()) {
+                requestPermissions(needed.toArray(new String[0]), 1001);
             }
         }
 
@@ -83,8 +103,42 @@ public class MainActivity extends BridgeActivity {
                 @Override
                 public void onPermissionRequest(final PermissionRequest request) {
                     runOnUiThread(() -> {
-                        request.grant(request.getResources());
+                        try {
+                            request.grant(request.getResources());
+                        } catch (Exception ignored) {
+                        }
                     });
+                }
+            });
+
+            // Reload once after registering JavascriptInterface so window.FreecordAndroid is bound in JS context
+            if (savedInstanceState == null) {
+                webView.reload();
+            }
+        }
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        keepWebViewAwakeInBackground();
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        keepWebViewAwakeInBackground();
+    }
+
+    private void keepWebViewAwakeInBackground() {
+        if (!isVoiceCallActive && !isCapturingScreen) return;
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            final WebView webView = this.bridge.getWebView();
+            webView.post(() -> {
+                try {
+                    webView.onResume();
+                    webView.resumeTimers();
+                } catch (Exception ignored) {
                 }
             });
         }
@@ -94,6 +148,55 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public boolean isScreenCaptureSupported() {
             return projectionManager != null;
+        }
+
+        @JavascriptInterface
+        public void startVoiceCallService(String channelName) {
+            isVoiceCallActive = true;
+            activeVoiceChannelName = (channelName != null && !channelName.isEmpty()) ? channelName : "Chamada P2P";
+            runOnUiThread(() -> {
+                try {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        am.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                        am.setSpeakerphoneOn(true);
+                    }
+                } catch (Exception ignored) {
+                }
+                if (!isCapturingScreen) {
+                    try {
+                        Intent serviceIntent = new Intent(MainActivity.this, ScreenCaptureService.class);
+                        serviceIntent.setAction("START_VOICE_CALL");
+                        serviceIntent.putExtra("channelName", activeVoiceChannelName);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(serviceIntent);
+                        } else {
+                            startService(serviceIntent);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void stopVoiceCallService() {
+            isVoiceCallActive = false;
+            runOnUiThread(() -> {
+                try {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                    if (am != null) {
+                        am.setMode(AudioManager.MODE_NORMAL);
+                    }
+                } catch (Exception ignored) {
+                }
+                if (!isCapturingScreen) {
+                    try {
+                        stopService(new Intent(MainActivity.this, ScreenCaptureService.class));
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
         }
 
         @JavascriptInterface
@@ -107,7 +210,11 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     Intent captureIntent = projectionManager.createScreenCaptureIntent();
-                    startActivityForResult(captureIntent, REQUEST_MEDIA_PROJECTION);
+                    if (screenCaptureLauncher != null) {
+                        screenCaptureLauncher.launch(captureIntent);
+                    } else {
+                        startActivityForResult(captureIntent, REQUEST_MEDIA_PROJECTION);
+                    }
                 } catch (Exception e) {
                     notifyJsCaptureState("error", e.getMessage());
                 }
@@ -124,32 +231,43 @@ public class MainActivity extends BridgeActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_MEDIA_PROJECTION) {
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                try {
-                    Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-                    serviceIntent.setAction("START_CAPTURE");
-                    serviceIntent.putExtra("resultCode", resultCode);
-                    serviceIntent.putExtra("data", data);
-                    serviceIntent.putExtra("width", requestedMaxDim);
-                    serviceIntent.putExtra("height", requestedMaxDim);
-                    serviceIntent.putExtra("fps", requestedFps);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(serviceIntent);
-                    } else {
-                        startService(serviceIntent);
-                    }
-                } catch (Exception e) {
-                    notifyJsCaptureState("error", e.getMessage());
-                }
-            } else {
-                notifyJsCaptureState("denied", "Permissao de captura de tela negada");
-            }
+            handleScreenCapturePermissionResult(resultCode, data);
         }
     }
 
-    public static void onScreenCaptureServiceReady(int resultCode, Intent data, int maxDim, int heightUnused, int fps) {
+    private void handleScreenCapturePermissionResult(int resultCode, Intent data) {
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            pendingResultCode = resultCode;
+            pendingResultData = data;
+            try {
+                Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+                serviceIntent.setAction("START_CAPTURE");
+                serviceIntent.putExtra("channelName", activeVoiceChannelName);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+            } catch (Exception e) {
+                notifyJsCaptureState("error", e.getMessage());
+            }
+        } else {
+            notifyJsCaptureState("denied", "Permissao de captura de tela negada");
+        }
+    }
+
+    public static void onScreenCaptureServiceReady() {
         if (instance != null) {
-            instance.runOnUiThread(() -> instance.beginMediaProjection(resultCode, data, maxDim, fps));
+            instance.runOnUiThread(() -> {
+                if (instance.pendingResultData != null) {
+                    instance.beginMediaProjection(
+                            instance.pendingResultCode,
+                            instance.pendingResultData,
+                            instance.requestedMaxDim,
+                            instance.requestedFps
+                    );
+                }
+            });
         }
     }
 
@@ -183,12 +301,12 @@ public class MainActivity extends BridgeActivity {
             if (longest > maxDim) {
                 scale = (double) maxDim / (double) longest;
             }
-            int captureW = Math.max(240, ((int) Math.round(rawW * scale) / 2) * 2);
-            int captureH = Math.max(240, ((int) Math.round(rawH * scale) / 2) * 2);
+            final int captureW = Math.max(240, ((int) Math.round(rawW * scale) / 2) * 2);
+            final int captureH = Math.max(240, ((int) Math.round(rawH * scale) / 2) * 2);
 
             imageReader = ImageReader.newInstance(captureW, captureH, PixelFormat.RGBA_8888, 2);
             isCapturingScreen = true;
-            final long minIntervalMs = Math.max(33L, 1000L / Math.max(5, fps));
+            final long minIntervalMs = Math.max(45L, 1000L / Math.max(5, fps));
 
             imageReader.setOnImageAvailableListener(reader -> {
                 if (!isCapturingScreen) return;
@@ -209,20 +327,33 @@ public class MainActivity extends BridgeActivity {
                     int rowStride = planes[0].getRowStride();
                     int rowPadding = rowStride - pixelStride * captureW;
 
+                    int bitmapWidth = captureW + Math.max(0, rowPadding / pixelStride);
+                    int requiredBytes = bitmapWidth * captureH * 4;
+                    if (reusablePixelBuffer == null || reusablePixelBuffer.capacity() < requiredBytes) {
+                        reusablePixelBuffer = ByteBuffer.allocateDirect(requiredBytes);
+                    }
+                    reusablePixelBuffer.clear();
+                    buffer.rewind();
+                    int copyLen = Math.min(buffer.remaining(), requiredBytes);
+                    int prevLimit = buffer.limit();
+                    buffer.limit(copyLen);
+                    reusablePixelBuffer.put(buffer);
+                    buffer.limit(prevLimit);
+                    reusablePixelBuffer.rewind();
+
                     Bitmap paddedBitmap = Bitmap.createBitmap(
-                            captureW + Math.max(0, rowPadding / pixelStride),
+                            bitmapWidth,
                             captureH,
                             Bitmap.Config.ARGB_8888
                     );
-                    buffer.rewind();
-                    paddedBitmap.copyPixelsFromBuffer(buffer);
+                    paddedBitmap.copyPixelsFromBuffer(reusablePixelBuffer);
 
-                    Bitmap cleanBitmap = (rowPadding > 0)
+                    Bitmap cleanBitmap = (bitmapWidth > captureW)
                             ? Bitmap.createBitmap(paddedBitmap, 0, 0, captureW, captureH)
                             : paddedBitmap;
 
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 68, baos);
+                    cleanBitmap.compress(Bitmap.CompressFormat.JPEG, 65, baos);
                     if (cleanBitmap != paddedBitmap) {
                         cleanBitmap.recycle();
                     }
@@ -264,6 +395,11 @@ public class MainActivity extends BridgeActivity {
         final WebView webView = this.bridge.getWebView();
         webView.post(() -> {
             if (!isCapturingScreen) return;
+            try {
+                webView.onResume();
+                webView.resumeTimers();
+            } catch (Exception ignored) {
+            }
             String js = "if(window.__onAndroidScreenFrame){window.__onAndroidScreenFrame('data:image/jpeg;base64,"
                     + base64Jpeg + "'," + width + "," + height + ");}";
             webView.evaluateJavascript(js, null);
@@ -312,9 +448,24 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception ignored) {
         }
-        try {
-            stopService(new Intent(this, ScreenCaptureService.class));
-        } catch (Exception ignored) {
+        if (isVoiceCallActive) {
+            // Downgrade foreground service back to voice call mode
+            try {
+                Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+                serviceIntent.setAction("START_VOICE_CALL");
+                serviceIntent.putExtra("channelName", activeVoiceChannelName);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+            } catch (Exception ignored) {
+            }
+        } else {
+            try {
+                stopService(new Intent(this, ScreenCaptureService.class));
+            } catch (Exception ignored) {
+            }
         }
         if (notifyJs) {
             notifyJsCaptureState("stopped", "");
@@ -323,6 +474,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
+        isVoiceCallActive = false;
         teardownScreenCapture(false);
         super.onDestroy();
     }

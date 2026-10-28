@@ -2198,6 +2198,120 @@ body, html, #root {
   position: relative;
 }
 
+.mobile-call-tile > .video-tile {
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+}
+
+@media (max-width: 900px), (hover: none) {
+  .video-tile-actions {
+    opacity: 1 !important;
+  }
+}
+
+.mobile-call-focus-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  background: rgba(17, 18, 20, 0.92);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.mobile-call-focus-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-focus-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #dbdee1;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.mobile-focus-pill.active {
+  background: var(--brand-blurple);
+  color: #fff;
+  border-color: var(--brand-blurple);
+}
+
+.mobile-call-spotlight-layout {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.mobile-call-spotlight-main {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  background: #000;
+}
+
+.mobile-call-spotlight-main > .video-tile {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.mobile-floating-pip {
+  width: 128px;
+  bottom: 44px;
+  right: 10px;
+  cursor: pointer;
+}
+
+.mobile-call-spotlight-dock {
+  height: 112px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.mobile-call-dock-item {
+  width: 150px;
+  min-width: 150px;
+  height: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+}
+
+.mobile-call-dock-item > .video-tile {
+  width: 100%;
+  height: 100%;
+}
+
+.mobile-call-dock-item .video-tile-actions {
+  display: none;
+}
+
 .mobile-call-controls {
   height: 84px;
   background: #1e1f22;
