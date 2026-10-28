@@ -39,6 +39,8 @@
   },
   "linux": {
     "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "maintainer": "Kauanmaffeikraus <kauankrausmaffei@gmail.com>",
+    "synopsis": "Serverless P2P Voice, Video & Chat",
     "target": [
       {
         "target": "AppImage",
