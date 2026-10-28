@@ -359,13 +359,34 @@ export function mergeHistoryMessages(existingMessages = [], incomingMessages = [
 // 4. QR Code Generator & Camera/Image Scanner (PC <-> Android Quick Pairing)
 // ============================================================================
 
-export function buildLanQrPayload(endpoint, profile = {}) {
+function rankEndpointCandidate(ep = "") {
+  const host = String(ep).split(":")[0] || "";
+  if (host.startsWith("192.168.") && !host.startsWith("192.168.56.")) return 100;
+  if (host.startsWith("10.")) return 90;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return 60;
+  if (host.startsWith("26.") || host.startsWith("100.")) return 30;
+  if (host.startsWith("127.") || host === "localhost") return 5;
+  return 50;
+}
+
+export function sortEndpointsByLanPriority(endpoints = []) {
+  return [...endpoints]
+    .filter(Boolean)
+    .sort((a, b) => rankEndpointCandidate(b) - rankEndpointCandidate(a));
+}
+
+export function buildLanQrPayload(endpoint, profile = {}, allEndpoints = []) {
   const cleanEp = String(endpoint || "").trim();
   if (!cleanEp) return "";
+  const sortedEps = sortEndpointsByLanPriority(
+    Array.from(new Set([cleanEp, ...(Array.isArray(allEndpoints) ? allEndpoints : [])]))
+  );
+  const primary = sortedEps[0] || cleanEp;
   const payload = {
     v: 1,
     t: "lan",
-    ep: cleanEp,
+    ep: primary,
+    eps: sortedEps.slice(0, 5),
     name: profile.displayName || profile.username || "Freecord PC",
     peerId: profile.peerId || "",
     pub: profile.cryptoPubKey || "",
@@ -378,10 +399,15 @@ export function parseScannedQrPayload(rawText = "") {
   const trimmed = String(rawText || "").trim();
   if (!trimmed) throw new Error("Empty QR Code");
 
-  // 1. Direct IP:Port (e.g. 192.168.1.15:49152)
+  // 1. Direct IP:Port (e.g. 192.168.1.15:49155)
   if (/^\d{1,3}(\.\d{1,3}){3}:\d{2,5}$/.test(trimmed)) {
     const [host, port] = trimmed.split(":");
-    return { kind: "lan", host, port: Number(port) };
+    return {
+      kind: "lan",
+      host,
+      port: Number(port),
+      candidates: [`${host}:${Number(port)}`],
+    };
   }
 
   // 2. fc-qr:// base64 JSON payload
@@ -389,12 +415,17 @@ export function parseScannedQrPayload(rawText = "") {
     const b64 = trimmed.replace(/^fc-qr:\/\//, "").trim();
     const json = decodeURIComponent(escape(atob(b64)));
     const data = JSON.parse(json);
-    if (data.t === "lan" && data.ep) {
-      const [host, port] = String(data.ep).split(":");
+    if (data.t === "lan" && (data.ep || (Array.isArray(data.eps) && data.eps.length > 0))) {
+      const rawCandidates = Array.isArray(data.eps) && data.eps.length > 0
+        ? [data.ep, ...data.eps].filter(Boolean)
+        : [data.ep];
+      const candidates = sortEndpointsByLanPriority(Array.from(new Set(rawCandidates)));
+      const [host, port] = String(candidates[0] || data.ep).split(":");
       return {
         kind: "lan",
         host,
         port: Number(port),
+        candidates,
         name: data.name,
         peerId: data.peerId,
       };

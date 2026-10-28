@@ -66,6 +66,7 @@ import {
   collectMissedMessagesForPeer,
   mergeHistoryMessages,
   buildLanQrPayload,
+  sortEndpointsByLanPriority,
   parseScannedQrPayload,
   generateQrCodeDataUrl,
   decodeQrFromImageData,
@@ -1376,8 +1377,10 @@ export default function App() {
 
   // Phase 1: QR Code Pairing & Camera Scanner State
   const [lanQrDataUrl, setLanQrDataUrl] = useState(null);
+  const [selectedQrEndpoint, setSelectedQrEndpoint] = useState("");
   const [isScanningQr, setIsScanningQr] = useState(false);
   const [qrScanStatus, setQrScanStatus] = useState(null);
+  const [isScanningLanHttp, setIsScanningLanHttp] = useState(false);
   const qrVideoRef = useRef(null);
   const qrCanvasRef = useRef(null);
   const qrStreamRef = useRef(null);
@@ -3102,31 +3105,131 @@ export default function App() {
     }
   };
 
+  // Automatic HTTP Wi-Fi Subnet Scanner for Android / Browser clients
+  const scanLanForDesktopNodes = async () => {
+    if (window.DiscordNative?.p2p) {
+      window.DiscordNative.p2p.beaconNow();
+      return;
+    }
+    if (isScanningLanHttp) return;
+    setIsScanningLanHttp(true);
+
+    try {
+      const targetSubnets = new Set();
+      // 1. Subnets from previously saved peers
+      for (const sp of savedLanPeers || []) {
+        const parts = String(sp?.host || "").split(".");
+        if (parts.length === 4) {
+          targetSubnets.add(`${parts[0]}.${parts[1]}.${parts[2]}`);
+        }
+      }
+      // 2. Common home Wi-Fi subnets (including 192.168.2.x, 192.168.1.x, 192.168.0.x, 192.168.15.x)
+      ["192.168.2", "192.168.1", "192.168.0", "192.168.15", "192.168.3", "10.0.0"].forEach((s) =>
+        targetSubnets.add(s)
+      );
+
+      const probeHost = async (ip, port = 49155) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 550);
+        try {
+          const res = await fetch(`http://${ip}:${port}/api/discover`, {
+            method: "GET",
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!res.ok) return null;
+          const data = await res.json();
+          if (data?.ok && data?.profile?.peerId && data.profile.peerId !== selfPeerIdRef.current) {
+            const peerObj = {
+              ...data.profile,
+              host: ip,
+              tcpPort: Number(data.tcpPort || port),
+              lastSeen: Date.now(),
+              isConnected: connectedPeersRef.current.some(
+                (cp) => cp.peerId === data.profile.peerId || cp.address === ip
+              ),
+            };
+            setLanPeers((prev) => {
+              const filtered = prev.filter((p) => p.peerId !== peerObj.peerId);
+              return [peerObj, ...filtered];
+            });
+            return peerObj;
+          }
+        } catch {
+          clearTimeout(timer);
+        }
+        return null;
+      };
+
+      // Probe saved hosts first on port 49155 and their remembered port
+      const priorityTargets = [];
+      for (const sp of savedLanPeers || []) {
+        if (sp?.host) {
+          priorityTargets.push([sp.host, 49155]);
+          if (sp.port && sp.port !== 49155) priorityTargets.push([sp.host, sp.port]);
+        }
+      }
+      await Promise.all(priorityTargets.map(([h, p]) => probeHost(h, p)));
+
+      // Probe primary subnet IPs in fast batches of 32
+      const primarySubnets = Array.from(targetSubnets).slice(0, 3);
+      for (const subnet of primarySubnets) {
+        const ips = [];
+        for (let i = 1; i <= 254; i++) {
+          ips.push(`${subnet}.${i}`);
+        }
+        const batchSize = 36;
+        for (let idx = 0; idx < ips.length; idx += batchSize) {
+          const batch = ips.slice(idx, idx + batchSize);
+          await Promise.all(batch.map((ip) => probeHost(ip, 49155)));
+        }
+      }
+    } finally {
+      setIsScanningLanHttp(false);
+    }
+  };
+
   // Phase 1: Generate LAN Pairing QR Code when Connect Modal opens
   useEffect(() => {
     if (!showConnectModal) {
       stopQrCameraScanner();
       return;
     }
+    if (!window.DiscordNative?.p2p) {
+      scanLanForDesktopNodes();
+    }
+    const sortedConnStrings = sortEndpointsByLanPriority(nodeStatus.connectionStrings || []);
     const primaryEp =
-      nodeStatus.connectionStrings?.[0] ||
+      (selectedQrEndpoint && sortedConnStrings.includes(selectedQrEndpoint)
+        ? selectedQrEndpoint
+        : sortedConnStrings[0]) ||
       nodeStatus.localhostEndpoint ||
       (generatedInviteCode ? generatedInviteCode : "");
+
+    if (sortedConnStrings[0] && !selectedQrEndpoint) {
+      setSelectedQrEndpoint(sortedConnStrings[0]);
+    }
+
     if (!primaryEp) {
       setLanQrDataUrl(null);
       return;
     }
     const qrPayload = primaryEp.startsWith("fc-sdp://")
       ? primaryEp
-      : buildLanQrPayload(primaryEp, {
-          ...nodeStatus.profile,
-          cryptoPubKey: cryptoIdentity.publicKey,
-        });
+      : buildLanQrPayload(
+          primaryEp,
+          {
+            ...nodeStatus.profile,
+            cryptoPubKey: cryptoIdentity.publicKey,
+          },
+          sortedConnStrings
+        );
     generateQrCodeDataUrl(qrPayload, 210).then((url) => {
       setLanQrDataUrl(url);
     });
   }, [
     showConnectModal,
+    selectedQrEndpoint,
     nodeStatus.connectionStrings,
     nodeStatus.localhostEndpoint,
     nodeStatus.profile,
@@ -3151,14 +3254,42 @@ export default function App() {
     try {
       const parsed = parseScannedQrPayload(rawCode);
       if (parsed.kind === "lan") {
-        setQrScanStatus({
-          type: "success",
-          text:
-            lang === "en"
-              ? `QR Scanned! Connecting to ${parsed.host}:${parsed.port}...`
-              : `QR Lido! Conectando a ${parsed.host}:${parsed.port}...`,
-        });
-        await handleConnectByHostPort(parsed.host, parsed.port);
+        const candidates =
+          Array.isArray(parsed.candidates) && parsed.candidates.length > 0
+            ? parsed.candidates
+            : [`${parsed.host}:${parsed.port}`];
+
+        let lastErr = null;
+        let connected = false;
+        for (const candidate of candidates) {
+          const [cHost, cPortStr] = String(candidate).split(":");
+          const cPort = Number(cPortStr || parsed.port || 49155);
+          if (!cHost || !cPort) continue;
+          setQrScanStatus({
+            type: "info",
+            text:
+              lang === "en"
+                ? `QR Scanned! Connecting to ${cHost}:${cPort}...`
+                : `QR Lido! Conectando a ${cHost}:${cPort}...`,
+          });
+          try {
+            await handleConnectByHostPort(cHost, cPort);
+            setQrScanStatus({
+              type: "success",
+              text:
+                lang === "en"
+                  ? `Connected via QR Code to ${cHost}:${cPort}!`
+                  : `Conectado via QR Code a ${cHost}:${cPort}!`,
+            });
+            connected = true;
+            break;
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        if (!connected && lastErr) {
+          throw lastErr;
+        }
       } else if (parsed.kind === "server-invite") {
         const clean = parsed.code.replace(/^fc-srv:\/\//i, "").trim();
         const decoded = JSON.parse(decodeURIComponent(escape(atob(clean))));
@@ -8347,9 +8478,31 @@ return (
                           : "No celular: use o Leitor ao lado para ler o QR Code exibido na tela do seu computador!"}
                       </div>
                     )}
-                    {nodeStatus.connectionStrings?.[0] && (
-                      <div style={{ fontSize: 11, color: "#86efac", marginTop: 8, fontFamily: "monospace" }}>
-                        {nodeStatus.connectionStrings[0]}
+                    {nodeStatus.connectionStrings?.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "center", marginTop: 8 }}>
+                        {sortEndpointsByLanPriority(nodeStatus.connectionStrings).map((ep) => {
+                          const isPrimary = (selectedQrEndpoint || sortEndpointsByLanPriority(nodeStatus.connectionStrings)[0]) === ep;
+                          const isVpn = ep.startsWith("26.") || ep.startsWith("100.") || ep.startsWith("172.");
+                          return (
+                            <button
+                              key={ep}
+                              type="button"
+                              onClick={() => setSelectedQrEndpoint(ep)}
+                              style={{
+                                fontSize: 10,
+                                fontFamily: "monospace",
+                                padding: "3px 7px",
+                                borderRadius: 6,
+                                cursor: "pointer",
+                                border: isPrimary ? "1px solid #4ade80" : "1px solid rgba(255,255,255,0.14)",
+                                background: isPrimary ? "rgba(35,165,90,0.22)" : "#1e1f22",
+                                color: isPrimary ? "#86efac" : "var(--text-muted)",
+                              }}
+                            >
+                              {ep} {isVpn ? "(VPN)" : "(LAN/Wi-Fi)"}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -8476,9 +8629,29 @@ return (
 
             {connectTab === "lan" && (
               <div>
-                <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
-                  {t.lanTabDesc}
-                </p>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0 }}>
+                    {t.lanTabDesc}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={isScanningLanHttp}
+                    onClick={scanLanForDesktopNodes}
+                    style={{ flexShrink: 0 }}
+                  >
+                    <RefreshCw size={13} className={isScanningLanHttp ? "spin" : ""} />
+                    <span>
+                      {isScanningLanHttp
+                        ? lang === "en"
+                          ? "Scanning Wi-Fi..."
+                          : "Buscando no Wi-Fi..."
+                        : lang === "en"
+                        ? "Scan Wi-Fi LAN"
+                        : "Buscar no Wi-Fi"}
+                    </span>
+                  </button>
+                </div>
 
                 {/* Remembered / Saved LAN Peers (for Android & Desktop) */}
                 {savedLanPeers.length > 0 && (

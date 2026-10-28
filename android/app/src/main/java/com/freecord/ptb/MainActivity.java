@@ -6,6 +6,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -32,8 +33,14 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        // Grant WebRTC microphone/camera permissions to the WebView
+        // Allow cleartext WebSocket (ws://) & HTTP LAN P2P connections + grant WebRTC permissions
         if (this.bridge != null && this.bridge.getWebView() != null) {
+            WebSettings webSettings = this.bridge.getWebView().getSettings();
+            webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            webSettings.setDomStorageEnabled(true);
+            webSettings.setJavaScriptEnabled(true);
+            webSettings.setMediaPlaybackRequiresUserGesture(false);
+
             this.bridge.getWebView().setWebChromeClient(new WebChromeClient() {
                 @Override
                 public void onPermissionRequest(final PermissionRequest request) {

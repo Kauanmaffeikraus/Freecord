@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
+const { exec } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { WebSocketServer } = require("ws");
 
@@ -20,7 +21,44 @@ function closeSocket(s) {
 }
 
 const DISCOVERY_PORTS = [49150, 49151, 49152, 49153];
+const DEFAULT_TCP_PORTS = [49155, 49156, 49157, 49158, 49159, 49160, 49161, 49162, 49163, 49164, 49165];
 const MULTICAST_ADDR = "239.255.42.99";
+
+function scoreInterfacePriority(name = "", address = "", mac = "") {
+  const n = String(name).toLowerCase();
+  const addr = String(address);
+  const m = String(mac).toLowerCase();
+
+  // VirtualBox Host-Only (0a:00:27 or 192.168.56.x)
+  if (m.startsWith("0a:00:27") || addr.startsWith("192.168.56.")) return 10;
+  // WSL / Hyper-V / Docker vEthernet
+  if (n.includes("vethernet") || n.includes("wsl") || n.includes("hyper-v") || n.includes("docker") || m.startsWith("00:15:5d")) return 15;
+  // VPN tunnels (Radmin 26.x, Hamachi 25.x, Tailscale 100.x, ZeroTier)
+  if (
+    n.includes("radmin") ||
+    n.includes("hamachi") ||
+    n.includes("zerotier") ||
+    n.includes("tailscale") ||
+    n.includes("vpn") ||
+    n.includes("tap") ||
+    n.includes("tun") ||
+    addr.startsWith("26.") ||
+    addr.startsWith("25.") ||
+    addr.startsWith("100.")
+  ) {
+    return 30;
+  }
+  // Physical Wi-Fi or Ethernet on standard home LAN (192.168.x.x or 10.x.x.x)
+  if (addr.startsWith("192.168.")) {
+    if (n.includes("wi-fi") || n.includes("wifi") || n.includes("wlan") || n.includes("ethernet")) {
+      return 100;
+    }
+    return 90;
+  }
+  if (addr.startsWith("10.")) return 80;
+  if (addr.startsWith("172.")) return 60;
+  return 50;
+}
 
 function getLocalIPv4Addresses() {
   const interfaces = os.networkInterfaces();
@@ -29,18 +67,31 @@ function getLocalIPv4Addresses() {
     if (!infos) continue;
     for (const info of infos) {
       if (info.family === "IPv4" && !info.internal) {
+        const priority = scoreInterfacePriority(name, info.address, info.mac);
         results.push({
           interface: name,
           address: info.address,
           netmask: info.netmask,
+          priority,
+          isVirtualOrVpn: priority <= 30,
         });
       }
     }
   }
+  results.sort((a, b) => b.priority - a.priority);
   if (results.length === 0) {
-    results.push({ interface: "Loopback", address: "127.0.0.1", netmask: "255.0.0.0" });
+    results.push({ interface: "Loopback", address: "127.0.0.1", netmask: "255.0.0.0", priority: 1 });
   }
   return results;
+}
+
+function ensureWindowsFirewallAllowed(tcpPort) {
+  if (process.platform !== "win32") return;
+  try {
+    const ruleName = "Freecord_P2P_LAN_Allow";
+    const cmd = `netsh advfirewall firewall show rule name="${ruleName}" >nul 2>&1 || netsh advfirewall firewall add rule name="${ruleName}" dir=in action=allow protocol=TCP localport=49150-49165,${tcpPort} profile=any`;
+    exec(cmd, () => {});
+  } catch {}
 }
 
 function computePairwiseFingerprint(peerIdA, peerIdB) {
@@ -216,16 +267,30 @@ class P2PNode extends EventEmitter {
         });
       });
 
-      this.tcpServer.on("error", (err) => {
-        console.error("[Freecord P2P] TCP Server Error:", err.message);
-      });
+      const startIdx = Math.max(0, (Number(this.instanceId) || 1) - 1);
+      const candidatePorts = [...DEFAULT_TCP_PORTS.slice(startIdx), 0];
 
-      this.tcpServer.listen(0, "0.0.0.0", () => {
-        const addr = this.tcpServer.address();
-        this.tcpPort = addr.port;
-        console.log(`[Freecord P2P] Unified TCP & WebSocket P2P Node listening on 0.0.0.0:${this.tcpPort}`);
-        resolve(this.tcpPort);
-      });
+      const tryListenPort = (idx) => {
+        const portToTry = candidatePorts[idx] ?? 0;
+        const onListenError = (err) => {
+          if (err.code === "EADDRINUSE" && idx + 1 < candidatePorts.length) {
+            tryListenPort(idx + 1);
+          } else {
+            console.error("[Freecord P2P] TCP Server Error:", err.message);
+          }
+        };
+        this.tcpServer.once("error", onListenError);
+        this.tcpServer.listen(portToTry, "0.0.0.0", () => {
+          this.tcpServer.removeListener("error", onListenError);
+          const addr = this.tcpServer.address();
+          this.tcpPort = addr.port;
+          ensureWindowsFirewallAllowed(this.tcpPort);
+          console.log(`[Freecord P2P] Unified TCP & WebSocket P2P Node listening on 0.0.0.0:${this.tcpPort}`);
+          resolve(this.tcpPort);
+        });
+      };
+
+      tryListenPort(0);
     });
   }
 
@@ -545,7 +610,8 @@ class P2PNode extends EventEmitter {
 
   handlePacket(socket, sendRaw, packet, ctx) {
     switch (packet.type) {
-      case "HELLO": {
+      case "HELLO":
+      case "HELLO_ACK": {
         const remoteProfile = packet.profile;
         if (!remoteProfile || !remoteProfile.peerId) return;
         const remotePeerId = remoteProfile.peerId;
@@ -567,7 +633,7 @@ class P2PNode extends EventEmitter {
               }
               return;
             } else {
-              existing.closeSocket(socket);
+              closeSocket(existing.socket);
             }
           }
         }
@@ -681,12 +747,19 @@ class P2PNode extends EventEmitter {
       case "CHAT_REACTION":
       case "TYPING_STATE":
       case "ROOM_SYNC":
+      case "HISTORY_SYNC_REQUEST":
+      case "HISTORY_SYNC_RESPONSE":
+      case "DM_CALL_RING":
+      case "DM_CALL_ACCEPT":
+      case "DM_CALL_REJECT":
+      case "DM_CALL_END":
       case "VOICE_STATE":
       case "VOICE_SPEAKING":
       case "WEBRTC_SIGNAL":
       case "MEDIA_FRAME":
-      case "AUDIO_CHUNK": {
-        const senderId = ctx.getAssociatedPeerId();
+      case "AUDIO_CHUNK":
+      default: {
+        const senderId = ctx.getAssociatedPeerId() || packet.fromPeerId;
         if (!senderId) return;
         if (packet.type === "VOICE_STATE") {
           const peer = this.peers.get(senderId);
@@ -756,7 +829,7 @@ class P2PNode extends EventEmitter {
   disconnectPeer(peerId) {
     const peer = this.peers.get(peerId);
     if (peer) {
-      peer.closeSocket(socket);
+      closeSocket(peer.socket);
       this.peers.delete(peerId);
       this.emit("peers-updated", this.getConnectedPeersList());
       return true;
@@ -783,6 +856,8 @@ class P2PNode extends EventEmitter {
       statusEmoji: info.statusEmoji || "⚡",
       customStatus: info.customStatus || "",
       badges: Array.isArray(info.badges) ? info.badges : ["P2P Node"],
+      cryptoPubKey: info.cryptoPubKey || "",
+      keyFingerprint: info.keyFingerprint || "",
       address: peer.address,
       port: peer.port,
       addresses: peer.addresses || [peer.address],
@@ -825,7 +900,7 @@ class P2PNode extends EventEmitter {
     if (this.pingTimer) clearInterval(this.pingTimer);
     for (const peer of this.peers.values()) {
       try {
-        peer.closeSocket(socket);
+        closeSocket(peer.socket);
       } catch {}
     }
     this.peers.clear();
