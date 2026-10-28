@@ -837,9 +837,10 @@ function VideoStreamView({
   return (
     <div
       style={{
+        position: "absolute",
+        inset: 0,
         width: "100%",
         height: "100%",
-        position: "relative",
         overflow: "hidden",
         backgroundColor: "#08080a",
       }}
@@ -1287,6 +1288,7 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined") return false;
     return Boolean(
+      window.FreecordAndroid ||
       window.Capacitor?.isNativePlatform?.() ||
       window.innerWidth <= 768
     );
@@ -1298,6 +1300,7 @@ export default function App() {
   useEffect(() => {
     const handleResize = () => {
       const mobile = Boolean(
+        window.FreecordAndroid ||
         window.Capacitor?.isNativePlatform?.() ||
         window.innerWidth <= 768
       );
@@ -1363,6 +1366,9 @@ export default function App() {
   const [stageTheaterMode, setStageTheaterMode] = useState(false);
   const [tileMinWidth, setTileMinWidth] = useState(340);
   const [spotlightTileId, setSpotlightTileId] = useState(null);
+  const [fullscreenTileId, setFullscreenTileId] = useState(null);
+  const [inAppPipTileId, setInAppPipTileId] = useState(null);
+  const [isAndroidSystemPip, setIsAndroidSystemPip] = useState(false);
   const [tileFitMap, setTileFitMap] = useState({});
   const [tileZoomMap, setTileZoomMap] = useState({});
   const [showWebcamPipOverlay, setShowWebcamPipOverlay] = useState(true);
@@ -2750,6 +2756,11 @@ export default function App() {
     setLocalScreenStream(null);
     setLocalScreenFrameUrl(null);
     setSpotlightTileId(null);
+    setFullscreenTileId(null);
+    setInAppPipTileId(null);
+    try {
+      window.FreecordAndroid?.setImmersiveFullscreen?.(false);
+    } catch {}
     setRemoteStreams({});
     setSpeakingMap({});
     setMicInputLevel(0);
@@ -3115,6 +3126,15 @@ export default function App() {
     window.addEventListener("mouseup", onUp);
   };
 
+  useEffect(() => {
+    window.__onAndroidPipChanged = (inPip) => {
+      setIsAndroidSystemPip(Boolean(inPip));
+    };
+    return () => {
+      window.__onAndroidPipChanged = null;
+    };
+  }, []);
+
   const toggleElementFullscreen = (el) => {
     if (!el) return;
     if (document.fullscreenElement) {
@@ -3124,16 +3144,63 @@ export default function App() {
     }
   };
 
-  const toggleVideoPiP = async (videoId) => {
+  const handleToggleTileFullscreen = (tile) => {
+    if (!tile) return;
+    const isLeaving = fullscreenTileId === tile.id;
+    const nextId = isLeaving ? null : tile.id;
+    setFullscreenTileId(nextId);
+    if (!isLeaving) {
+      setSpotlightTileId(tile.id);
+    }
     try {
-      const videoEl = document.getElementById(videoId);
-      if (!videoEl) return;
-      if (document.pictureInPictureElement) {
-        await document.exitPictureInPicture();
-      } else if (typeof videoEl.requestPictureInPicture === "function") {
-        await videoEl.requestPictureInPicture();
+      window.FreecordAndroid?.setImmersiveFullscreen?.(!isLeaving);
+    } catch {}
+    try {
+      if (isLeaving) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen?.().catch(() => {});
+        }
+      } else if (!window.FreecordAndroid) {
+        const el = document.getElementById(`tile_box_${tile.id}`) || document.documentElement;
+        el?.requestFullscreen?.().catch(() => {});
       }
     } catch {}
+  };
+
+  const handleToggleTilePiP = async (tile, videoId) => {
+    if (!tile) return;
+    setSpotlightTileId(tile.id);
+    setInAppPipTileId((prev) => (prev === tile.id ? null : tile.id));
+
+    // 1. On Android Native App: enter native Android Picture-in-Picture floating window
+    if (window.FreecordAndroid?.enterPipMode) {
+      setFullscreenTileId(tile.id);
+      setInAppPipTileId(tile.id);
+      try {
+        window.FreecordAndroid.enterPipMode();
+        return;
+      } catch {}
+    }
+
+    // 2. Try standard HTML5 Video PiP on Desktop / Browser if supported
+    try {
+      const videoEl = document.getElementById(videoId);
+      if (videoEl && typeof videoEl.requestPictureInPicture === "function") {
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+          return;
+        } else if (videoEl.readyState >= 1) {
+          await videoEl.requestPictureInPicture();
+          return;
+        }
+      }
+    } catch {}
+
+    // 3. Fallback: minimize mobile call stage into the floating In-App Video PiP player
+    if (isMobile && mobileTab === "call") {
+      setInAppPipTileId(tile.id);
+      setMobileTab("servers");
+    }
   };
 
   const connectViaWebSocket = (host, port) => {
@@ -4435,6 +4502,23 @@ export default function App() {
     [stageTiles, spotlightTileId]
   );
 
+  const activeFullscreenTile = useMemo(
+    () => stageTiles.find((tile) => tile.id === fullscreenTileId) || null,
+    [stageTiles, fullscreenTileId]
+  );
+
+  const activeInAppPipTile = useMemo(() => {
+    if (inAppPipTileId) {
+      const found = stageTiles.find((tile) => tile.id === inAppPipTileId);
+      if (found && (found.stream || found.frameUrl)) return found;
+    }
+    return (
+      stageTiles.find((tile) => tile.kind === "screen" && (tile.stream || tile.frameUrl)) ||
+      stageTiles.find((tile) => tile.kind === "camera" && (tile.stream || tile.frameUrl)) ||
+      null
+    );
+  }, [stageTiles, inAppPipTileId]);
+
   // Find an active webcam stream to display in the floating PiP overlay when a Screen Share is spotlighted
   const activeWebcamTileForPip = useMemo(() => {
     if (!activeSpotlightTile || activeSpotlightTile.kind !== "screen") return null;
@@ -4543,28 +4627,26 @@ export default function App() {
                 <span>{Math.round(zoom * 100)}%</span>
               </button>
 
-              {tile.stream && (
-                <button
-                  type="button"
-                  className="tile-ctrl-btn"
-                  onClick={() => toggleVideoPiP(videoDomId)}
-                  title={t.pipBtn}
-                >
-                  <PictureInPicture2 size={12} />
-                </button>
-              )}
+              <button
+                type="button"
+                className={`tile-ctrl-btn ${inAppPipTileId === tile.id ? "active" : ""}`}
+                onClick={() => handleToggleTilePiP(tile, videoDomId)}
+                title={t.pipBtn}
+              >
+                <PictureInPicture2 size={12} />
+                <span>PiP</span>
+              </button>
             </>
           )}
 
           <button
             type="button"
-            className="tile-ctrl-btn"
-            onClick={() =>
-              toggleElementFullscreen(document.getElementById(`tile_box_${tile.id}`))
-            }
+            className={`tile-ctrl-btn ${fullscreenTileId === tile.id ? "active" : ""}`}
+            onClick={() => handleToggleTileFullscreen(tile)}
             title={t.tileFullscreenBtn}
           >
-            <Maximize2 size={12} />
+            {fullscreenTileId === tile.id ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+            <span>{lang === "en" ? "Full" : "Tela Cheia"}</span>
           </button>
         </div>
 
@@ -7537,25 +7619,6 @@ return (
                           </div>
                         )}
                     </div>
-
-                    {stageTiles.length > 1 && (
-                      <div className="mobile-call-spotlight-dock">
-                        {stageTiles
-                          .filter((tile) => tile.id !== activeSpotlightTile.id)
-                          .map((tile) => (
-                            <div
-                              key={tile.id}
-                              className="mobile-call-dock-item"
-                              onClickCapture={(e) => {
-                                e.stopPropagation();
-                                setSpotlightTileId(tile.id);
-                              }}
-                            >
-                              {renderStageTile(tile, false)}
-                            </div>
-                          ))}
-                      </div>
-                    )}
                   </div>
                 ) : (
                   <div className="mobile-call-grid">
@@ -7729,6 +7792,53 @@ return (
             )}
           </div>
 
+          {/* Floating In-App Video/Screen PiP Mini-Player when outside Call Tab */}
+          {activeVoiceChannelId && mobileTab !== "call" && activeInAppPipTile && (
+            <div
+              className="in-app-floating-pip-player"
+              onClick={() => {
+                setSpotlightTileId(activeInAppPipTile.id);
+                setMobileTab("call");
+              }}
+            >
+              <VideoStreamView
+                videoId={`in_app_pip_${activeInAppPipTile.id}`}
+                stream={activeInAppPipTile.stream}
+                frameUrl={activeInAppPipTile.frameUrl}
+                muted={true}
+                fitMode="contain"
+              />
+              <div className="in-app-floating-pip-bar" onClick={(e) => e.stopPropagation()}>
+                <span className="in-app-floating-pip-title">
+                  {activeInAppPipTile.kind === "screen" ? "🖥️" : "📷"} {activeInAppPipTile.label}
+                </span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {window.FreecordAndroid?.enterPipMode && (
+                    <button
+                      type="button"
+                      className="tile-ctrl-btn"
+                      onClick={() => handleToggleTilePiP(activeInAppPipTile, `in_app_pip_${activeInAppPipTile.id}`)}
+                      title="PiP"
+                    >
+                      <PictureInPicture2 size={11} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="tile-ctrl-btn"
+                    onClick={() => {
+                      setSpotlightTileId(activeInAppPipTile.id);
+                      setMobileTab("call");
+                    }}
+                    title="Expandir"
+                  >
+                    <Maximize2 size={11} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Floating Mini-Call Bar */}
           {activeVoiceChannelId && mobileTab !== "call" && (
             <div className="mobile-mini-call-bar" onClick={() => setMobileTab("call")}>
@@ -7860,6 +7970,27 @@ return (
           )}
         </div>
       )}
+
+      {/* True Edge-to-Edge Fullscreen Video/Screen Overlay (and Android System PiP view) */}
+      {(activeFullscreenTile || (isAndroidSystemPip && (activeSpotlightTile || activeInAppPipTile))) && (() => {
+        const fsTile = activeFullscreenTile || activeSpotlightTile || activeInAppPipTile;
+        if (!fsTile) return null;
+        return (
+          <div className={`true-fullscreen-stage-overlay ${isAndroidSystemPip ? "android-pip-mode" : ""}`}>
+            {renderStageTile(fsTile, true)}
+            {!isAndroidSystemPip && (
+              <button
+                type="button"
+                className="true-fullscreen-exit-btn"
+                onClick={() => handleToggleTileFullscreen(fsTile)}
+              >
+                <Minimize2 size={16} />
+                <span>{lang === "en" ? "Exit Fullscreen" : "Sair da Tela Cheia"}</span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Modal: Inspected User Profile Card Popout */}
       {inspectedProfile && (

@@ -2,9 +2,11 @@ package com.freecord.ptb;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.PictureInPictureParams;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
@@ -20,6 +22,8 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Base64;
 import android.util.DisplayMetrics;
+import android.util.Rational;
+import android.view.View;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
@@ -130,6 +134,17 @@ public class MainActivity extends BridgeActivity {
         keepWebViewAwakeInBackground();
     }
 
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        keepWebViewAwakeInBackground();
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            final WebView webView = this.bridge.getWebView();
+            final String js = "if(window.__onAndroidPipChanged){window.__onAndroidPipChanged(" + (isInPictureInPictureMode ? "true" : "false") + ");}";
+            webView.post(() -> webView.evaluateJavascript(js, null));
+        }
+    }
+
     private void keepWebViewAwakeInBackground() {
         if (!isVoiceCallActive && !isCapturingScreen) return;
         if (this.bridge != null && this.bridge.getWebView() != null) {
@@ -148,6 +163,45 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public boolean isScreenCaptureSupported() {
             return projectionManager != null;
+        }
+
+        @JavascriptInterface
+        public boolean enterPipMode() {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                runOnUiThread(() -> {
+                    try {
+                        PictureInPictureParams params = new PictureInPictureParams.Builder()
+                                .setAspectRatio(new Rational(16, 9))
+                                .build();
+                        enterPictureInPictureMode(params);
+                    } catch (Exception ignored) {
+                    }
+                });
+                return true;
+            }
+            return false;
+        }
+
+        @JavascriptInterface
+        public void setImmersiveFullscreen(final boolean enable) {
+            runOnUiThread(() -> {
+                try {
+                    View decorView = getWindow().getDecorView();
+                    if (enable) {
+                        decorView.setSystemUiVisibility(
+                                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        );
+                    } else {
+                        decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                    }
+                } catch (Exception ignored) {
+                }
+            });
         }
 
         @JavascriptInterface

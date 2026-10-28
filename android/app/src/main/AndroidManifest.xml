@@ -16,6 +16,8 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
             android:exported="true">
 
             <intent-filter>

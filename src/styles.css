@@ -2253,26 +2253,32 @@ body, html, #root {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px;
+  gap: 8px;
+  padding: 8px;
   overflow: hidden;
   min-height: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .mobile-call-spotlight-main {
   flex: 1;
-  min-height: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 160px;
   position: relative;
   border-radius: 14px;
   overflow: hidden;
-  display: flex;
+  display: block;
   background: #000;
 }
 
 .mobile-call-spotlight-main > .video-tile {
-  flex: 1;
-  width: 100%;
-  height: 100%;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  aspect-ratio: unset !important;
 }
 
 .mobile-floating-pip {
@@ -2280,6 +2286,155 @@ body, html, #root {
   bottom: 44px;
   right: 10px;
   cursor: pointer;
+}
+
+/* Landscape Mode on Mobile Call Stage */
+@media (orientation: landscape) and (max-height: 600px) {
+  .mobile-call-header {
+    height: 36px;
+    padding: 0 12px;
+  }
+
+  .mobile-call-focus-bar {
+    padding: 4px 10px;
+    gap: 6px;
+  }
+
+  .mobile-focus-pill {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  .mobile-call-spotlight-layout {
+    padding: 4px 8px;
+  }
+
+  .mobile-call-spotlight-main {
+    min-height: 140px;
+    border-radius: 10px;
+  }
+
+  .mobile-call-grid {
+    flex-direction: row;
+    align-items: stretch;
+    padding: 6px 8px;
+    gap: 8px;
+  }
+
+  .mobile-call-tile {
+    min-height: 120px;
+    max-height: none;
+    height: 100%;
+  }
+
+  .mobile-call-tile > .video-tile {
+    min-height: 120px;
+    height: 100%;
+    aspect-ratio: unset;
+  }
+
+  .mobile-call-controls {
+    height: 48px;
+    padding: 0 12px;
+  }
+
+  .mobile-call-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .mobile-call-btn.end-call {
+    width: 42px;
+    height: 42px;
+  }
+}
+
+/* True Edge-to-Edge Fullscreen Video / Screen Overlay & Android System PiP */
+.true-fullscreen-stage-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 99999;
+  background: #000;
+  display: block;
+  overflow: hidden;
+}
+
+.true-fullscreen-stage-overlay > .video-tile {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0 !important;
+  border: none !important;
+  aspect-ratio: unset !important;
+}
+
+.true-fullscreen-stage-overlay.android-pip-mode .video-tile-actions,
+.true-fullscreen-stage-overlay.android-pip-mode .video-tile-overlay,
+.true-fullscreen-stage-overlay.android-pip-mode .floating-webcam-pip {
+  display: none !important;
+}
+
+.true-fullscreen-exit-btn {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 12px;
+  z-index: 100001;
+  background: rgba(17, 18, 20, 0.85);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+/* Floating In-App Video PiP Mini-Player when browsing chats/servers */
+.in-app-floating-pip-player {
+  position: fixed;
+  right: 12px;
+  bottom: calc(116px + env(safe-area-inset-bottom, 0px));
+  width: 196px;
+  height: 124px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+  border: 2px solid var(--brand-blurple);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.75);
+  z-index: 9400;
+  cursor: pointer;
+}
+
+.in-app-floating-pip-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 6px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.88));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  z-index: 5;
+}
+
+.in-app-floating-pip-title {
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mobile-call-spotlight-dock {
