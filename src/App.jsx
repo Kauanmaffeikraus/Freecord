@@ -1592,26 +1592,26 @@ export default function App() {
       localPeerId: selfPeerIdRef.current,
       onSignalSend: (targetPeerId, signal) => {
         if (!activeVoiceChannelIdRef.current) return;
-        if (window.DiscordNative?.p2p) {
-          window.DiscordNative.p2p.send(
-            {
-              type: "WEBRTC_SIGNAL",
-              voiceChannelId: activeVoiceChannelIdRef.current,
-              signal,
-            },
-            targetPeerId
-          );
-        }
+        sendP2PPacket(
+          {
+            type: "WEBRTC_SIGNAL",
+            fromPeerId: selfPeerIdRef.current,
+            voiceChannelId: activeVoiceChannelIdRef.current,
+            signal,
+          },
+          targetPeerId
+        );
       },
       onFrameSend: (framePacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
-        if (!activeCh || !window.DiscordNative?.p2p) return;
+        if (!activeCh) return;
         const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
           if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
-            window.DiscordNative.p2p.send(
+            sendP2PPacket(
               {
                 type: "MEDIA_FRAME",
+                fromPeerId: selfPeerIdRef.current,
                 voiceChannelId: activeCh,
                 ...framePacket,
               },
@@ -1622,13 +1622,14 @@ export default function App() {
       },
       onAudioChunkSend: (chunkPacket) => {
         const activeCh = activeVoiceChannelIdRef.current;
-        if (!activeCh || !window.DiscordNative?.p2p) return;
+        if (!activeCh) return;
         const dmTargetPeerId = outgoingDmCallRef.current?.peer?.peerId || null;
         for (const p of connectedPeersRef.current) {
           if (p.voiceChannelId === activeCh || (dmTargetPeerId && p.peerId === dmTargetPeerId)) {
-            window.DiscordNative.p2p.send(
+            sendP2PPacket(
               {
                 type: "AUDIO_CHUNK",
+                fromPeerId: selfPeerIdRef.current,
                 voiceChannelId: activeCh,
                 ...chunkPacket,
               },
@@ -1646,8 +1647,9 @@ export default function App() {
         if (!activeVoiceChannelIdRef.current && who !== "self") return;
         setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
         if (who === "self" && activeVoiceChannelIdRef.current) {
-          window.DiscordNative?.p2p?.send({
+          sendP2PPacket({
             type: "VOICE_SPEAKING",
+            fromPeerId: selfPeerIdRef.current,
             voiceChannelId: activeVoiceChannelIdRef.current,
             speaking: Boolean(isSpeaking),
           });
@@ -1862,13 +1864,36 @@ export default function App() {
   }, [rooms, activeVoiceChannelId, selfMute, selfDeafen, videoEnabled, screenSharing]);
 
   const sendP2PPacket = (packet, targetPeerId = null) => {
+    const enrichedPacket = {
+      fromPeerId: selfPeerIdRef.current,
+      ...(targetPeerId ? { targetPeerId } : {}),
+      ...packet,
+    };
     // 1. Send via Electron Native P2P if available
     if (window.DiscordNative?.p2p) {
-      window.DiscordNative.p2p.send(packet, targetPeerId);
+      window.DiscordNative.p2p.send(enrichedPacket, targetPeerId);
     }
     // 2. Send via WebRTC DataChannel (always forwards to connected browser/mobile peers)
-    voiceEngineRef.current?.sendViaDataChannel(packet, targetPeerId);
+    voiceEngineRef.current?.sendViaDataChannel(enrichedPacket, targetPeerId);
     // 3. Send via Mobile WebSocket if connected to a desktop node
+    if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
+      try {
+        mobileWsRef.current.send(JSON.stringify(enrichedPacket));
+      } catch {}
+    }
+  };
+
+  const syncVoiceStateP2P = (channelId, voiceState = {}) => {
+    if (window.DiscordNative?.p2p) {
+      window.DiscordNative.p2p.setVoiceState(channelId, voiceState);
+    }
+    const packet = {
+      type: "VOICE_STATE",
+      fromPeerId: selfPeerIdRef.current,
+      channelId: channelId || null,
+      voiceState: voiceState || {},
+    };
+    voiceEngineRef.current?.sendViaDataChannel(packet, null);
     if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
       try {
         mobileWsRef.current.send(JSON.stringify(packet));
@@ -2134,13 +2159,67 @@ export default function App() {
         break;
       }
 
+      case "VOICE_STATE": {
+        if (!event.fromPeerId) break;
+        const nextChannelId = event.channelId || null;
+        const nextVoiceState = event.voiceState || {};
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId
+              ? {
+                  ...p,
+                  voiceChannelId: nextChannelId,
+                  voiceState: { ...(p.voiceState || {}), ...nextVoiceState },
+                }
+              : p
+          )
+        );
+        if (typeof nextVoiceState.speaking === "boolean") {
+          setSpeakingMap((prev) => ({
+            ...prev,
+            [event.fromPeerId]: nextVoiceState.speaking,
+          }));
+        }
+        if (nextChannelId) {
+          setOutgoingDmCall((prev) => {
+            if (prev && prev.channelId === nextChannelId) {
+              if (notificationsEnabledRef.current) {
+                playSynthesizedUiSound("call_join");
+              }
+              return null;
+            }
+            return prev;
+          });
+        }
+        break;
+      }
+
       case "DM_CALL_RING": {
         if (!event.fromPeerId || !event.channelId) break;
-        if (activeVoiceChannelIdRef.current === event.channelId) {
+        // If we are already in this call (or simultaneously calling the same peer), pair immediately!
+        if (
+          activeVoiceChannelIdRef.current === event.channelId ||
+          outgoingDmCallRef.current?.channelId === event.channelId
+        ) {
+          setOutgoingDmCall(null);
+          setIncomingDmCall(null);
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? { ...p, voiceChannelId: event.channelId }
+                : p
+            )
+          );
           sendP2PPacket(
             { type: "DM_CALL_ACCEPT", channelId: event.channelId },
             event.fromPeerId
           );
+          syncVoiceStateP2P(event.channelId, {
+            muted: selfMute,
+            deafened: selfDeafen,
+            videoEnabled,
+            screenSharing,
+          });
           break;
         }
         const caller =
@@ -2150,6 +2229,13 @@ export default function App() {
             displayName: "Peer",
             username: "peer",
           };
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId
+              ? { ...p, voiceChannelId: event.channelId }
+              : p
+          )
+        );
         setIncomingDmCall({
           fromPeerId: event.fromPeerId,
           caller,
@@ -2175,6 +2261,16 @@ export default function App() {
       case "DM_CALL_ACCEPT": {
         if (!event.channelId) break;
         setOutgoingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        setIncomingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
+        if (event.fromPeerId) {
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? { ...p, voiceChannelId: event.channelId }
+                : p
+            )
+          );
+        }
         if (notificationsEnabledRef.current) {
           playSynthesizedUiSound("call_join");
         }
@@ -2197,6 +2293,15 @@ export default function App() {
           }
           return prev;
         });
+        if (event.fromPeerId) {
+          setConnectedPeers((prev) =>
+            prev.map((p) =>
+              p.peerId === event.fromPeerId && p.voiceChannelId === event.channelId
+                ? { ...p, voiceChannelId: null }
+                : p
+            )
+          );
+        }
         if (notificationsEnabledRef.current) {
           playSynthesizedUiSound("call_leave");
         }
@@ -2213,10 +2318,13 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.signal) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId && senderPeer.voiceChannelId !== activeCh) {
-          break;
-        }
+        setConnectedPeers((prev) =>
+          prev.map((p) =>
+            p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
+              ? { ...p, voiceChannelId: activeCh }
+              : p
+          )
+        );
         voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
         break;
       }
@@ -2239,8 +2347,6 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.kind || !event.dataUrl) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
         voiceEngineRef.current?.handleIncomingMediaFrame(event.fromPeerId, event);
         break;
       }
@@ -2249,8 +2355,6 @@ export default function App() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.pcmBase64) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
-        if (senderPeer && senderPeer.voiceChannelId !== activeCh) break;
         voiceEngineRef.current?.handleIncomingAudioChunk(event.fromPeerId, event);
         break;
       }
@@ -2290,6 +2394,12 @@ export default function App() {
 
     for (const peer of connectedPeers) {
       if (peer.voiceChannelId === activeVoiceChannelId) {
+        setOutgoingDmCall((prev) =>
+          prev && prev.channelId === activeVoiceChannelId ? null : prev
+        );
+        setIncomingDmCall((prev) =>
+          prev && prev.channelId === activeVoiceChannelId ? null : prev
+        );
         const existing = engine.connections.get(peer.peerId);
         if (
           !existing ||
@@ -2540,9 +2650,9 @@ export default function App() {
       videoEnabled,
       screenSharing,
     };
-    window.DiscordNative?.p2p?.setVoiceState(voiceChannel.id, vState);
+    syncVoiceStateP2P(voiceChannel.id, vState);
 
-    for (const peer of connectedPeers) {
+    for (const peer of connectedPeersRef.current) {
       if (peer.voiceChannelId === voiceChannel.id) {
         await engine.negotiateWithPeer(peer.peerId);
       }
@@ -2568,8 +2678,8 @@ export default function App() {
     setRemoteStreams({});
     setSpeakingMap({});
     setMicInputLevel(0);
-    window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
-    window.DiscordNative?.p2p?.setVoiceState(null, { speaking: false });
+    sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
+    syncVoiceStateP2P(null, { speaking: false });
   };
 
   const handleStartDmCall = async (peer, withVideo = false) => {
@@ -2580,6 +2690,13 @@ export default function App() {
 
     const dmCallId = getDmCallChannelId(peer.peerId);
     const peerLabel = peer.displayName || peer.username || "Peer";
+
+    // If the target peer is already ringing us on this exact DM call channel, accept it directly!
+    if (incomingDmCall && incomingDmCall.channelId === dmCallId) {
+      await handleAcceptDmCall(withVideo);
+      return;
+    }
+
     await handleJoinVoiceChannel({
       id: dmCallId,
       name: `PV @${peerLabel}`,
@@ -2591,10 +2708,16 @@ export default function App() {
       }, 200);
     }
 
-    const peerAlreadyInCall = connectedPeers.some(
+    const peerAlreadyInCall = connectedPeersRef.current.some(
       (p) => p.peerId === peer.peerId && p.voiceChannelId === dmCallId
     );
-    if (!peerAlreadyInCall) {
+    if (peerAlreadyInCall) {
+      setOutgoingDmCall(null);
+      sendP2PPacket(
+        { type: "DM_CALL_ACCEPT", channelId: dmCallId },
+        peer.peerId
+      );
+    } else {
       setOutgoingDmCall({
         peer,
         channelId: dmCallId,
@@ -2617,8 +2740,15 @@ export default function App() {
     if (!incomingDmCall) return;
     const { fromPeerId, caller, channelId } = incomingDmCall;
     setIncomingDmCall(null);
+    setOutgoingDmCall(null);
     setSelectedRoomId("dm_hub");
     setSelectedDmPeerId(fromPeerId);
+
+    setConnectedPeers((prev) =>
+      prev.map((p) =>
+        p.peerId === fromPeerId ? { ...p, voiceChannelId: channelId } : p
+      )
+    );
 
     const callerLabel = caller?.displayName || caller?.username || "Peer";
     await handleJoinVoiceChannel({
@@ -2664,10 +2794,10 @@ export default function App() {
     voiceEngineRef.current?.setSelfMute(next);
     if (next) {
       setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
-      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+      sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
     }
     if (activeVoiceChannelId) {
-      window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+      syncVoiceStateP2P(activeVoiceChannelId, {
         muted: next,
         deafened: selfDeafen,
         videoEnabled,
@@ -2683,11 +2813,11 @@ export default function App() {
     if (next) {
       setSelfMute(true);
       setSpeakingMap((prev) => ({ ...prev, [selfPeerIdRef.current]: false }));
-      window.DiscordNative?.p2p?.send({ type: "VOICE_SPEAKING", speaking: false });
+      sendP2PPacket({ type: "VOICE_SPEAKING", speaking: false });
     }
     voiceEngineRef.current?.setSelfDeafen(next);
     if (activeVoiceChannelId) {
-      window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+      syncVoiceStateP2P(activeVoiceChannelId, {
         muted: next ? true : selfMute,
         deafened: next,
         videoEnabled,
@@ -2719,7 +2849,7 @@ export default function App() {
         setLocalCameraStream(camStream);
       }
       if (activeVoiceChannelId) {
-        window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+        syncVoiceStateP2P(activeVoiceChannelId, {
           muted: selfMute,
           deafened: selfDeafen,
           videoEnabled: !videoEnabled,
@@ -2740,7 +2870,7 @@ export default function App() {
         setSpotlightTileId(null);
       }
       if (activeVoiceChannelId) {
-        window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+        syncVoiceStateP2P(activeVoiceChannelId, {
           muted: selfMute,
           deafened: selfDeafen,
           videoEnabled,
@@ -2871,7 +3001,7 @@ export default function App() {
         setSpotlightTileId("self_screen");
         setShowScreenPicker(false);
         if (activeVoiceChannelId) {
-          window.DiscordNative?.p2p?.setVoiceState(activeVoiceChannelId, {
+          syncVoiceStateP2P(activeVoiceChannelId, {
             muted: selfMute,
             deafened: selfDeafen,
             videoEnabled,
@@ -2934,6 +3064,7 @@ export default function App() {
         mobileWsRef.current = ws;
 
         let resolved = false;
+        let remoteWsPeerId = null;
         const timer = setTimeout(() => {
           if (!resolved) {
             resolved = true;
@@ -2950,6 +3081,13 @@ export default function App() {
               cryptoPubKey: cryptoIdentity.publicKey,
               keyFingerprint: cryptoIdentity.keyFingerprint,
             },
+            voiceChannelId: activeVoiceChannelIdRef.current || null,
+            voiceState: {
+              muted: selfMute,
+              deafened: selfDeafen,
+              videoEnabled,
+              screenSharing,
+            },
             timestamp: Date.now(),
           }));
         };
@@ -2957,9 +3095,26 @@ export default function App() {
         ws.onmessage = (e) => {
           try {
             const packet = JSON.parse(e.data);
+            if (packet.type === "PING") {
+              try {
+                ws.send(JSON.stringify({ type: "PONG", sentAt: packet.sentAt }));
+              } catch {}
+              return;
+            }
+            if (packet.type === "PROFILE_UPDATE" && packet.profile?.peerId) {
+              setConnectedPeers((prev) =>
+                prev.map((p) =>
+                  p.peerId === packet.profile.peerId
+                    ? { ...p, ...packet.profile }
+                    : p
+                )
+              );
+              return;
+            }
             if (packet.type === "HELLO" || packet.type === "HELLO_ACK") {
               const remoteProf = packet.profile;
               if (remoteProf && remoteProf.peerId) {
+                remoteWsPeerId = remoteProf.peerId;
                 const peerEntry = {
                   ...remoteProf,
                   address: host,
@@ -3000,6 +3155,13 @@ export default function App() {
                       cryptoPubKey: cryptoIdentity.publicKey,
                       keyFingerprint: cryptoIdentity.keyFingerprint,
                     },
+                    voiceChannelId: activeVoiceChannelIdRef.current || null,
+                    voiceState: {
+                      muted: selfMute,
+                      deafened: selfDeafen,
+                      videoEnabled,
+                      screenSharing,
+                    },
                     timestamp: Date.now(),
                   }));
                 }
@@ -3008,17 +3170,23 @@ export default function App() {
                   requestHistorySyncFromPeer(remoteProf.peerId);
                 }, 300);
               }
+              return;
             }
 
+            const enrichedPacket = {
+              ...packet,
+              fromPeerId: packet.fromPeerId || remoteWsPeerId || host,
+            };
+
             // Route WebRTC signaling and media frames
-            if (packet.type === "VOICE_SIGNAL") {
-              voiceEngineRef.current?.handleIncomingSignal(packet.fromPeerId || host, packet.signal);
-            } else if (packet.type === "VOICE_MEDIA_FRAME") {
-              voiceEngineRef.current?.handleIncomingMediaFrame(packet.fromPeerId || host, packet);
-            } else if (packet.type === "VOICE_AUDIO_CHUNK") {
-              voiceEngineRef.current?.handleIncomingAudioChunk(packet.fromPeerId || host, packet);
+            if (enrichedPacket.type === "VOICE_SIGNAL") {
+              voiceEngineRef.current?.handleIncomingSignal(enrichedPacket.fromPeerId, enrichedPacket.signal);
+            } else if (enrichedPacket.type === "VOICE_MEDIA_FRAME") {
+              voiceEngineRef.current?.handleIncomingMediaFrame(enrichedPacket.fromPeerId, enrichedPacket);
+            } else if (enrichedPacket.type === "VOICE_AUDIO_CHUNK") {
+              voiceEngineRef.current?.handleIncomingAudioChunk(enrichedPacket.fromPeerId, enrichedPacket);
             } else {
-              handleIncomingP2PEventRef.current?.(packet);
+              handleIncomingP2PEventRef.current?.(enrichedPacket);
             }
           } catch (err) {
             console.warn("[Freecord WS] Error processing packet:", err);
@@ -3816,10 +3984,18 @@ export default function App() {
         setNodeStatus((prev) => ({ ...prev, profile: updated }));
       }
     } else {
+      const mergedProfile = { ...nodeStatus.profile, ...sanitized };
       setNodeStatus((prev) => ({
         ...prev,
-        profile: { ...prev.profile, ...sanitized },
+        profile: mergedProfile,
       }));
+      try {
+        localStorage.setItem("freecord_web_profile", JSON.stringify(mergedProfile));
+      } catch {}
+      sendP2PPacket({
+        type: "PROFILE_UPDATE",
+        profile: mergedProfile,
+      });
     }
     setShowProfileModal(false);
   };

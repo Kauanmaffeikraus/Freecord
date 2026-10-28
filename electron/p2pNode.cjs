@@ -702,6 +702,18 @@ class P2PNode extends EventEmitter {
           sendRaw({ type: "PEER_EXCHANGE", peers: knownEndpoints });
         }
 
+        if (packet.type === "HELLO") {
+          sendRaw({
+            type: "HELLO_ACK",
+            profile: this.profile,
+            tcpPort: this.tcpPort,
+            addresses: getLocalIPv4Addresses().map((a) => a.address),
+            voiceChannelId: this.currentVoiceChannelId || null,
+            voiceState: this.currentVoiceState || {},
+            timestamp: Date.now(),
+          });
+        }
+
         if (ctx.onHandshakeResolve) {
           ctx.onHandshakeResolve(serialized);
         }
@@ -761,6 +773,16 @@ class P2PNode extends EventEmitter {
       default: {
         const senderId = ctx.getAssociatedPeerId() || packet.fromPeerId;
         if (!senderId) return;
+
+        // If packet is addressed to a specific 3rd peer in the mesh, relay it
+        if (packet.targetPeerId && packet.targetPeerId !== this.profile.peerId) {
+          const targetPeer = this.peers.get(packet.targetPeerId);
+          if (targetPeer) {
+            targetPeer.sendRaw({ ...packet, fromPeerId: senderId });
+          }
+          return;
+        }
+
         if (packet.type === "VOICE_STATE") {
           const peer = this.peers.get(senderId);
           if (peer) {
@@ -772,6 +794,7 @@ class P2PNode extends EventEmitter {
           const peer = this.peers.get(senderId);
           if (peer) {
             peer.voiceState = { ...(peer.voiceState || {}), speaking: Boolean(packet.speaking) };
+            this.emit("peers-updated", this.getConnectedPeersList());
           }
         }
         this.emit("p2p-event", {
@@ -791,17 +814,23 @@ class P2PNode extends EventEmitter {
   }
 
   broadcast(packet, targetPeerId = null) {
+    const enriched = {
+      fromPeerId: this.profile.peerId,
+      ...(targetPeerId ? { targetPeerId } : {}),
+      ...packet,
+    };
+
     if (targetPeerId) {
       const peer = this.peers.get(targetPeerId);
       if (peer) {
-        return peer.sendRaw(packet);
+        return peer.sendRaw(enriched);
       }
       return false;
     }
 
     let count = 0;
     for (const peer of this.peers.values()) {
-      if (peer.sendRaw(packet)) count++;
+      if (peer.sendRaw(enriched)) count++;
     }
     return count;
   }
