@@ -137,6 +137,25 @@ class P2PNode extends EventEmitter {
       screenSharing: false,
       videoEnabled: false,
     };
+    this.seenPacketIds = new Set();
+  }
+
+  isDuplicatePacket(packet, senderId) {
+    const pid =
+      packet.message?.id ||
+      packet.packetId ||
+      packet.id ||
+      (packet.type !== "VOICE_SPEAKING" && packet.type !== "PING" && packet.type !== "PONG"
+        ? `${packet.type}_${senderId}_${packet.channelId || ""}_${packet.timestamp || ""}`
+        : null);
+    if (!pid) return false;
+    if (this.seenPacketIds.has(pid)) return true;
+    this.seenPacketIds.add(pid);
+    if (this.seenPacketIds.size > 2000) {
+      const first = this.seenPacketIds.values().next().value;
+      this.seenPacketIds.delete(first);
+    }
+    return false;
   }
 
   loadInitialProfile() {
@@ -873,6 +892,9 @@ class P2PNode extends EventEmitter {
         const senderId = ctx.getAssociatedPeerId() || packet.fromPeerId;
         if (!senderId) return;
 
+        // Deduplicate packets to prevent loops in mesh networks
+        if (this.isDuplicatePacket(packet, senderId)) return;
+
         // If packet is addressed to a specific 3rd peer in the mesh, relay it
         if (packet.targetPeerId && packet.targetPeerId !== this.profile.peerId) {
           const targetPeer = this.peers.get(packet.targetPeerId);
@@ -880,6 +902,16 @@ class P2PNode extends EventEmitter {
             targetPeer.sendRaw({ ...packet, fromPeerId: senderId });
           }
           return;
+        }
+
+        // If it's a broadcast packet (no targetPeerId) from a connected client/peer,
+        // relay it to all other peers in the mesh so every node is synchronized!
+        if (!packet.targetPeerId && packet.type !== "PING" && packet.type !== "PONG") {
+          for (const [peerId, peer] of this.peers.entries()) {
+            if (peerId !== senderId) {
+              peer.sendRaw({ ...packet, fromPeerId: senderId });
+            }
+          }
         }
 
         if (packet.type === "VOICE_STATE") {

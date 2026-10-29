@@ -16,6 +16,10 @@
   --status-yellow: #f0b232;
   --status-red: #f23f43;
   --border-subtle: rgba(255, 255, 255, 0.06);
+  --safe-top: max(12px, env(safe-area-inset-top, 0px));
+  --safe-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+  --mobile-nav-height: 58px;
+  --mobile-dock-total-height: calc(var(--mobile-nav-height) + var(--safe-bottom));
 }
 
 * {
@@ -1935,7 +1939,7 @@ body, html, #root {
 
 
 /* ==========================================================================
-   Discord Mobile Layout for Android & Responsive Touch Screens
+   Discord Mobile Layout for Android & Responsive Touch Screens (Native Feel)
    ========================================================================== */
 
 .mobile-shell {
@@ -1945,8 +1949,11 @@ body, html, #root {
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  padding-top: env(safe-area-inset-top, 0px);
-  background: var(--bg-primary);
+  padding-top: var(--safe-top);
+  background: #111214;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .mobile-body {
@@ -1954,7 +1961,12 @@ body, html, #root {
   display: flex;
   overflow: hidden;
   position: relative;
-  margin-bottom: 58px;
+  margin-bottom: var(--mobile-dock-total-height);
+  background: #111214;
+}
+
+.mobile-body.in-chat {
+  margin-bottom: 0 !important;
 }
 
 .mobile-servers-split {
@@ -1962,67 +1974,187 @@ body, html, #root {
   display: flex;
   overflow: hidden;
   width: 100%;
+  background: #111214;
 }
 
+/* Discord Mobile Server Rail */
 .mobile-rail {
   width: 72px;
   min-width: 72px;
   flex-shrink: 0;
-  background: var(--bg-tertiary);
+  background: #111214;
   overflow-y: auto;
-  padding-bottom: 16px;
+  padding: 8px 0 24px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  scrollbar-width: none;
 }
 
+.mobile-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-rail .server-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  background-color: #1e1f22;
+  color: #dbdee1;
+  font-weight: 800;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  position: relative;
+  transition: border-radius 0.2s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease, transform 0.1s ease;
+}
+
+.mobile-rail .server-icon:active {
+  transform: scale(0.92);
+}
+
+.mobile-rail .server-icon.active {
+  border-radius: 16px;
+  background-color: var(--brand-blurple);
+  color: #fff;
+}
+
+.mobile-rail .server-icon.home-logo {
+  background-color: #1e1f22;
+}
+
+.mobile-rail .server-icon.home-logo.active {
+  background-color: var(--brand-blurple);
+}
+
+.mobile-rail .server-icon.add-server-btn {
+  background: #1e1f22;
+  color: #23a55a;
+  border: 1px dashed rgba(35, 165, 90, 0.4);
+}
+
+.mobile-rail .server-icon.add-server-btn:active {
+  background: rgba(35, 165, 90, 0.2);
+  border-radius: 16px;
+}
+
+.mobile-rail .server-icon.connect-btn {
+  background: #1e1f22;
+  color: #5865f2;
+  border: 1px dashed rgba(88, 101, 242, 0.4);
+}
+
+.mobile-rail .server-icon.connect-btn:active {
+  background: rgba(88, 101, 242, 0.2);
+  border-radius: 16px;
+}
+
+/* Right Channel Sidebar on Mobile */
 .mobile-sidebar {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary);
+  background: #1e1f22;
+  border-top-left-radius: 20px;
   overflow: hidden;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
 }
 
+.mobile-sidebar .channel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 4px 16px 4px;
+}
+
+.mobile-sidebar .channel-item {
+  margin: 2px 8px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  color: #949ba4;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.08s ease;
+}
+
+.mobile-sidebar .channel-item:active {
+  transform: scale(0.98);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mobile-sidebar .channel-item.active {
+  background: rgba(88, 101, 242, 0.16);
+  color: #fff;
+  font-weight: 700;
+}
+
+.mobile-sidebar .channel-item.has-unread {
+  color: #fff;
+  font-weight: 800;
+}
+
+/* User Panel on Mobile Sidebar */
+.mobile-sidebar .user-panel {
+  background: #111214;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* Mobile Fullscreen Chat Screen */
 .mobile-chat-screen {
   flex: 1;
   display: flex;
   flex-direction: column;
   width: 100%;
   height: 100%;
-  background: var(--bg-primary);
+  background: #313338;
   overflow: hidden;
+  position: relative;
 }
 
 .mobile-chat-header {
-  height: 52px;
-  background: var(--bg-secondary);
+  height: 56px;
+  background: #2b2d31;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 10px;
+  padding: 0 12px;
   flex-shrink: 0;
   z-index: 10;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 
-.mobile-back-btn {
-  width: 38px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-normal);
-  border-radius: 50%;
-  margin-right: 4px;
-}
-
+.mobile-back-btn,
 .mobile-header-btn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-normal);
+  color: #dbdee1;
   border-radius: 50%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.1s ease;
+}
+
+.mobile-back-btn:active,
+.mobile-header-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+  transform: scale(0.92);
 }
 
 .mobile-header-title-wrap {
@@ -2045,7 +2177,7 @@ body, html, #root {
 
 .mobile-header-sub {
   font-size: 11px;
-  color: var(--text-muted);
+  color: #949ba4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2058,54 +2190,115 @@ body, html, #root {
   gap: 4px;
 }
 
-/* DMs View on Mobile */
+/* Chat Input Bar on Mobile */
+.mobile-chat-screen .chat-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mobile-chat-screen .chat-input-bar {
+  padding: 8px 12px max(12px, var(--safe-bottom)) 12px;
+  background: #2b2d31;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-chat-screen .chat-input-bar input[type="text"] {
+  flex: 1;
+  background: #383a40;
+  border: none;
+  border-radius: 24px;
+  padding: 10px 16px;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+}
+
+.mobile-chat-screen .chat-input-bar input[type="text"]::placeholder {
+  color: #80848e;
+}
+
+/* DMs Screen on Mobile */
 .mobile-dms-screen {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
   width: 100%;
-  background: var(--bg-primary);
+  background: #1e1f22;
 }
 
 .mobile-dms-header {
-  height: 54px;
-  background: var(--bg-secondary);
+  height: 56px;
+  background: #2b2d31;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
   flex-shrink: 0;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+.mobile-search-bar {
+  margin: 12px 14px 4px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #111214;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 8px 12px;
+}
+
+.mobile-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.mobile-search-input::placeholder {
+  color: #80848e;
 }
 
 .mobile-endpoint-card {
-  margin: 12px 14px;
-  background: var(--bg-secondary);
+  margin: 10px 14px;
+  background: #2b2d31;
   border: 1px solid rgba(88, 101, 242, 0.35);
-  border-radius: 10px;
-  padding: 10px 14px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .mobile-dms-list {
   display: flex;
   flex-direction: column;
-  padding: 0 8px;
-  gap: 4px;
+  padding: 4px 10px 24px 10px;
+  gap: 6px;
 }
 
 .mobile-dm-item {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(43, 45, 49, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.15s ease, transform 0.1s ease;
 }
 
 .mobile-dm-item:active {
   background: rgba(255, 255, 255, 0.08);
+  transform: scale(0.98);
 }
 
 .mobile-dm-item-info {
@@ -2124,7 +2317,7 @@ body, html, #root {
 
 .mobile-dm-item-status {
   font-size: 12px;
-  color: var(--text-muted);
+  color: #949ba4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2134,19 +2327,20 @@ body, html, #root {
 .mobile-dm-item-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .icon-btn-round {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   cursor: pointer;
-  transition: transform 0.1s ease;
+  transition: transform 0.1s ease, filter 0.15s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
 .icon-btn-round:active {
@@ -2168,21 +2362,21 @@ body, html, #root {
   position: fixed;
   inset: 0;
   z-index: 9500;
-  background: #111214;
+  background: radial-gradient(ellipse at top, #1e1f28 0%, #111214 100%);
   display: flex;
   flex-direction: column;
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
 }
 
 .mobile-call-header {
-  height: 54px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
   flex-shrink: 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .mobile-call-grid {
@@ -2199,15 +2393,17 @@ body, html, #root {
   flex: 1;
   min-height: 180px;
   max-height: 420px;
-  border-radius: 12px;
+  border-radius: 16px;
   overflow: hidden;
   position: relative;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 .mobile-call-tile > .video-tile {
   width: 100%;
   height: 100%;
   min-height: 180px;
+  border-radius: 16px;
 }
 
 @media (max-width: 900px), (hover: none) {
@@ -2273,10 +2469,11 @@ body, html, #root {
   height: 100%;
   min-height: 160px;
   position: relative;
-  border-radius: 14px;
+  border-radius: 16px;
   overflow: hidden;
   display: block;
   background: #000;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
 .mobile-call-spotlight-main > .video-tile {
@@ -2285,6 +2482,7 @@ body, html, #root {
   width: 100% !important;
   height: 100% !important;
   aspect-ratio: unset !important;
+  border-radius: 16px !important;
 }
 
 .mobile-floating-pip {
@@ -2297,7 +2495,7 @@ body, html, #root {
 /* Landscape Mode on Mobile Call Stage */
 @media (orientation: landscape) and (max-height: 600px) {
   .mobile-call-header {
-    height: 36px;
+    height: 40px;
     padding: 0 12px;
   }
 
@@ -2317,7 +2515,7 @@ body, html, #root {
 
   .mobile-call-spotlight-main {
     min-height: 140px;
-    border-radius: 10px;
+    border-radius: 12px;
   }
 
   .mobile-call-grid {
@@ -2340,18 +2538,18 @@ body, html, #root {
   }
 
   .mobile-call-controls {
-    height: 48px;
+    height: 56px;
     padding: 0 12px;
   }
 
   .mobile-call-btn {
-    width: 38px;
-    height: 38px;
+    width: 42px;
+    height: 42px;
   }
 
   .mobile-call-btn.end-call {
-    width: 42px;
-    height: 42px;
+    width: 46px;
+    height: 46px;
   }
 }
 
@@ -2386,7 +2584,7 @@ body, html, #root {
 
 .true-fullscreen-exit-btn {
   position: absolute;
-  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  top: calc(var(--safe-top) + 12px);
   left: 12px;
   z-index: 100001;
   background: rgba(17, 18, 20, 0.85);
@@ -2408,10 +2606,10 @@ body, html, #root {
 .in-app-floating-pip-player {
   position: fixed;
   right: 12px;
-  bottom: calc(116px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(var(--mobile-dock-total-height) + 68px);
   width: 196px;
   height: 124px;
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   background: #000;
   border: 2px solid var(--brand-blurple);
@@ -2457,7 +2655,7 @@ body, html, #root {
   width: 150px;
   min-width: 150px;
   height: 100%;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   position: relative;
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -2473,9 +2671,12 @@ body, html, #root {
   display: none;
 }
 
+/* Modern Floating Bottom Capsule Call Controls */
 .mobile-call-controls {
-  height: 84px;
-  background: #1e1f22;
+  height: 88px;
+  background: rgba(30, 31, 34, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   display: flex;
   align-items: center;
   justify-content: space-evenly;
@@ -2485,8 +2686,8 @@ body, html, #root {
 }
 
 .mobile-call-btn {
-  width: 50px;
-  height: 50px;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -2496,10 +2697,11 @@ body, html, #root {
   border: none;
   cursor: pointer;
   transition: transform 0.1s ease, background 0.15s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 
 .mobile-call-btn:active {
-  transform: scale(0.92);
+  transform: scale(0.9);
 }
 
 .mobile-call-btn.active {
@@ -2515,24 +2717,25 @@ body, html, #root {
 .mobile-call-btn.end-call {
   background: #f23f43;
   color: #fff;
-  width: 56px;
-  height: 56px;
+  width: 58px;
+  height: 58px;
+  box-shadow: 0 4px 16px rgba(242, 63, 67, 0.45);
 }
 
-/* "You" Profile & Settings on Mobile */
+/* "You" (Você) Profile & Settings on Mobile */
 .mobile-you-screen {
   flex: 1;
   overflow-y: auto;
-  background: var(--bg-primary);
+  background: #111214;
 }
 
 .mobile-you-header {
   position: relative;
-  margin-bottom: 50px;
+  margin-bottom: 52px;
 }
 
 .mobile-you-banner {
-  height: 130px;
+  height: 140px;
   width: 100%;
   background-size: cover;
   background-position: center;
@@ -2540,34 +2743,36 @@ body, html, #root {
 
 .mobile-you-avatar-wrap {
   position: absolute;
-  bottom: -38px;
-  left: 18px;
+  bottom: -40px;
+  left: 20px;
   border-radius: 50%;
-  border: 4px solid var(--bg-primary);
-  background: var(--bg-primary);
+  border: 5px solid #111214;
+  background: #111214;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
 
 .mobile-you-info {
-  padding: 0 18px 12px 18px;
+  padding: 0 20px 14px 20px;
 }
 
 .mobile-menu-card {
-  margin: 10px 14px;
-  background: var(--bg-secondary);
-  border-radius: 12px;
+  margin: 12px 14px;
+  background: #1e1f22;
+  border-radius: 16px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 
 .mobile-menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 16px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   color: #dbdee1;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: background 0.12s ease;
 }
@@ -2583,21 +2788,21 @@ body, html, #root {
 /* Floating Mini-Call Bar */
 .mobile-mini-call-bar {
   position: fixed;
-  bottom: calc(58px + env(safe-area-inset-bottom, 0px) + 8px);
-  left: 10px;
-  right: 10px;
-  height: 48px;
+  bottom: calc(var(--mobile-dock-total-height) + 10px);
+  left: 12px;
+  right: 12px;
+  height: 52px;
   background: linear-gradient(90deg, #1e1f22 0%, #2b2d31 100%);
   border: 1px solid rgba(35, 165, 90, 0.5);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  border-radius: 16px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0 14px;
   z-index: 8999;
   cursor: pointer;
-  animation: slideUpMini 0.25s ease;
+  animation: slideUpMini 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes slideUpMini {
@@ -2617,35 +2822,44 @@ body, html, #root {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 58px;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  background: #111214;
+  height: var(--mobile-dock-total-height);
+  padding-bottom: var(--safe-bottom);
+  background: rgba(17, 18, 20, 0.96);
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   justify-content: space-around;
   z-index: 9000;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
 }
 
 .mobile-nav-item {
   flex: 1;
-  height: 100%;
+  height: var(--mobile-nav-height);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
+  color: #949ba4;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
   cursor: pointer;
   background: none;
   border: none;
   padding: 0;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-  transition: color 0.15s ease, transform 0.1s ease;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+
+.mobile-nav-item:active {
+  transform: scale(0.92);
 }
 
 .mobile-nav-item.active {
@@ -2654,7 +2868,6 @@ body, html, #root {
 
 .mobile-nav-item.active .mobile-nav-icon-wrap {
   color: var(--brand-blurple);
-  transform: translateY(-1px);
 }
 
 .mobile-nav-badge {
@@ -2719,16 +2932,18 @@ body, html, #root {
   right: 0;
   width: 82vw;
   max-width: 320px;
-  background: var(--bg-secondary);
+  background: #1e1f22;
   border-left: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
   flex-direction: column;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bottom);
   box-shadow: -8px 0 28px rgba(0, 0, 0, 0.6);
   animation: slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .mobile-drawer-header {
-  height: 52px;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;

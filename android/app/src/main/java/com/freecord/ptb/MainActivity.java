@@ -95,6 +95,11 @@ public class MainActivity extends BridgeActivity {
 
         super.onCreate(savedInstanceState);
         instance = this;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(android.graphics.Color.parseColor("#111214"));
+            getWindow().setNavigationBarColor(android.graphics.Color.parseColor("#111214"));
+        }
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
 
         // Prompt for Android OS runtime permissions (Microphone, Camera, Notifications on Android 13+)

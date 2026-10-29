@@ -1354,6 +1354,7 @@ function loadInitialWebNodeStatus() {
   const [mobileTab, setMobileTab] = useState("servers"); // "servers" | "dms" | "call" | "you"
   const [mobileInChat, setMobileInChat] = useState(false);
   const [showMobileMembers, setShowMobileMembers] = useState(false);
+  const [mobileSearchQuery, setMobileSearchQuery] = useState("");
 
   useEffect(() => {
     const handleResize = () => {
@@ -2459,17 +2460,29 @@ function loadInitialWebNodeStatus() {
         if (!event.fromPeerId) break;
         const nextChannelId = event.channelId || null;
         const nextVoiceState = event.voiceState || {};
-        setConnectedPeers((prev) =>
-          prev.map((p) =>
-            p.peerId === event.fromPeerId
-              ? {
-                  ...p,
-                  voiceChannelId: nextChannelId,
-                  voiceState: { ...(p.voiceState || {}), ...nextVoiceState },
-                }
-              : p
-          )
-        );
+        setConnectedPeers((prev) => {
+          const exists = prev.some((p) => p.peerId === event.fromPeerId);
+          if (exists) {
+            return prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? {
+                    ...p,
+                    voiceChannelId: nextChannelId,
+                    voiceState: { ...(p.voiceState || {}), ...nextVoiceState },
+                  }
+                : p
+            );
+          }
+          return [
+            ...prev,
+            {
+              peerId: event.fromPeerId,
+              name: event.fromPeerId.slice(0, 8),
+              voiceChannelId: nextChannelId,
+              voiceState: nextVoiceState,
+            },
+          ];
+        });
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || nextChannelId !== activeCh) {
           setSpeakingMap((prev) => {
@@ -2481,6 +2494,9 @@ function loadInitialWebNodeStatus() {
             ...prev,
             [event.fromPeerId]: nextVoiceState.speaking,
           }));
+        }
+        if (activeCh && nextChannelId === activeCh) {
+          voiceEngineRef.current?.negotiateWithPeer(event.fromPeerId);
         }
         if (nextChannelId) {
           setOutgoingDmCall((prev) => {
@@ -2505,17 +2521,22 @@ function loadInitialWebNodeStatus() {
         ) {
           setOutgoingDmCall(null);
           setIncomingDmCall(null);
-          setConnectedPeers((prev) =>
-            prev.map((p) =>
-              p.peerId === event.fromPeerId
-                ? { ...p, voiceChannelId: event.channelId }
-                : p
-            )
-          );
+          setConnectedPeers((prev) => {
+            const exists = prev.some((p) => p.peerId === event.fromPeerId);
+            if (exists) {
+              return prev.map((p) =>
+                p.peerId === event.fromPeerId
+                  ? { ...p, voiceChannelId: event.channelId }
+                  : p
+              );
+            }
+            return [...prev, { peerId: event.fromPeerId, voiceChannelId: event.channelId }];
+          });
           sendP2PPacket(
             { type: "DM_CALL_ACCEPT", channelId: event.channelId },
             event.fromPeerId
           );
+          voiceEngineRef.current?.negotiateWithPeer(event.fromPeerId);
           syncVoiceStateP2P(event.channelId, {
             muted: selfMute,
             deafened: selfDeafen,
@@ -2531,13 +2552,17 @@ function loadInitialWebNodeStatus() {
             displayName: "Peer",
             username: "peer",
           };
-        setConnectedPeers((prev) =>
-          prev.map((p) =>
-            p.peerId === event.fromPeerId
-              ? { ...p, voiceChannelId: event.channelId }
-              : p
-          )
-        );
+        setConnectedPeers((prev) => {
+          const exists = prev.some((p) => p.peerId === event.fromPeerId);
+          if (exists) {
+            return prev.map((p) =>
+              p.peerId === event.fromPeerId
+                ? { ...p, voiceChannelId: event.channelId, ...caller }
+                : p
+            );
+          }
+          return [...prev, { ...caller, peerId: event.fromPeerId, voiceChannelId: event.channelId }];
+        });
         setIncomingDmCall({
           fromPeerId: event.fromPeerId,
           caller,
@@ -2565,13 +2590,24 @@ function loadInitialWebNodeStatus() {
         setOutgoingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
         setIncomingDmCall((prev) => (prev && prev.channelId === event.channelId ? null : prev));
         if (event.fromPeerId) {
-          setConnectedPeers((prev) =>
-            prev.map((p) =>
-              p.peerId === event.fromPeerId
-                ? { ...p, voiceChannelId: event.channelId }
-                : p
-            )
-          );
+          setConnectedPeers((prev) => {
+            const exists = prev.some((p) => p.peerId === event.fromPeerId);
+            if (exists) {
+              return prev.map((p) =>
+                p.peerId === event.fromPeerId
+                  ? { ...p, voiceChannelId: event.channelId }
+                  : p
+              );
+            }
+            return [
+              ...prev,
+              {
+                peerId: event.fromPeerId,
+                voiceChannelId: event.channelId,
+                name: event.fromPeerId.slice(0, 8),
+              },
+            ];
+          });
           // If we initiated the call, negotiate media tracks now that callee has accepted
           if (activeVoiceChannelIdRef.current === event.channelId) {
             voiceEngineRef.current?.negotiateWithPeer(event.fromPeerId);
@@ -2624,13 +2660,24 @@ function loadInitialWebNodeStatus() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.signal) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        setConnectedPeers((prev) =>
-          prev.map((p) =>
-            p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
-              ? { ...p, voiceChannelId: activeCh }
-              : p
-          )
-        );
+        setConnectedPeers((prev) => {
+          const exists = prev.some((p) => p.peerId === event.fromPeerId);
+          if (exists) {
+            return prev.map((p) =>
+              p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
+                ? { ...p, voiceChannelId: activeCh }
+                : p
+            );
+          }
+          return [
+            ...prev,
+            {
+              peerId: event.fromPeerId,
+              voiceChannelId: activeCh,
+              name: event.fromPeerId.slice(0, 8),
+            },
+          ];
+        });
         voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
         break;
       }
@@ -3065,11 +3112,15 @@ function loadInitialWebNodeStatus() {
     setSelectedRoomId("dm_hub");
     setSelectedDmPeerId(fromPeerId);
 
-    setConnectedPeers((prev) =>
-      prev.map((p) =>
-        p.peerId === fromPeerId ? { ...p, voiceChannelId: channelId } : p
-      )
-    );
+    setConnectedPeers((prev) => {
+      const exists = prev.some((p) => p.peerId === fromPeerId);
+      if (exists) {
+        return prev.map((p) =>
+          p.peerId === fromPeerId ? { ...p, voiceChannelId: channelId, ...(caller || {}) } : p
+        );
+      }
+      return [...prev, { ...(caller || {}), peerId: fromPeerId, voiceChannelId: channelId }];
+    });
 
     const callerLabel = caller?.displayName || caller?.username || "Peer";
     await handleJoinVoiceChannel({
@@ -3084,6 +3135,7 @@ function loadInitialWebNodeStatus() {
     }
 
     sendP2PPacket({ type: "DM_CALL_ACCEPT", channelId }, fromPeerId);
+    voiceEngineRef.current?.negotiateWithPeer(fromPeerId);
     if (notificationsEnabledRef.current) {
       playSynthesizedUiSound("call_join");
     }
@@ -4970,6 +5022,34 @@ function loadInitialWebNodeStatus() {
                 <PictureInPicture2 size={12} />
                 <span>PiP</span>
               </button>
+
+              {isScreenTile && activeWebcamTileForPip && (
+                <button
+                  type="button"
+                  className={`tile-ctrl-btn ${showWebcamPipOverlay ? "active" : ""}`}
+                  onClick={() => setShowWebcamPipOverlay((prev) => !prev)}
+                  title={
+                    showWebcamPipOverlay
+                      ? lang === "pt"
+                        ? "Ocultar Câmera Sobreposta"
+                        : "Hide Overlay Webcam"
+                      : lang === "pt"
+                      ? "Mostrar Câmera Sobreposta"
+                      : "Show Overlay Webcam"
+                  }
+                >
+                  <PictureInPicture2 size={12} />
+                  <span>
+                    {showWebcamPipOverlay
+                      ? lang === "pt"
+                        ? "Ocultar Câmera"
+                        : "Hide Cam"
+                      : lang === "pt"
+                      ? "Mostrar Câmera"
+                      : "Show Cam"}
+                  </span>
+                </button>
+              )}
             </>
           )}
 
@@ -5040,6 +5120,19 @@ function loadInitialWebNodeStatus() {
                   title={t.hideWebcamBtn}
                 >
                   <VideoOff size={10} />
+                </button>
+                <button
+                  type="button"
+                  className="tile-ctrl-btn"
+                  style={{ padding: "2px 5px", fontSize: 9 }}
+                  onClick={() => setShowWebcamPipOverlay(false)}
+                  title={
+                    lang === "pt"
+                      ? "Remover câmera sobreposta da transmissão"
+                      : "Remove overlay webcam from stream"
+                  }
+                >
+                  <X size={10} />
                 </button>
               </div>
             </div>
@@ -7368,7 +7461,7 @@ return (
       </div>
       ) : (
         <div className="app-shell mobile-shell">
-          <div className="mobile-body">
+          <div className={`mobile-body ${mobileInChat ? "in-chat" : ""}`}>
             {/* TAB: SERVERS */}
             {mobileTab === "servers" && (
               !mobileInChat ? (
@@ -7776,6 +7869,20 @@ return (
                     </button>
                   </div>
 
+                  <div className="mobile-search-bar">
+                    <Hash size={14} color="#80848e" />
+                    <input
+                      type="text"
+                      className="mobile-search-input"
+                      placeholder={lang === "pt" ? "Buscar conversas ou peers..." : "Search friends or chats..."}
+                      value={mobileSearchQuery}
+                      onChange={(e) => setMobileSearchQuery(e.target.value)}
+                    />
+                    {mobileSearchQuery && (
+                      <X size={14} color="#80848e" style={{ cursor: "pointer" }} onClick={() => setMobileSearchQuery("")} />
+                    )}
+                  </div>
+
                   <div className="mobile-endpoint-card">
                     <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>
                       {t.yourEndpointLabel}
@@ -7813,7 +7920,17 @@ return (
                     </div>
                   ) : (
                     <div className="mobile-dms-list">
-                      {connectedPeers.map((peer) => {
+                      {connectedPeers
+                        .filter((p) => {
+                          if (!mobileSearchQuery.trim()) return true;
+                          const q = mobileSearchQuery.toLowerCase();
+                          return (
+                            (p.displayName || "").toLowerCase().includes(q) ||
+                            (p.username || "").toLowerCase().includes(q) ||
+                            (p.tag || "").toLowerCase().includes(q)
+                          );
+                        })
+                        .map((peer) => {
                         const sorted = [nodeStatus.profile.peerId, peer.peerId].sort().join("__");
                         const dmChId = `dm_${sorted}`;
                         const dmUnread = unreadCounts[dmChId] || 0;
@@ -8316,73 +8433,75 @@ return (
           )}
 
           {/* Discord Mobile Bottom Navigation Bar */}
-          <nav className="mobile-bottom-nav">
-            <button
-              type="button"
-              className={`mobile-nav-item ${mobileTab === "servers" ? "active" : ""}`}
-              onClick={() => {
-                setMobileTab("servers");
-              }}
-            >
-              <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
-                <Hash size={22} />
-                {totalServerUnread > 0 && (
-                  <span className="mobile-nav-badge">{totalServerUnread}</span>
-                )}
-              </div>
-              <span>{t.mobileServersTab}</span>
-            </button>
-
-            <button
-              type="button"
-              className={`mobile-nav-item ${mobileTab === "dms" ? "active" : ""}`}
-              onClick={() => {
-                setMobileTab("dms");
-              }}
-            >
-              <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
-                <MessageSquare size={22} />
-                {totalDmUnread > 0 && (
-                  <span className="mobile-nav-badge">{totalDmUnread}</span>
-                )}
-              </div>
-              <span>{t.mobileDmsTab}</span>
-            </button>
-
-            {activeVoiceChannelId && (
+          {!mobileInChat && mobileTab !== "call" && (
+            <nav className="mobile-bottom-nav">
               <button
                 type="button"
-                className={`mobile-nav-item ${mobileTab === "call" ? "active" : ""}`}
+                className={`mobile-nav-item ${mobileTab === "servers" ? "active" : ""}`}
                 onClick={() => {
-                  setMobileTab("call");
+                  setMobileTab("servers");
                 }}
               >
                 <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
-                  <PhoneCall size={22} color="#23a55a" />
-                  <span className="mobile-nav-pulse-dot" />
+                  <Hash size={22} />
+                  {totalServerUnread > 0 && (
+                    <span className="mobile-nav-badge">{totalServerUnread}</span>
+                  )}
                 </div>
-                <span style={{ color: "#23a55a" }}>{t.mobileCallTab}</span>
+                <span>{t.mobileServersTab}</span>
               </button>
-            )}
 
-            <button
-              type="button"
-              className={`mobile-nav-item ${mobileTab === "you" ? "active" : ""}`}
-              onClick={() => {
-                setMobileTab("you");
-              }}
-            >
-              <div className="mobile-nav-icon-wrap">
-                <UserAvatar
-                  profile={nodeStatus.profile}
-                  size="small"
-                  showStatus={true}
-                  style={{ width: 24, height: 24 }}
-                />
-              </div>
-              <span>{t.mobileYouTab}</span>
-            </button>
-          </nav>
+              <button
+                type="button"
+                className={`mobile-nav-item ${mobileTab === "dms" ? "active" : ""}`}
+                onClick={() => {
+                  setMobileTab("dms");
+                }}
+              >
+                <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
+                  <MessageSquare size={22} />
+                  {totalDmUnread > 0 && (
+                    <span className="mobile-nav-badge">{totalDmUnread}</span>
+                  )}
+                </div>
+                <span>{t.mobileDmsTab}</span>
+              </button>
+
+              {activeVoiceChannelId && (
+                <button
+                  type="button"
+                  className={`mobile-nav-item ${mobileTab === "call" ? "active" : ""}`}
+                  onClick={() => {
+                    setMobileTab("call");
+                  }}
+                >
+                  <div className="mobile-nav-icon-wrap" style={{ position: "relative" }}>
+                    <PhoneCall size={22} color="#23a55a" />
+                    <span className="mobile-nav-pulse-dot" />
+                  </div>
+                  <span style={{ color: "#23a55a" }}>{t.mobileCallTab}</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                className={`mobile-nav-item ${mobileTab === "you" ? "active" : ""}`}
+                onClick={() => {
+                  setMobileTab("you");
+                }}
+              >
+                <div className="mobile-nav-icon-wrap">
+                  <UserAvatar
+                    profile={nodeStatus.profile}
+                    size="small"
+                    showStatus={true}
+                    style={{ width: 26, height: 26 }}
+                  />
+                </div>
+                <span>{t.mobileYouTab}</span>
+              </button>
+            </nav>
+          )}
 
           {/* Slide-over Members Drawer on Mobile */}
           {showMobileMembers && (
