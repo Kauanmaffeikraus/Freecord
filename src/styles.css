@@ -1145,7 +1145,7 @@ body, html, #root {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 100005;
 }
 
 .modal-box {
@@ -2961,4 +2961,104 @@ body, html, #root {
 @keyframes slideInRight {
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
+}
+
+/* Studio Modern Top Tabs */
+.studio-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.studio-tab-bar::-webkit-scrollbar {
+  display: none;
+}
+.studio-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  border: 1px solid transparent;
+}
+.studio-tab-btn.active {
+  background-color: var(--brand-blurple);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 8px rgba(88, 101, 242, 0.35);
+}
+.studio-tab-btn:not(.active) {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: #dbdee1;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.studio-tab-btn:not(.active):hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+/* Drag Handle for Bottom Sheet */
+.mobile-sheet-drag-handle {
+  display: none;
+}
+
+/* Mobile Modern Bottom Sheet Presentation for Modals */
+@media (max-width: 768px) {
+  .modal-backdrop {
+    align-items: flex-end !important;
+    padding: 0 !important;
+  }
+  .mobile-sheet-drag-handle {
+    display: block;
+    width: 38px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.25);
+    margin: -6px auto 14px auto;
+  }
+  .profile-studio-modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 88vh !important;
+    border-radius: 20px 20px 0 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+    border-bottom: none !important;
+    padding: 18px 16px !important;
+    padding-bottom: calc(24px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+    box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.75) !important;
+    animation: mobileModalSheet 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+  .modal-box {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 88vh !important;
+    border-radius: 20px 20px 0 0 !important;
+    border-left: none !important;
+    border-right: none !important;
+    border-bottom: none !important;
+    padding: 20px 16px !important;
+    padding-bottom: calc(24px + var(--safe-bottom, env(safe-area-inset-bottom, 0px))) !important;
+    box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.75) !important;
+    animation: mobileModalSheet 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+}
+
+@keyframes mobileModalSheet {
+  from {
+    transform: translateY(100%);
+    opacity: 0.7;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }

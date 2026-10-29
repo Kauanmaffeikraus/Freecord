@@ -284,11 +284,11 @@ const I18N = {
     editMyProfileBtn: "Edit My Profile",
     saveProfileBtn: "Save & Sync Profile",
     mediaSettingsBtn: "Voice, Video & Screen",
-    mediaSettingsTitle: "🎙️ Voice, Camera & Screen Share Settings",
+    mediaSettingsTitle: "Voice, Camera & Screen Share Settings",
     mediaSettingsSub: "Choose your Audio Output (Speaker/Headset), Microphone Input, Camera, and Go Live Screen Share Resolution & FPS.",
-    tabProfileSettings: "✨ Profile & Identity",
-    tabMediaSettings: "🎙️ Audio, Camera & Screen",
-    tabUpdateSettings: "🚀 Updates",
+    tabProfileSettings: "Profile & Identity",
+    tabMediaSettings: "Audio, Camera & Screen",
+    tabUpdateSettings: "Updates",
     updateSettingsTitle: "Freecord Updates & Release Channel",
     updateSettingsSub: "Automatic P2P and GitHub Releases updater powered by electron-updater.",
     currentVersionLabel: "Current App Version:",
@@ -310,7 +310,7 @@ const I18N = {
     cameraDeviceLabel: "Camera Device (Video Input)",
     defaultDeviceOption: "System Default Device",
     refreshDevicesBtn: "Refresh Devices",
-    testSpeakerBtn: "🔊 Test Output Audio",
+    testSpeakerBtn: "Test Output Audio",
     testMicLabel: "Live Microphone Input Level",
     masterOutputVolLabel: (vol) => `Master Output Volume: ${vol}%`,
     echoCancelLabel: "Echo Cancellation",
@@ -319,7 +319,7 @@ const I18N = {
     cameraResLabel: "Camera Capture Resolution",
     testCameraBtn: "Preview Camera",
     stopTestCameraBtn: "Stop Preview",
-    screenQualitySectionTitle: "🖥️ Go Live Screen Share Resolution & Frame Rate",
+    screenQualitySectionTitle: "Go Live Screen Share Resolution & Frame Rate",
     screenResLabel: "Screen Share Resolution",
     screenFpsLabel: "Frame Rate (FPS)",
     tileSizeLabel: "Size",
@@ -540,11 +540,11 @@ const I18N = {
     editMyProfileBtn: "Editar Meu Perfil",
     saveProfileBtn: "Salvar e Sincronizar Perfil",
     mediaSettingsBtn: "Áudio, Câmera & Tela",
-    mediaSettingsTitle: "🎙️ Configurações de Áudio, Câmera & Transmissão",
+    mediaSettingsTitle: "Configurações de Áudio, Câmera & Transmissão",
     mediaSettingsSub: "Escolha a Saída de Áudio (Fone/Caixa), o Microfone de Entrada, a Câmera e a Resolução + FPS da Transmissão de Tela (Go Live).",
-    tabProfileSettings: "✨ Perfil & Identidade",
-    tabMediaSettings: "🎙️ Áudio, Câmera & Tela",
-    tabUpdateSettings: "🚀 Atualizações",
+    tabProfileSettings: "Perfil & Identidade",
+    tabMediaSettings: "Áudio, Câmera & Tela",
+    tabUpdateSettings: "Atualizações",
     updateSettingsTitle: "Atualizações do Freecord & Canal de Lançamento",
     updateSettingsSub: "Atualizador automático via GitHub Releases com electron-updater.",
     currentVersionLabel: "Versão Atual do App:",
@@ -562,7 +562,7 @@ const I18N = {
     cameraDeviceLabel: "Dispositivo de Vídeo (Câmera)",
     defaultDeviceOption: "Padrão do Sistema",
     refreshDevicesBtn: "Atualizar Dispositivos",
-    testSpeakerBtn: "🔊 Testar Saída de Áudio",
+    testSpeakerBtn: "Testar Saída de Áudio",
     testMicLabel: "Nível do Microfone em Tempo Real",
     masterOutputVolLabel: (vol) => `Volume Principal de Saída: ${vol}%`,
     echoCancelLabel: "Cancelamento de Eco",
@@ -571,7 +571,7 @@ const I18N = {
     cameraResLabel: "Resolução de Captura da Câmera",
     testCameraBtn: "Testar Câmera",
     stopTestCameraBtn: "Parar Teste",
-    screenQualitySectionTitle: "🖥️ Resolução e Taxa de Quadros da Transmissão de Tela (Go Live)",
+    screenQualitySectionTitle: "Resolução e Taxa de Quadros da Transmissão de Tela (Go Live)",
     screenResLabel: "Resolução da Transmissão de Tela",
     screenFpsLabel: "Taxa de Quadros (FPS)",
     tileSizeLabel: "Tamanho",
@@ -2679,6 +2679,7 @@ function loadInitialWebNodeStatus() {
           ];
         });
         voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
+        voiceEngineRef.current?.resumeAllAudio();
         break;
       }
 
@@ -3002,6 +3003,7 @@ function loadInitialWebNodeStatus() {
       window.FreecordAndroid?.startVoiceCallService?.(voiceChannel.name || "Chamada P2P");
     } catch {}
     await engine.startLocalVoice();
+    await engine.resumeAllAudio();
 
     const vState = {
       muted: selfMute,
@@ -5202,7 +5204,7 @@ function loadInitialWebNodeStatus() {
                           : `Voice Volume (${tile.label}): ${voiceVol}%`
                       }
                     >
-                      <span>🎙️</span>
+                      <Volume2 size={12} color="#94a3b8" />
                       <input
                         type="range"
                         min="0"
@@ -5239,7 +5241,7 @@ function loadInitialWebNodeStatus() {
                       : `Voice Volume (${tile.label}): ${voiceVol}%`
                   }
                 >
-                  <span>🎙️</span>
+                  <Volume2 size={12} color="#94a3b8" />
                   <input
                     type="range"
                     min="0"
@@ -5982,7 +5984,10 @@ return (
               onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
               title={t.restartAndInstallBtn}
             >
-              <span>🚀 {t.restartAndInstallBtn} (v{updateStatus.version})</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <RefreshCw size={12} />
+                <span>{t.restartAndInstallBtn} (v{updateStatus.version})</span>
+              </span>
             </button>
           )}
           <div
@@ -6128,7 +6133,7 @@ return (
           }}
         >
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span>🚀</span>
+            <Download size={15} color="#fff" />
             <span>{t.updateReadyNotice} (v{updateStatus.version || "1.3.0"})</span>
           </span>
           <button
@@ -8574,14 +8579,31 @@ return (
       {showProfileModal && (
         <div className="modal-backdrop" onClick={() => setShowProfileModal(false)}>
           <div className="profile-studio-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="mobile-sheet-drag-handle" />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div>
-                <h3 style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>
-                  {settingsTab === "media"
-                    ? t.mediaSettingsTitle
-                    : settingsTab === "updates"
-                    ? t.updateSettingsTitle
-                    : `✨ ${t.profileModalTitle}`}
+                <h3 style={{ fontSize: 18, fontWeight: 800, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
+                  {settingsTab === "media" ? (
+                    <>
+                      <Sliders size={18} color="#23a55a" />
+                      <span>{t.mediaSettingsTitle}</span>
+                    </>
+                  ) : settingsTab === "updates" ? (
+                    <>
+                      <Download size={18} color="#38bdf8" />
+                      <span>{t.updateSettingsTitle}</span>
+                    </>
+                  ) : settingsTab === "security" ? (
+                    <>
+                      <ShieldCheck size={18} color="#10b981" />
+                      <span>E2EE & Backup</span>
+                    </>
+                  ) : (
+                    <>
+                      <User size={18} color="var(--brand-blurple)" />
+                      <span>{t.profileModalTitle}</span>
+                    </>
+                  )}
                 </h3>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
                   {settingsTab === "media" ? (
@@ -8601,41 +8623,44 @@ return (
             </div>
 
             {/* Studio Top Tabs: Profile vs Audio/Camera/Screen vs Updates */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <div className="studio-tab-bar">
               <button
                 type="button"
-                className={settingsTab === "profile" ? "btn-primary" : "btn-secondary"}
+                className={`studio-tab-btn ${settingsTab === "profile" ? "active" : ""}`}
                 onClick={() => setSettingsTab("profile")}
               >
-                {t.tabProfileSettings}
+                <User size={14} />
+                <span>{t.tabProfileSettings}</span>
               </button>
               <button
                 type="button"
-                className={settingsTab === "media" ? "btn-primary" : "btn-secondary"}
+                className={`studio-tab-btn ${settingsTab === "media" ? "active" : ""}`}
                 onClick={() => {
                   setSettingsTab("media");
                   refreshMediaDevices();
                 }}
               >
-                {t.tabMediaSettings}
+                <Sliders size={14} />
+                <span>{t.tabMediaSettings}</span>
               </button>
               <button
                 type="button"
-                className={settingsTab === "updates" ? "btn-primary" : "btn-secondary"}
+                className={`studio-tab-btn ${settingsTab === "updates" ? "active" : ""}`}
                 onClick={() => setSettingsTab("updates")}
               >
-                {t.tabUpdateSettings}
+                <Download size={14} />
+                <span>{t.tabUpdateSettings}</span>
               </button>
               <button
                 type="button"
-                className={settingsTab === "security" ? "btn-primary" : "btn-secondary"}
+                className={`studio-tab-btn ${settingsTab === "security" ? "active" : ""}`}
                 onClick={() => {
                   setSettingsTab("security");
                   setIdentityBackupStatus(null);
                 }}
               >
-                <KeyRound size={14} />
-                <span>{lang === "en" ? "E2EE & Backup" : "E2EE & Backup"}</span>
+                <ShieldCheck size={14} />
+                <span>E2EE & Backup</span>
               </button>
             </div>
 
@@ -8732,10 +8757,11 @@ return (
                           <button
                             type="button"
                             className="btn-secondary"
-                            style={{ padding: "3px 8px", fontSize: 11 }}
+                            style={{ padding: "3px 8px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 5 }}
                             onClick={() => voiceEngineRef.current?.startLocalVoice(true)}
                           >
-                            🎙️ Test
+                            <Mic size={12} />
+                            <span>Test</span>
                           </button>
                         </div>
                         <div className="mic-meter-track">
@@ -8958,14 +8984,16 @@ return (
                     </div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>
                       {updateStatus?.status === "downloaded" && (
-                        <span style={{ color: "#57f287" }}>
-                          🚀 {t.updateReadyNotice} (v{updateStatus.version})
+                        <span style={{ color: "#57f287", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <Check size={16} />
+                          <span>{t.updateReadyNotice} (v{updateStatus.version})</span>
                         </span>
                       )}
                       {updateStatus?.status === "downloading" && (
                         <div>
-                          <span style={{ color: "#5865f2" }}>
-                            ⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%
+                          <span style={{ color: "#5865f2", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <Download size={16} />
+                            <span>{t.downloadingUpdate} {updateStatus.percent || 0}%</span>
                           </span>
                           <div
                             style={{

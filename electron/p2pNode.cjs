@@ -141,13 +141,7 @@ class P2PNode extends EventEmitter {
   }
 
   isDuplicatePacket(packet, senderId) {
-    const pid =
-      packet.message?.id ||
-      packet.packetId ||
-      packet.id ||
-      (packet.type !== "VOICE_SPEAKING" && packet.type !== "PING" && packet.type !== "PONG"
-        ? `${packet.type}_${senderId}_${packet.channelId || ""}_${packet.timestamp || ""}`
-        : null);
+    const pid = packet.message?.id || packet.packetId || packet.dedupId;
     if (!pid) return false;
     if (this.seenPacketIds.has(pid)) return true;
     this.seenPacketIds.add(pid);

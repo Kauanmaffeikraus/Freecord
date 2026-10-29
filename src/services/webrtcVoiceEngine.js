@@ -277,6 +277,27 @@ export class WebRTCVoiceEngine {
     } catch {}
   }
 
+  async resumeAllAudio() {
+    try {
+      const ctx = this.ensureAudioContext();
+      if (ctx && ctx.state === "suspended") {
+        await ctx.resume().catch(() => {});
+      }
+    } catch {}
+    for (const conn of this.connections.values()) {
+      try {
+        if (conn.audioEl) {
+          conn.audioEl.muted = this.selfDeafen || conn.muted;
+          conn.audioEl.play().catch(() => {});
+        }
+        if (conn.screenAudioEl) {
+          conn.screenAudioEl.muted = this.selfDeafen || conn.screenMuted;
+          conn.screenAudioEl.play().catch(() => {});
+        }
+      } catch {}
+    }
+  }
+
   buildAudioConstraints() {
     const constraints = {
       echoCancellation: this.echoCancellation,
