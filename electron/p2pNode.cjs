@@ -209,9 +209,15 @@ class P2PNode extends EventEmitter {
       if (fs.existsSync(this.stateFile)) {
         const saved = JSON.parse(fs.readFileSync(this.stateFile, "utf8"));
         if (Array.isArray(saved?.knownPeers)) {
+          const seenHosts = new Set();
           for (const item of saved.knownPeers) {
-            if (item && item.peerId && item.peerId !== this.profile?.peerId) {
-              map.set(item.peerId, item);
+            const port = Number(item?.tcpPort || 0);
+            if (item && item.peerId && item.peerId !== this.profile?.peerId && port > 0) {
+              const hostKey = `${item.host || item.address}:${port}`;
+              if (!seenHosts.has(hostKey)) {
+                seenHosts.add(hostKey);
+                map.set(item.peerId, item);
+              }
             }
           }
         }
@@ -224,6 +230,9 @@ class P2PNode extends EventEmitter {
     if (!peerEntry?.peerId || peerEntry.peerId === this.profile.peerId) return;
     const prev = this.knownPeers.get(peerEntry.peerId) || {};
     const portToSave = Number(listeningTcpPort || prev.tcpPort || 0);
+    // Never persist ephemeral/disconnected clients without a reachable listening TCP port (e.g. mobile/ws clients)
+    if (portToSave <= 0) return;
+
     const candidateAddrs = Array.from(
       new Set([
         peerEntry.address,
@@ -231,6 +240,15 @@ class P2PNode extends EventEmitter {
         ...(Array.isArray(prev.addresses) ? prev.addresses : []),
       ].filter((a) => a && a !== "0.0.0.0" && a !== "WebRTC DataChannel"))
     );
+    const hostAddr = peerEntry.address || prev.host || candidateAddrs[0] || "";
+
+    // Deduplicate by host: remove older stale peerId records for the same endpoint
+    for (const [id, rec] of this.knownPeers.entries()) {
+      if (id !== peerEntry.peerId && (rec.host === hostAddr || (rec.addresses && rec.addresses.includes(hostAddr)))) {
+        this.knownPeers.delete(id);
+      }
+    }
+
     const updated = {
       peerId: peerEntry.peerId,
       username: peerEntry.info?.username || prev.username || "Peer",
@@ -240,7 +258,7 @@ class P2PNode extends EventEmitter {
       avatarUrl: peerEntry.info?.avatarUrl || prev.avatarUrl || null,
       status: peerEntry.info?.status || "online",
       customStatus: peerEntry.info?.customStatus || "",
-      host: peerEntry.address || prev.host || candidateAddrs[0] || "",
+      host: hostAddr,
       tcpPort: portToSave,
       addresses: candidateAddrs,
       lastSeen: Date.now(),
@@ -999,6 +1017,8 @@ class P2PNode extends EventEmitter {
     const merged = new Map();
     if (this.knownPeers) {
       for (const [peerId, rec] of this.knownPeers.entries()) {
+        const port = Number(rec?.tcpPort || 0);
+        if (port <= 0) continue;
         merged.set(peerId, {
           ...rec,
           isConnected: this.peers.has(peerId),
@@ -1007,13 +1027,27 @@ class P2PNode extends EventEmitter {
       }
     }
     for (const [peerId, rec] of this.discoveredLanPeers.entries()) {
+      const port = Number(rec?.tcpPort || 0);
+      if (port <= 0 && !this.peers.has(peerId)) continue;
       merged.set(peerId, {
         ...(merged.get(peerId) || {}),
         ...rec,
         isConnected: this.peers.has(peerId),
       });
     }
-    return Array.from(merged.values());
+
+    // Deduplicate entries so multiple old sessions for the same IP do not stack up
+    const seenEndpoints = new Set();
+    const result = [];
+    for (const peer of merged.values()) {
+      const epKey = `${peer.host || peer.address}:${peer.tcpPort || 0}`;
+      if (seenEndpoints.has(epKey) && !peer.isConnected) {
+        continue;
+      }
+      seenEndpoints.add(epKey);
+      result.push(peer);
+    }
+    return result;
   }
 
   getNodeStatus() {

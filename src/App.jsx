@@ -1199,32 +1199,80 @@ export default function App() {
     });
   };
 
-  // Node & Profile State
-  const [nodeStatus, setNodeStatus] = useState({
-    instanceId: "1",
-    profile: {
-      peerId: `fc_web_${Math.random().toString(36).slice(2, 7)}`,
-      displayName: "Freecord Peer",
-      username: "freecord_peer",
-      tag: String(Math.floor(1000 + Math.random() * 9000)),
-      pronouns: "",
-      bio: "Serverless P2P Node running on Freecord PTB.",
-      avatarColor: "#5865f2",
-      avatarUrl: null,
-      bannerColor: "#5865f2",
-      bannerUrl: null,
-      accentColorPrimary: "#1e1f22",
-      accentColorSecondary: "#2b2d31",
-      status: "online",
-      statusEmoji: "⚡",
-      customStatus: "Connected via Direct P2P",
-      badges: ["P2P Node", "Early Adopter"],
-    },
+function getOrCreateDeviceNodeId() {
+  try {
+    let devId = localStorage.getItem("freecord_device_id");
+    if (!devId) {
+      const isMobile = Boolean(window.FreecordAndroid || /Android|iPhone|iPad/i.test(navigator.userAgent));
+      const prefix = isMobile ? "mob" : "web";
+      devId = `${prefix}_${Math.random().toString(36).slice(2, 7)}`;
+      localStorage.setItem("freecord_device_id", devId);
+    }
+    return devId;
+  } catch {
+    return `dev_${Math.random().toString(36).slice(2, 7)}`;
+  }
+}
+
+function loadInitialWebNodeStatus() {
+  const deviceId = getOrCreateDeviceNodeId();
+  const defaultProfile = {
+    peerId: `fc_${deviceId}`,
+    displayName: "Freecord Peer",
+    username: "freecord_peer",
+    tag: String(Math.floor(1000 + Math.random() * 9000)),
+    pronouns: "",
+    bio: "Serverless P2P Node running on Freecord PTB.",
+    avatarColor: "#5865f2",
+    avatarUrl: null,
+    bannerColor: "#5865f2",
+    bannerUrl: null,
+    accentColorPrimary: "#1e1f22",
+    accentColorSecondary: "#2b2d31",
+    status: "online",
+    statusEmoji: "⚡",
+    customStatus: "Connected via Direct P2P",
+    badges: ["P2P Node", "Early Adopter"],
+  };
+
+  try {
+    const saved = localStorage.getItem("freecord_web_profile");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === "object") {
+        let resolvedPeerId = parsed.peerId || defaultProfile.peerId;
+        if (!resolvedPeerId.includes(`_${deviceId}`)) {
+          const base = resolvedPeerId.split("_dev_")[0];
+          resolvedPeerId = `${base}_dev_${deviceId}`;
+        }
+        return {
+          instanceId: deviceId,
+          profile: {
+            ...defaultProfile,
+            ...parsed,
+            peerId: resolvedPeerId,
+          },
+          tcpPort: 0,
+          udpDiscoveryPort: 0,
+          connectionStrings: [],
+          localhostEndpoint: "",
+        };
+      }
+    }
+  } catch {}
+
+  return {
+    instanceId: deviceId,
+    profile: defaultProfile,
     tcpPort: 0,
     udpDiscoveryPort: 0,
     connectionStrings: [],
     localhostEndpoint: "",
-  });
+  };
+}
+
+  // Node & Profile State
+  const [nodeStatus, setNodeStatus] = useState(() => loadInitialWebNodeStatus());
 
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [lanPeers, setLanPeers] = useState([]);
@@ -1517,7 +1565,12 @@ export default function App() {
   useEffect(() => {
     selfPeerIdRef.current = nodeStatus.profile.peerId;
     voiceEngineRef.current?.setLocalPeerId(nodeStatus.profile.peerId);
-  }, [nodeStatus.profile.peerId]);
+    voiceEngineRef.current?.setLocalProfile({
+      ...nodeStatus.profile,
+      cryptoPubKey: cryptoIdentity?.publicKey,
+      keyFingerprint: cryptoIdentity?.keyFingerprint,
+    });
+  }, [nodeStatus.profile, cryptoIdentity]);
 
   useEffect(() => {
     activeVoiceChannelIdRef.current = activeVoiceChannelId;
@@ -1694,7 +1747,7 @@ export default function App() {
         setLocalScreenFrameUrl(dataUrl || null);
       },
       onDataChannelMessage: (fromPeerId, packet) => {
-        if (packet.type === "HELLO" && packet.profile) {
+        if ((packet.type === "HELLO" || packet.type === "HELLO_ACK") && packet.profile) {
           const p = packet.profile;
           setConnectedPeers((prev) => {
             const existing = prev.find((item) => item.peerId === p.peerId);
@@ -1707,12 +1760,35 @@ export default function App() {
                 address: existing?.address || "WebRTC DataChannel",
                 port: existing?.port || 0,
                 rttMs: existing?.rttMs || 5,
-                fingerprint: existing?.fingerprint || "WEBRTC-DIRECT-SDP",
+                fingerprint: p.keyFingerprint || existing?.fingerprint || "WEBRTC-DIRECT-SDP",
                 voiceChannelId: packet.voiceChannelId ?? existing?.voiceChannelId ?? null,
                 voiceState: packet.voiceState || existing?.voiceState || {},
               },
             ];
           });
+          if (packet.type === "HELLO") {
+            try {
+              voiceEngineRef.current?.sendViaDataChannel(
+                {
+                  type: "HELLO_ACK",
+                  profile: {
+                    ...nodeStatus.profile,
+                    cryptoPubKey: cryptoIdentity?.publicKey,
+                    keyFingerprint: cryptoIdentity?.keyFingerprint,
+                  },
+                  voiceChannelId: activeVoiceChannelIdRef.current || null,
+                  voiceState: {
+                    muted: selfMute,
+                    deafened: selfDeafen,
+                    videoEnabled,
+                    screenSharing,
+                  },
+                  timestamp: Date.now(),
+                },
+                p.peerId
+              );
+            } catch {}
+          }
           setTimeout(() => {
             sendP2PPacket({ type: "ROOM_SYNC", rooms: roomsRef.current }, p.peerId);
             requestHistorySyncFromPeer(p.peerId);
@@ -2084,32 +2160,28 @@ export default function App() {
       ...(targetPeerId ? { targetPeerId } : {}),
       ...packet,
     };
-    let sentOverPrimaryTransport = false;
     // 1. Send via Electron Native P2P if available
     if (window.DiscordNative?.p2p) {
-      window.DiscordNative.p2p.send(enrichedPacket, targetPeerId);
-      sentOverPrimaryTransport = true;
+      try {
+        window.DiscordNative.p2p.send(enrichedPacket, targetPeerId);
+      } catch {}
     }
     // 2. Send via Mobile WebSocket if connected to a desktop node
     if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
       try {
         mobileWsRef.current.send(JSON.stringify(enrichedPacket));
-        sentOverPrimaryTransport = true;
       } catch {}
     }
-    // 3. Always deliver to manual WebRTC SDP DataChannel peers (and fallback to all DataChannels if no TCP/WS is active)
-    voiceEngineRef.current?.sendViaDataChannel(
-      enrichedPacket,
-      targetPeerId,
-      sentOverPrimaryTransport
-    );
+    // 3. Always deliver over all active WebRTC DataChannels!
+    // This guarantees immediate delivery when connected across external VPN / WAN.
+    voiceEngineRef.current?.sendViaDataChannel(enrichedPacket, targetPeerId);
   };
 
   const syncVoiceStateP2P = (channelId, voiceState = {}) => {
-    let sentOverPrimaryTransport = false;
     if (window.DiscordNative?.p2p) {
-      window.DiscordNative.p2p.setVoiceState(channelId, voiceState);
-      sentOverPrimaryTransport = true;
+      try {
+        window.DiscordNative.p2p.setVoiceState(channelId, voiceState);
+      } catch {}
     }
     const packet = {
       type: "VOICE_STATE",
@@ -2120,10 +2192,9 @@ export default function App() {
     if (mobileWsRef.current && mobileWsRef.current.readyState === 1) {
       try {
         mobileWsRef.current.send(JSON.stringify(packet));
-        sentOverPrimaryTransport = true;
       } catch {}
     }
-    voiceEngineRef.current?.sendViaDataChannel(packet, null, sentOverPrimaryTransport);
+    voiceEngineRef.current?.sendViaDataChannel(packet, null);
   };
 
   const requestHistorySyncFromPeer = (targetPeerId = null) => {
@@ -2501,6 +2572,10 @@ export default function App() {
                 : p
             )
           );
+          // If we initiated the call, negotiate media tracks now that callee has accepted
+          if (activeVoiceChannelIdRef.current === event.channelId) {
+            voiceEngineRef.current?.negotiateWithPeer(event.fromPeerId);
+          }
         }
         if (notificationsEnabledRef.current) {
           playSynthesizedUiSound("call_join");
@@ -3538,11 +3613,11 @@ export default function App() {
             };
 
             // Route WebRTC signaling and media frames
-            if (enrichedPacket.type === "VOICE_SIGNAL") {
+            if (enrichedPacket.type === "VOICE_SIGNAL" || enrichedPacket.type === "WEBRTC_SIGNAL") {
               voiceEngineRef.current?.handleIncomingSignal(enrichedPacket.fromPeerId, enrichedPacket.signal);
-            } else if (enrichedPacket.type === "VOICE_MEDIA_FRAME") {
+            } else if (enrichedPacket.type === "VOICE_MEDIA_FRAME" || enrichedPacket.type === "MEDIA_FRAME") {
               voiceEngineRef.current?.handleIncomingMediaFrame(enrichedPacket.fromPeerId, enrichedPacket);
-            } else if (enrichedPacket.type === "VOICE_AUDIO_CHUNK") {
+            } else if (enrichedPacket.type === "VOICE_AUDIO_CHUNK" || enrichedPacket.type === "AUDIO_CHUNK") {
               voiceEngineRef.current?.handleIncomingAudioChunk(enrichedPacket.fromPeerId, enrichedPacket);
             } else {
               handleIncomingP2PEventRef.current?.(enrichedPacket);
@@ -4094,7 +4169,17 @@ export default function App() {
             const updated = await window.DiscordNative.p2p.updateProfile(restored.profile);
             if (updated) setNodeStatus((prev) => ({ ...prev, profile: updated }));
           } else {
-            const mergedProfile = { ...nodeStatus.profile, ...restored.profile };
+            const deviceId = getOrCreateDeviceNodeId();
+            let uniquePeerId = restored.profile.peerId || `fc_${deviceId}`;
+            if (!uniquePeerId.includes(`_${deviceId}`)) {
+              const base = uniquePeerId.split("_dev_")[0];
+              uniquePeerId = `${base}_dev_${deviceId}`;
+            }
+            const mergedProfile = {
+              ...nodeStatus.profile,
+              ...restored.profile,
+              peerId: uniquePeerId,
+            };
             setNodeStatus((prev) => ({
               ...prev,
               profile: mergedProfile,
@@ -7246,7 +7331,7 @@ return (
               ))}
 
               <div className="channel-section-title">
-                <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected).length)}</span>
+                <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0).length)}</span>
                 <RefreshCw
                   size={12}
                   style={{ cursor: "pointer" }}
@@ -7255,7 +7340,7 @@ return (
                 />
               </div>
               {lanPeers
-                .filter((l) => !l.isConnected)
+                .filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0)
                 .map((lp) => (
                   <div key={lp.peerId} className="peer-card">
                     <div className="peer-card-left">
@@ -7776,14 +7861,14 @@ return (
                     </div>
                   )}
 
-                  {lanPeers.filter((l) => !l.isConnected).length > 0 && (
+                  {lanPeers.filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0).length > 0 && (
                     <>
                       <div className="channel-section-title" style={{ padding: "16px 16px 4px 16px" }}>
-                        <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected).length)}</span>
+                        <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0).length)}</span>
                       </div>
                       <div className="mobile-dms-list">
                         {lanPeers
-                          .filter((l) => !l.isConnected)
+                          .filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0)
                           .map((lp) => (
                             <div key={lp.peerId} className="mobile-dm-item">
                               <UserAvatar profile={lp} size="medium" showStatus={true} />
@@ -8636,8 +8721,22 @@ return (
                       </div>
 
                       {cameraTestStream && (
-                        <div className="camera-preview-box">
-                          <VideoStreamView stream={cameraTestStream} muted={true} />
+                        <div
+                          className="camera-preview-box"
+                          style={{
+                            position: "relative",
+                            width: "100%",
+                            maxWidth: 480,
+                            height: 200,
+                            minHeight: 180,
+                            maxHeight: 220,
+                            overflow: "hidden",
+                            borderRadius: 8,
+                            background: "#08080a",
+                            margin: "10px auto 0 auto",
+                          }}
+                        >
+                          <VideoStreamView stream={cameraTestStream} muted={true} fitMode="cover" />
                         </div>
                       )}
                     </div>
@@ -9733,12 +9832,14 @@ return (
                   </div>
                 )}
 
-                {lanPeers.length === 0 && savedLanPeers.length === 0 ? (
+                {lanPeers.filter((lp) => Number(lp?.tcpPort || 0) > 0 || lp.isConnected).length === 0 && savedLanPeers.filter((sp) => Number(sp?.port || 0) > 0).length === 0 ? (
                   <div style={{ padding: 14, background: "#2b2d31", borderRadius: 6, marginBottom: 12 }}>
                     {t.noLanDetected}
                   </div>
                 ) : (
-                  lanPeers.map((lp) => (
+                  lanPeers
+                    .filter((lp) => Number(lp?.tcpPort || 0) > 0 || lp.isConnected)
+                    .map((lp) => (
                     <div key={lp.peerId} className="endpoint-copy-card">
                       <div>
                         <strong style={{ color: "#fff" }}>
