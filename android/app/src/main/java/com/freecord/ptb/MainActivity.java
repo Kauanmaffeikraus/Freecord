@@ -24,6 +24,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Rational;
@@ -37,11 +38,15 @@ import android.webkit.WebView;
 import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -68,6 +73,8 @@ public class MainActivity extends BridgeActivity {
 
     private volatile boolean isCapturingScreen = false;
     private volatile boolean isVoiceCallActive = false;
+    private volatile boolean isDownloadingApkUpdate = false;
+    private volatile boolean pendingApkInstallOnResume = false;
     private String activeVoiceChannelName = "Chamada P2P";
     private int requestedMaxDim = 960;
     private int requestedFps = 15;
@@ -207,6 +214,17 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (pendingApkInstallOnResume) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
+                pendingApkInstallOnResume = false;
+                triggerNativeApkInstall(new File(getCacheDir(), "Freecord-update.apk"));
+            }
+        }
+    }
+
     private void handleFileChooserResult(int resultCode, Intent data) {
         if (filePathCallback == null) return;
         final ValueCallback<Uri[]> callback = filePathCallback;
@@ -270,7 +288,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void keepWebViewAwakeInBackground() {
-        if (!isVoiceCallActive && !isCapturingScreen) return;
+        if (!isVoiceCallActive && !isCapturingScreen && !isDownloadingApkUpdate) return;
         if (this.bridge != null && this.bridge.getWebView() != null) {
             final WebView webView = this.bridge.getWebView();
             webView.post(() -> {
@@ -281,6 +299,63 @@ public class MainActivity extends BridgeActivity {
                 }
             });
         }
+    }
+
+    private void notifyJsUpdateStatus(final String status, final int percent, final String version, final String message) {
+        if (this.bridge == null || this.bridge.getWebView() == null) return;
+        final WebView webView = this.bridge.getWebView();
+        final String safeVer = version == null ? "" : version.replace("'", "\\'");
+        final String safeMsg = message == null ? "" : message.replace("'", "\\'").replace("\n", " ");
+        webView.post(() -> {
+            String js = "if(window.__onAndroidUpdateProgress){window.__onAndroidUpdateProgress({"
+                    + "status:'" + status + "',"
+                    + "percent:" + percent + ","
+                    + "version:'" + safeVer + "',"
+                    + "message:'" + safeMsg + "'"
+                    + "});}";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    private void triggerNativeApkInstall(final File apkFile) {
+        runOnUiThread(() -> {
+            try {
+                if (apkFile == null || !apkFile.exists()) {
+                    Toast.makeText(MainActivity.this, "Arquivo APK de atualizacao nao encontrado", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (!getPackageManager().canRequestPackageInstalls()) {
+                        pendingApkInstallOnResume = true;
+                        Toast.makeText(
+                                MainActivity.this,
+                                "Ative 'Permitir desta fonte' para o Freecord instalar a atualizacao",
+                                Toast.LENGTH_LONG
+                        ).show();
+                        Intent permIntent = new Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:" + getPackageName())
+                        );
+                        permIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(permIntent);
+                        return;
+                    }
+                }
+                Uri apkUri = FileProvider.getUriForFile(
+                        MainActivity.this,
+                        getPackageName() + ".fileprovider",
+                        apkFile
+                );
+                Intent installIntent = new Intent(Intent.ACTION_VIEW);
+                installIntent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(installIntent);
+            } catch (Exception e) {
+                Toast.makeText(MainActivity.this, "Erro ao abrir instalador: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                notifyJsUpdateStatus("error", 0, "", e.getMessage());
+            }
+        });
     }
 
     public class FreecordAndroidBridge {
@@ -296,6 +371,110 @@ public class MainActivity extends BridgeActivity {
             } catch (Exception e) {
                 return "1.0.0";
             }
+        }
+
+        @JavascriptInterface
+        public void downloadAndInstallApk(final String apkUrl, final String version) {
+            if (apkUrl == null || apkUrl.isEmpty()) return;
+            if (isDownloadingApkUpdate) return;
+            isDownloadingApkUpdate = true;
+            notifyJsUpdateStatus("downloading", 0, version, "");
+
+            new Thread(() -> {
+                HttpURLConnection conn = null;
+                InputStream in = null;
+                FileOutputStream out = null;
+                try {
+                    String currentUrl = apkUrl;
+                    int redirects = 0;
+                    while (redirects < 8) {
+                        URL url = new URL(currentUrl);
+                        conn = (HttpURLConnection) url.openConnection();
+                        conn.setInstanceFollowRedirects(false);
+                        conn.setConnectTimeout(15000);
+                        conn.setReadTimeout(30000);
+                        conn.setRequestProperty("User-Agent", "Freecord-Android-Updater");
+                        conn.setRequestProperty("Accept", "application/octet-stream, */*");
+                        conn.connect();
+
+                        int code = conn.getResponseCode();
+                        if (code == HttpURLConnection.HTTP_MOVED_PERM
+                                || code == HttpURLConnection.HTTP_MOVED_TEMP
+                                || code == HttpURLConnection.HTTP_SEE_OTHER
+                                || code == 307
+                                || code == 308) {
+                            String location = conn.getHeaderField("Location");
+                            conn.disconnect();
+                            if (location == null || location.isEmpty()) break;
+                            currentUrl = location;
+                            redirects++;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (conn == null || conn.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                        int code = conn != null ? conn.getResponseCode() : -1;
+                        throw new Exception("HTTP " + code + " ao baixar APK");
+                    }
+
+                    long totalBytes = conn.getContentLengthLong();
+                    File outFile = new File(getCacheDir(), "Freecord-update.apk");
+                    if (outFile.exists()) {
+                        outFile.delete();
+                    }
+
+                    in = conn.getInputStream();
+                    out = new FileOutputStream(outFile);
+                    byte[] buffer = new byte[32768];
+                    long downloaded = 0L;
+                    int lastPercent = -1;
+                    int read;
+
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
+                        downloaded += read;
+                        if (totalBytes > 0) {
+                            int pct = (int) Math.min(99L, (downloaded * 100L) / totalBytes);
+                            if (pct != lastPercent) {
+                                lastPercent = pct;
+                                notifyJsUpdateStatus("downloading", pct, version, "");
+                            }
+                        }
+                    }
+                    out.flush();
+                    out.close();
+                    out = null;
+                    in.close();
+                    in = null;
+
+                    isDownloadingApkUpdate = false;
+                    notifyJsUpdateStatus("downloaded", 100, version, "");
+                    triggerNativeApkInstall(outFile);
+                } catch (Exception e) {
+                    isDownloadingApkUpdate = false;
+                    notifyJsUpdateStatus("error", 0, version, e.getMessage());
+                } finally {
+                    isDownloadingApkUpdate = false;
+                    try {
+                        if (out != null) out.close();
+                    } catch (Exception ignored) {
+                    }
+                    try {
+                        if (in != null) in.close();
+                    } catch (Exception ignored) {
+                    }
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            }, "FreecordApkUpdaterThread").start();
+        }
+
+        @JavascriptInterface
+        public void installDownloadedApk() {
+            File outFile = new File(getCacheDir(), "Freecord-update.apk");
+            triggerNativeApkInstall(outFile);
         }
 
         @JavascriptInterface

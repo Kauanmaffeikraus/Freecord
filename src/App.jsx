@@ -1921,11 +1921,32 @@ export default function App() {
       }
     });
 
+    window.__onAndroidUpdateProgress = (statusObj) => {
+      if (statusObj) {
+        setUpdateStatus((prev) => ({ ...prev, ...statusObj }));
+        if (statusObj.status !== "checking") {
+          setIsCheckingUpdate(false);
+        }
+      }
+    };
+
     const unsub = window.DiscordNative?.updater?.onUpdateStatus?.((statusObj) => {
       if (statusObj) {
         setUpdateStatus(statusObj);
         if (statusObj.status !== "checking") {
           setIsCheckingUpdate(false);
+        }
+        // Discord-style automatic silent restart on Desktop when not in a voice call
+        if (
+          statusObj.status === "downloaded" &&
+          window.DiscordNative?.updater?.quitAndInstall &&
+          !activeVoiceChannelIdRef.current
+        ) {
+          setTimeout(() => {
+            if (!activeVoiceChannelIdRef.current) {
+              window.DiscordNative.updater.quitAndInstall();
+            }
+          }, 3000);
         }
       }
     });
@@ -1939,6 +1960,7 @@ export default function App() {
 
     return () => {
       clearTimeout(timer);
+      delete window.__onAndroidUpdateProgress;
       unsub?.();
     };
   }, []);
@@ -5869,7 +5891,49 @@ return (
       </div>
       )}
 
-      {/* Auto-Updater Banner Notification */}
+      {/* Auto-Updater Banner Notification (Desktop & Android In-App) */}
+      {updateStatus?.status === "available" &&
+        window.FreecordAndroid?.downloadAndInstallApk &&
+        updateStatus?.downloadUrl && (
+          <div
+            style={{
+              backgroundColor: "#5865f2",
+              color: "#ffffff",
+              padding: "8px 14px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              fontSize: 12,
+              fontWeight: 600,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+              zIndex: 1200,
+            }}
+          >
+            <span>📦 {t.updateAvailableText(updateStatus.version)}</span>
+            <button
+              className="btn-primary"
+              style={{
+                backgroundColor: "#23a55a",
+                color: "#fff",
+                padding: "4px 10px",
+                fontSize: 11,
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+              onClick={() =>
+                window.FreecordAndroid.downloadAndInstallApk(
+                  updateStatus.downloadUrl,
+                  String(updateStatus.version || "")
+                )
+              }
+            >
+              {lang === "en" ? "Update in App" : "Atualizar pelo App"}
+            </button>
+          </div>
+        )}
       {updateStatus?.status === "downloaded" && (
         <div
           style={{
@@ -5882,11 +5946,12 @@ return (
             fontSize: 13,
             fontWeight: 600,
             boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            zIndex: 1200,
           }}
         >
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span>🚀</span>
-            <span>{t.updateReadyNotice} ({updateStatus.version || "v1.0.0"})</span>
+            <span>{t.updateReadyNotice} (v{updateStatus.version || "1.3.0"})</span>
           </span>
           <button
             className="btn-primary"
@@ -5899,9 +5964,19 @@ return (
               border: "1px solid rgba(255,255,255,0.2)",
               cursor: "pointer",
             }}
-            onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
+            onClick={() => {
+              if (window.FreecordAndroid?.installDownloadedApk) {
+                window.FreecordAndroid.installDownloadedApk();
+              } else {
+                window.DiscordNative?.updater?.quitAndInstall?.();
+              }
+            }}
           >
-            {t.restartAndInstallBtn}
+            {window.FreecordAndroid?.installDownloadedApk
+              ? lang === "en"
+                ? "Install APK Now"
+                : "Instalar Agora"
+              : t.restartAndInstallBtn}
           </button>
         </div>
       )}
@@ -5916,6 +5991,7 @@ return (
             justifyContent: "space-between",
             fontSize: 12,
             fontWeight: 500,
+            zIndex: 1200,
           }}
         >
           <span>⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%</span>
@@ -8669,9 +8745,30 @@ return (
                         </span>
                       )}
                       {updateStatus?.status === "downloading" && (
-                        <span style={{ color: "#5865f2" }}>
-                          ⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%
-                        </span>
+                        <div>
+                          <span style={{ color: "#5865f2" }}>
+                            ⬇️ {t.downloadingUpdate} {updateStatus.percent || 0}%
+                          </span>
+                          <div
+                            style={{
+                              width: "100%",
+                              height: 8,
+                              background: "rgba(255,255,255,0.08)",
+                              borderRadius: 999,
+                              overflow: "hidden",
+                              marginTop: 8,
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: `${Math.min(100, Math.max(2, updateStatus.percent || 0))}%`,
+                                height: "100%",
+                                background: "linear-gradient(90deg, #5865f2, #23a55a)",
+                                transition: "width 0.2s ease",
+                              }}
+                            />
+                          </div>
+                        </div>
                       )}
                       {updateStatus?.status === "available" && (
                         <span style={{ color: "#fee75c" }}>
@@ -8720,9 +8817,22 @@ return (
                       <button
                         type="button"
                         className="btn-success"
-                        onClick={() => window.DiscordNative?.updater?.quitAndInstall?.()}
+                        onClick={() => {
+                          if (window.FreecordAndroid?.installDownloadedApk) {
+                            window.FreecordAndroid.installDownloadedApk();
+                          } else {
+                            window.DiscordNative?.updater?.quitAndInstall?.();
+                          }
+                        }}
                       >
-                        {t.restartAndInstallBtn}
+                        <Download size={14} />
+                        <span>
+                          {window.FreecordAndroid?.installDownloadedApk
+                            ? lang === "en"
+                              ? `Install Downloaded APK (v${updateStatus.version})`
+                              : `Instalar Novo APK Agora (v${updateStatus.version})`
+                            : t.restartAndInstallBtn}
+                        </span>
                       </button>
                     )}
 
@@ -8731,7 +8841,12 @@ return (
                         type="button"
                         className="btn-success"
                         onClick={() => {
-                          if (window.FreecordAndroid?.openExternalUrl) {
+                          if (window.FreecordAndroid?.downloadAndInstallApk) {
+                            window.FreecordAndroid.downloadAndInstallApk(
+                              updateStatus.downloadUrl,
+                              String(updateStatus.version || "")
+                            );
+                          } else if (window.FreecordAndroid?.openExternalUrl) {
                             window.FreecordAndroid.openExternalUrl(updateStatus.downloadUrl);
                           } else {
                             window.open(updateStatus.downloadUrl, "_blank", "noopener,noreferrer");
@@ -8740,7 +8855,11 @@ return (
                       >
                         <Download size={14} />
                         <span>
-                          {lang === "en"
+                          {window.FreecordAndroid?.downloadAndInstallApk
+                            ? lang === "en"
+                              ? `Download & Install in Freecord (v${updateStatus.version})`
+                              : `Baixar e Instalar pelo Freecord (v${updateStatus.version})`
+                            : lang === "en"
                             ? `Download Update (v${updateStatus.version})`
                             : `Baixar e Instalar Atualização (v${updateStatus.version})`}
                         </span>

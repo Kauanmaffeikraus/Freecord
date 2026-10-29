@@ -314,7 +314,15 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle("FREECORD_QUIT_AND_INSTALL", () => {
-    autoUpdater.quitAndInstall();
+    setImmediate(() => {
+      app.removeAllListeners("window-all-closed");
+      if (p2pNode) {
+        try {
+          p2pNode.stop();
+        } catch {}
+      }
+      autoUpdater.quitAndInstall(true, true);
+    });
     return true;
   });
 }
