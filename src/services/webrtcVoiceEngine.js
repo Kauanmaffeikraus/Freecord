@@ -136,6 +136,18 @@ export class WebRTCVoiceEngine {
   setLocalPeerId(peerId) {
     if (peerId) {
       this.localPeerId = String(peerId);
+      if (this.localProfile) {
+        this.localProfile.peerId = String(peerId);
+      }
+    }
+  }
+
+  setLocalProfile(profile) {
+    if (profile && typeof profile === "object") {
+      this.localProfile = { ...profile };
+      if (profile.peerId) {
+        this.localPeerId = String(profile.peerId);
+      }
     }
   }
 
@@ -1837,15 +1849,8 @@ export class WebRTCVoiceEngine {
 
   bindDataChannel(conn, dc) {
     conn.dataChannel = dc;
-    const isManualSdpPeer = () =>
-      Boolean(conn.isManualSdp) ||
-      Boolean(conn.manualProfile) ||
-      Boolean(conn.pendingManualOffer) ||
-      String(conn.peerId).startsWith("manual_") ||
-      String(conn.peerId).startsWith("webrtc_");
 
     dc.onopen = () => {
-      if (!isManualSdpPeer()) return;
       conn.isManualSdp = true;
       try {
         if (this.localProfile) {
@@ -1868,15 +1873,19 @@ export class WebRTCVoiceEngine {
     };
   }
 
-  sendViaDataChannel(packet, targetPeerId = null, onlyManualSdp = false) {
-    const raw = JSON.stringify(packet);
-    if (raw.length > 60000) return 0;
+  sendViaDataChannel(packet, targetPeerId = null, _onlyManualSdp = false) {
+    const raw = typeof packet === "string" ? packet : JSON.stringify(packet);
+    if (raw.length > 65000) return 0;
     let sent = 0;
     for (const [id, conn] of this.connections.entries()) {
-      if (onlyManualSdp && !conn.isManualSdp && !conn.manualProfile && !String(id).startsWith("webrtc_")) {
+      if (
+        targetPeerId &&
+        id !== targetPeerId &&
+        conn.peerId !== targetPeerId &&
+        conn.manualProfile?.peerId !== targetPeerId
+      ) {
         continue;
       }
-      if (targetPeerId && id !== targetPeerId && conn.manualProfile?.peerId !== targetPeerId) continue;
       if (conn.dataChannel && conn.dataChannel.readyState === "open") {
         try {
           conn.dataChannel.send(raw);
