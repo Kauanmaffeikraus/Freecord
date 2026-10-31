@@ -74,6 +74,7 @@ import {
   createIdentityBackupBundle,
   parseIdentityBackupBundle,
 } from "./services/p2pPhase1CryptoAndQr";
+import DiscordMarkdown from "./components/chat/DiscordMarkdown";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -5919,7 +5920,9 @@ function loadInitialWebNodeStatus() {
                             <span className="message-timestamp">{msg.timestamp}</span>
                           </div>
 
-                          <div className="message-text">{msg.text}</div>
+                          <div className="message-text">
+                            <DiscordMarkdown content={msg.text} />
+                          </div>
 
                           {/* Interactive P2P Server Invite Card Embed */}
                           {msg.serverInvite?.room && (() => {
@@ -7417,7 +7420,9 @@ return (
                             <span className="message-timestamp">{msg.timestamp}</span>
                           </div>
 
-                          <div className="message-text">{msg.text}</div>
+                          <div className="message-text">
+                            <DiscordMarkdown content={msg.text} />
+                          </div>
 
                           {/* Interactive P2P Server Invite Card Embed */}
                           {msg.serverInvite?.room && (() => {

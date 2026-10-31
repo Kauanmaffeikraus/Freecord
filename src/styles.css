@@ -3062,3 +3062,176 @@ body, html, #root {
     opacity: 1;
   }
 }
+
+/* ========================================================
+   DISCORD-FLAVORED MARKDOWN & RICH CHAT STYLING
+   ======================================================== */
+.discord-markdown {
+  word-break: break-word;
+  line-height: 1.45;
+  color: var(--text-normal, #dbdee1);
+  font-size: 15px;
+}
+
+.discord-text-line {
+  min-height: 18px;
+}
+
+/* Spoilers: Blackout blur effect with click to reveal */
+.discord-spoiler {
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline;
+  padding: 0 2px;
+  transition: background-color 0.15s ease, color 0.15s ease, filter 0.15s ease;
+}
+
+.discord-spoiler.hidden {
+  background-color: #202225 !important;
+  color: transparent !important;
+  user-select: none;
+}
+
+.discord-spoiler.hidden * {
+  color: transparent !important;
+  visibility: hidden;
+}
+
+.discord-spoiler.revealed {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: inherit;
+}
+
+.discord-spoiler.hidden:hover {
+  background-color: #2b2d31 !important;
+}
+
+/* Code Blocks */
+.discord-code-block-container {
+  margin: 6px 0;
+  border-radius: 5px;
+  background-color: #2b2d31;
+  border: 1px solid #1e1f22;
+  overflow: hidden;
+}
+
+.discord-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  background-color: #1e1f22;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #949ba4;
+  font-weight: 600;
+  user-select: none;
+}
+
+.discord-code-copy-btn {
+  background: transparent;
+  border: none;
+  color: #dbdee1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: background-color 0.12s;
+}
+
+.discord-code-copy-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.discord-code-block {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #e3e5e8;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.discord-inline-code {
+  font-family: "Consolas", "Courier New", monospace;
+  background-color: #2b2d31;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: #e3e5e8;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Blockquotes */
+.discord-quote {
+  margin: 4px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 4px solid #4e5058;
+  color: #949ba4;
+  font-style: normal;
+}
+
+/* Headers */
+.discord-h1 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 12px 0 4px;
+  color: #f2f3f5;
+}
+
+.discord-h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: #f2f3f5;
+}
+
+.discord-h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 8px 0 2px;
+  color: #f2f3f5;
+}
+
+/* Lists */
+.discord-list {
+  margin: 4px 0 4px 20px;
+  padding: 0;
+  list-style-type: disc;
+}
+
+.discord-list li {
+  margin: 2px 0;
+}
+
+/* Links */
+.discord-link {
+  color: #00a8fc;
+  text-decoration: none;
+}
+
+.discord-link:hover {
+  text-decoration: underline;
+}
+
+/* Mentions */
+.discord-mention {
+  background-color: rgba(88, 101, 242, 0.15);
+  color: #c9cdfb;
+  font-weight: 500;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.discord-mention:hover {
+  background-color: #5865f2;
+  color: #ffffff;
+}
