@@ -1467,7 +1467,7 @@ function loadInitialWebNodeStatus() {
   const [remoteStreams, setRemoteStreams] = useState({});
   const [peerVolumes, setPeerVolumes] = useState({});
   const [peerScreenVolumes, setPeerScreenVolumes] = useState({});
-  const [rtcStats, setRtcStats] = useState({});
+  const rtcStatsRef = useRef({});
 
   // Stage Resize, Spotlight, Theater, Fullscreen & PiP State
   const [stageHeight, setStageHeight] = useState(440);
@@ -1552,6 +1552,14 @@ function loadInitialWebNodeStatus() {
   // Profile Customization Studio & Media Settings Studio
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [settingsTab, setSettingsTab] = useState("profile"); // "profile" | "media" | "updates"
+  const showProfileModalRef = useRef(showProfileModal);
+  const settingsTabRef = useRef(settingsTab);
+  useEffect(() => {
+    showProfileModalRef.current = showProfileModal;
+  }, [showProfileModal]);
+  useEffect(() => {
+    settingsTabRef.current = settingsTab;
+  }, [settingsTab]);
   const [inspectedProfile, setInspectedProfile] = useState(null);
   const [appVersion, setAppVersion] = useState("1.0.0");
   const [updateStatus, setUpdateStatus] = useState({ status: "idle" });
@@ -1777,21 +1785,26 @@ function loadInitialWebNodeStatus() {
       onSpeakingChange: (who, isSpeaking) => {
         const key = who === "self" ? selfPeerIdRef.current : who;
         if (!activeVoiceChannelIdRef.current && who !== "self") return;
-        setSpeakingMap((prev) => ({ ...prev, [key]: isSpeaking }));
+        const spk = Boolean(isSpeaking);
+        setSpeakingMap((prev) => {
+          if (prev[key] === spk) return prev;
+          return { ...prev, [key]: spk };
+        });
         if (who === "self" && activeVoiceChannelIdRef.current) {
           sendP2PPacket({
             type: "VOICE_SPEAKING",
             fromPeerId: selfPeerIdRef.current,
             voiceChannelId: activeVoiceChannelIdRef.current,
-            speaking: Boolean(isSpeaking),
+            speaking: spk,
           });
         }
       },
       onInputLevelChange: (level) => {
-        setMicInputLevel(level);
+        if (!showProfileModalRef.current || settingsTabRef.current !== "media") return;
+        setMicInputLevel((prev) => (Math.abs(prev - level) >= 3 ? level : prev));
       },
       onStatsUpdate: (stats) => {
-        setRtcStats(stats);
+        rtcStatsRef.current = stats;
       },
       onLocalScreenFrame: (dataUrl) => {
         setLocalScreenFrameUrl(dataUrl || null);
@@ -2518,29 +2531,31 @@ function loadInitialWebNodeStatus() {
               const incomingIsNewer =
                 (incomingRoom.updatedAt || 0) >= (existing.updatedAt || 0);
 
+              // RELATORIO_BUGS_E_AUDITORIA Bug 12: Preservação aditiva e não-destrutiva de canais.
+              // Garante que pacotes incompletos ou maliciosos não apaguem canais existentes.
               const textMap = new Map(
                 (existing.textChannels || []).map((c) => [c.id, c])
               );
               for (const ch of incomingRoom.textChannels || []) {
-                textMap.set(ch.id, incomingIsNewer ? ch : textMap.get(ch.id) || ch);
+                if (ch && ch.id) {
+                  textMap.set(ch.id, { ...(textMap.get(ch.id) || {}), ...ch });
+                }
               }
 
               const voiceMap = new Map(
                 (existing.voiceChannels || []).map((c) => [c.id, c])
               );
               for (const vc of incomingRoom.voiceChannels || []) {
-                voiceMap.set(vc.id, incomingIsNewer ? vc : voiceMap.get(vc.id) || vc);
+                if (vc && vc.id) {
+                  voiceMap.set(vc.id, { ...(voiceMap.get(vc.id) || {}), ...vc });
+                }
               }
 
               map.set(incomingRoom.id, {
                 ...existing,
                 ...(incomingIsNewer ? incomingRoom : {}),
-                textChannels: incomingIsNewer
-                  ? incomingRoom.textChannels || Array.from(textMap.values())
-                  : Array.from(textMap.values()),
-                voiceChannels: incomingIsNewer
-                  ? incomingRoom.voiceChannels || Array.from(voiceMap.values())
-                  : Array.from(voiceMap.values()),
+                textChannels: Array.from(textMap.values()),
+                voiceChannels: Array.from(voiceMap.values()),
               });
             }
           }
@@ -2841,14 +2856,15 @@ function loadInitialWebNodeStatus() {
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
         const senderPeer = connectedPeersRef.current.find((p) => p.peerId === event.fromPeerId);
         if (!senderPeer || senderPeer.voiceChannelId !== activeCh) break;
-        setSpeakingMap((prev) => ({
-          ...prev,
-          [event.fromPeerId]: Boolean(event.speaking),
-        }));
-        voiceEngineRef.current?.setRemotePeerSpeaking(
-          event.fromPeerId,
-          Boolean(event.speaking)
-        );
+        const spk = Boolean(event.speaking);
+        setSpeakingMap((prev) => {
+          if (prev[event.fromPeerId] === spk) return prev;
+          return {
+            ...prev,
+            [event.fromPeerId]: spk,
+          };
+        });
+        voiceEngineRef.current?.setRemotePeerSpeaking(event.fromPeerId, spk);
         break;
       }
 
