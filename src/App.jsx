@@ -82,6 +82,7 @@ import {
 import DiscordMarkdown from "./components/chat/DiscordMarkdown";
 import EmojiPickerPopover from "./components/chat/EmojiPickerPopover";
 import PinnedMessagesModal from "./components/chat/PinnedMessagesModal";
+import InGameOverlay from "./components/overlay/InGameOverlay";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -1193,6 +1194,10 @@ function playSynthesizedUiSound(kind = "message") {
 }
 
 export default function App() {
+  if (typeof window !== "undefined" && window.location.hash === "#overlay") {
+    return <InGameOverlay />;
+  }
+
   const isElectron = Boolean(window.DiscordNative?.isRenderer);
 
   const [lang, setLang] = useState(() => {
@@ -1817,6 +1822,44 @@ function loadInitialWebNodeStatus() {
     voiceEngineRef.current?.setStudioDspEnabled(studioDspEnabled);
     voiceEngineRef.current?.setNoiseGateThreshold(noiseGateThreshold);
   }, [studioDspEnabled, noiseGateThreshold]);
+
+  const [overlayActive, setOverlayActive] = useState(false);
+
+  const toggleOverlay = async () => {
+    if (!isElectron) return;
+    const res = await window.DiscordNative?.overlay?.toggle();
+    setOverlayActive(Boolean(res));
+  };
+
+  useEffect(() => {
+    if (!isElectron) return;
+    if (!activeVoiceChannelId) {
+      window.DiscordNative?.overlay?.setVoicePeers?.([]);
+      return;
+    }
+
+    const selfPeer = {
+      peerId: nodeStatus.profile.peerId,
+      displayName: selfDisplayName,
+      username: nodeStatus.profile.username,
+      avatarUrl: nodeStatus.profile.avatarUrl,
+      avatarColor: nodeStatus.profile.avatarColor,
+      speaking: Boolean(speakingMap[nodeStatus.profile.peerId]),
+    };
+
+    const channelPeers = connectedPeers
+      .filter((p) => p.voiceChannelId === activeVoiceChannelId)
+      .map((p) => ({
+        peerId: p.peerId,
+        displayName: p.displayName || p.username,
+        username: p.username,
+        avatarUrl: p.avatarUrl,
+        avatarColor: p.avatarColor,
+        speaking: Boolean(speakingMap[p.peerId]),
+      }));
+
+    window.DiscordNative?.overlay?.setVoicePeers?.([selfPeer, ...channelPeers]);
+  }, [isElectron, activeVoiceChannelId, speakingMap, connectedPeers, nodeStatus.profile, selfDisplayName]);
 
   const pushToast = (toastObj) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -7354,7 +7397,7 @@ return (
                 </button>
               </div>
 
-              <div className="voice-action-grid">
+              <div className="voice-action-grid" style={{ gridTemplateColumns: isElectron ? "1fr 1fr 1fr" : "1fr 1fr" }}>
                 <button
                   className={`voice-action-btn ${videoEnabled ? "active" : ""}`}
                   onClick={toggleCamera}
@@ -7369,6 +7412,16 @@ return (
                   <Monitor size={14} />
                   <span>{screenSharing ? t.stopScreenBtn : t.screenBtn}</span>
                 </button>
+                {isElectron && (
+                  <button
+                    className={`voice-action-btn ${overlayActive ? "active" : ""}`}
+                    onClick={toggleOverlay}
+                    title="Sobreposição transparente de voz enquanto joga"
+                  >
+                    <PictureInPicture2 size={14} />
+                    <span>Overlay</span>
+                  </button>
+                )}
               </div>
             </div>
           )}

@@ -67,6 +67,54 @@ try {
 let activeGameActivity = null;
 let gameScanInterval = null;
 
+let overlayWindow = null;
+
+function toggleOverlay(show) {
+  const shouldShow = show !== undefined ? Boolean(show) : !overlayWindow || !overlayWindow.isVisible();
+  if (shouldShow) {
+    if (!overlayWindow) {
+      overlayWindow = new BrowserWindow({
+        width: 280,
+        height: 480,
+        x: 24,
+        y: 24,
+        transparent: true,
+        alwaysOnTop: true,
+        frame: false,
+        focusable: false,
+        skipTaskbar: true,
+        hasShadow: false,
+        resizable: false,
+        webPreferences: {
+          preload: path.join(__dirname, "preload.cjs"),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+        },
+      });
+
+      overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+      overlayWindow.setAlwaysOnTop(true, "screen-saver");
+
+      if (app.isPackaged) {
+        overlayWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "overlay" });
+      } else {
+        overlayWindow.loadURL("http://localhost:5173/#overlay");
+      }
+
+      overlayWindow.on("closed", () => {
+        overlayWindow = null;
+      });
+    } else {
+      overlayWindow.showInactive();
+    }
+  } else {
+    if (overlayWindow) {
+      overlayWindow.hide();
+    }
+  }
+}
+
 function scanActiveGames() {
   const { execFile } = require("node:child_process");
   if (process.platform === "win32") {
@@ -516,6 +564,21 @@ function registerIpcHandlers() {
   ipcMain.handle("GET_CURRENT_GAME", () => {
     return activeGameActivity;
   });
+
+  // In-Game Overlay IPC
+  ipcMain.handle("OVERLAY_TOGGLE", (_event, show) => {
+    toggleOverlay(show);
+    return Boolean(overlayWindow && overlayWindow.isVisible());
+  });
+
+  ipcMain.handle("OVERLAY_GET_STATE", () => {
+    return Boolean(overlayWindow && overlayWindow.isVisible());
+  });
+
+  ipcMain.handle("OVERLAY_SET_VOICE_PEERS", (_event, peers) => {
+    overlayWindow?.webContents.send("OVERLAY_VOICE_PEERS", peers);
+    return true;
+  });
 }
 
 function setupAutoUpdater() {
@@ -615,6 +678,12 @@ app.on("window-all-closed", () => {
   if (gameScanInterval) {
     clearInterval(gameScanInterval);
     gameScanInterval = null;
+  }
+  if (overlayWindow) {
+    try {
+      overlayWindow.destroy();
+    } catch {}
+    overlayWindow = null;
   }
   if (p2pNode) {
     p2pNode.stop();

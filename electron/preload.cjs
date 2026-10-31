@@ -99,6 +99,16 @@ const DiscordNative = {
       return () => ipcRenderer.removeListener("GAME_ACTIVITY_CHANGED", listener);
     },
   },
+  overlay: {
+    toggle: (show) => ipcRenderer.invoke("OVERLAY_TOGGLE", show),
+    getState: () => ipcRenderer.invoke("OVERLAY_GET_STATE"),
+    setVoicePeers: (peers) => ipcRenderer.invoke("OVERLAY_SET_VOICE_PEERS", peers),
+    onVoicePeers: (callback) => {
+      const listener = (_event, peers) => callback(peers);
+      ipcRenderer.on("OVERLAY_VOICE_PEERS", listener);
+      return () => ipcRenderer.removeListener("OVERLAY_VOICE_PEERS", listener);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);
