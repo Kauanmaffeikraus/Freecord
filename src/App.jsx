@@ -82,7 +82,6 @@ import {
 import DiscordMarkdown from "./components/chat/DiscordMarkdown";
 import EmojiPickerPopover from "./components/chat/EmojiPickerPopover";
 import PinnedMessagesModal from "./components/chat/PinnedMessagesModal";
-import InGameOverlay from "./components/overlay/InGameOverlay";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -1194,10 +1193,6 @@ function playSynthesizedUiSound(kind = "message") {
 }
 
 export default function App() {
-  if (typeof window !== "undefined" && window.location.hash === "#overlay") {
-    return <InGameOverlay />;
-  }
-
   const isElectron = Boolean(window.DiscordNative?.isRenderer);
 
   const [lang, setLang] = useState(() => {
@@ -1317,6 +1312,7 @@ function loadInitialWebNodeStatus() {
 
   // Node & Profile State
   const [nodeStatus, setNodeStatus] = useState(() => loadInitialWebNodeStatus());
+  const selfDisplayName = nodeStatus.profile?.displayName || nodeStatus.profile?.username || "You";
 
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [lanPeers, setLanPeers] = useState([]);
@@ -5258,7 +5254,6 @@ function loadInitialWebNodeStatus() {
   };
 
   const activeTyping = typingPeers[effectiveChannelId];
-  const selfDisplayName = nodeStatus.profile.displayName || nodeStatus.profile.username;
 
   // Build simultaneous stage tiles: separate tiles for Screen Share and Webcam so both can be viewed at once
   const stageTiles = useMemo(() => {
