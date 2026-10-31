@@ -81,6 +81,16 @@ const DiscordNative = {
       return () => ipcRenderer.removeListener("FREECORD_P2P_EVENT", listener);
     },
   },
+  ptt: {
+    setShortcut: (shortcut, releaseDelay) =>
+      ipcRenderer.invoke("PTT_SET_SHORTCUT", { shortcut, releaseDelay }),
+    unregister: () => ipcRenderer.invoke("PTT_UNREGISTER"),
+    onStateChanged: (callback) => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on("PTT_STATE_CHANGED", listener);
+      return () => ipcRenderer.removeListener("PTT_STATE_CHANGED", listener);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);

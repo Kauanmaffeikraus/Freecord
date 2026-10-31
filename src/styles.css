@@ -3851,3 +3851,107 @@ body, html, #root {
   background-color: rgba(233, 168, 32, 0.05);
   border-left: 2px solid #e9a820;
 }
+
+/* Push to Talk (PTT) Styles */
+.input-mode-card {
+  background-color: #2b2d31;
+  border: 2px solid #1e1f22;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.input-mode-card:hover {
+  background-color: #313338;
+}
+
+.input-mode-card.active {
+  border-color: #5865f2;
+  background-color: rgba(88, 101, 242, 0.1);
+}
+
+.ptt-key-badge {
+  background-color: #111214;
+  border: 1px solid #383a40;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: #5865f2;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.4);
+}
+
+.preset-key-btn {
+  background-color: #2b2d31;
+  border: 1px solid #383a40;
+  color: #dbdee1;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: monospace;
+  transition: all 0.1s;
+}
+
+.preset-key-btn:hover {
+  background-color: #383a40;
+  color: #fff;
+}
+
+.preset-key-btn.active {
+  background-color: #5865f2;
+  border-color: #5865f2;
+  color: #fff;
+}
+
+/* Mobile Floating Push-to-Talk Button */
+.mobile-ptt-floating-btn {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #2b2d31;
+  border: 2px solid #5865f2;
+  color: #f2f3f5;
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  padding: 12px 24px;
+  border-radius: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 999;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  transition: all 0.12s ease;
+}
+
+.mobile-ptt-floating-btn.active {
+  background-color: #23a55a;
+  border-color: #23a55a;
+  color: #ffffff;
+  transform: translateX(-50%) scale(1.06);
+  box-shadow: 0 0 20px rgba(35, 165, 90, 0.6);
+}
+
+.ptt-status-pill {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background-color: rgba(88, 101, 242, 0.2);
+  color: #5865f2;
+  border: 1px solid rgba(88, 101, 242, 0.4);
+  transition: all 0.1s;
+}
+
+.ptt-status-pill.active {
+  background-color: #23a55a;
+  color: #ffffff;
+  border-color: #23a55a;
+}

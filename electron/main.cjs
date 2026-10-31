@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, shell, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, ipcMain, globalShortcut, desktopCapturer, session, shell, powerSaveBlocker } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -49,6 +49,44 @@ let pendingDisplaySourceId = null;
 let mainWindow = null;
 let p2pNode = null;
 let appSettings = { ...DEFAULT_SETTINGS };
+
+let currentPttShortcut = null;
+let pttReleaseDelay = 200;
+let pttReleaseTimer = null;
+
+function registerGlobalPtt(shortcut, releaseDelay = 200) {
+  if (currentPttShortcut) {
+    try {
+      globalShortcut.unregister(currentPttShortcut);
+    } catch {}
+    currentPttShortcut = null;
+  }
+
+  if (!shortcut || shortcut === "none") return true;
+
+  pttReleaseDelay = Math.max(20, Math.min(2000, Number(releaseDelay) || 200));
+  try {
+    const success = globalShortcut.register(shortcut, () => {
+      mainWindow?.webContents.send("PTT_STATE_CHANGED", { active: true });
+      if (pttReleaseTimer) clearTimeout(pttReleaseTimer);
+      pttReleaseTimer = setTimeout(() => {
+        mainWindow?.webContents.send("PTT_STATE_CHANGED", { active: false });
+        pttReleaseTimer = null;
+      }, pttReleaseDelay);
+    });
+
+    if (success) {
+      currentPttShortcut = shortcut;
+      return true;
+    } else {
+      console.warn(`[Freecord PTT] Failed to register global shortcut: ${shortcut}`);
+      return false;
+    }
+  } catch (err) {
+    console.warn(`[Freecord PTT] Error registering shortcut: ${err.message}`);
+    return false;
+  }
+}
 
 function loadSettings() {
   try {
@@ -358,6 +396,21 @@ function registerIpcHandlers() {
     });
     return true;
   });
+
+  // Push-to-Talk Global Shortcut IPC
+  ipcMain.handle("PTT_SET_SHORTCUT", (_event, { shortcut, releaseDelay }) => {
+    return registerGlobalPtt(shortcut, releaseDelay);
+  });
+
+  ipcMain.handle("PTT_UNREGISTER", () => {
+    if (currentPttShortcut) {
+      try {
+        globalShortcut.unregister(currentPttShortcut);
+      } catch {}
+      currentPttShortcut = null;
+    }
+    return true;
+  });
 }
 
 function setupAutoUpdater() {
@@ -451,6 +504,9 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  try {
+    globalShortcut.unregisterAll();
+  } catch {}
   if (p2pNode) {
     p2pNode.stop();
   }

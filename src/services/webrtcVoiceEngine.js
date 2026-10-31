@@ -147,6 +147,54 @@ export class WebRTCVoiceEngine {
     this.processedScreenAudioTrack = null;
     this.screenAudioDuckingHangover = 0;
     this.screenAudioHangoverTimer = null;
+
+    // Input Mode: "voice_activity" (VAD) vs "push_to_talk" (PTT)
+    this.inputMode = "voice_activity";
+    this.isPttActive = false;
+    this.pttReleaseDelay = 200; // ms
+    this.pttReleaseTimer = null;
+  }
+
+  setInputMode(mode) {
+    this.inputMode = mode === "push_to_talk" ? "push_to_talk" : "voice_activity";
+    this.applyMuteState();
+  }
+
+  setPttReleaseDelay(delayMs) {
+    this.pttReleaseDelay = Math.max(20, Math.min(2000, Number(delayMs) || 200));
+  }
+
+  setPttState(active) {
+    const isPressed = Boolean(active);
+    if (this.pttReleaseTimer) {
+      clearTimeout(this.pttReleaseTimer);
+      this.pttReleaseTimer = null;
+    }
+
+    if (isPressed) {
+      if (!this.isPttActive) {
+        this.isPttActive = true;
+        this.applyMuteState();
+        if (this.inputMode === "push_to_talk") {
+          this.localSpeaking = !this.selfMute && !this.selfDeafen;
+          this.onSpeakingChange?.("self", this.localSpeaking);
+          this.applyViewerEchoGuard();
+        }
+      }
+    } else {
+      if (this.isPttActive) {
+        this.pttReleaseTimer = setTimeout(() => {
+          this.isPttActive = false;
+          this.applyMuteState();
+          if (this.inputMode === "push_to_talk") {
+            this.localSpeaking = false;
+            this.onSpeakingChange?.("self", false);
+            this.applyViewerEchoGuard();
+          }
+          this.pttReleaseTimer = null;
+        }, this.pttReleaseDelay);
+      }
+    }
   }
 
   setLocalPeerId(peerId) {
@@ -490,7 +538,8 @@ export class WebRTCVoiceEngine {
         if (this.audioContext && this.audioContext.state === "suspended") {
           this.audioContext.resume().catch(() => {});
         }
-        if (this.selfMute || this.selfDeafen || !this.localAudioStream) {
+        const isPttMuted = this.inputMode === "push_to_talk" && !this.isPttActive;
+        if (this.selfMute || this.selfDeafen || !this.localAudioStream || isPttMuted) {
           this.onInputLevelChange?.(0);
           if (this.localSpeaking) {
             this.localSpeaking = false;
@@ -845,12 +894,17 @@ export class WebRTCVoiceEngine {
 
   applyMuteState() {
     if (!this.localAudioStream) return;
+    const canTransmit =
+      !this.selfMute &&
+      !this.selfDeafen &&
+      (this.inputMode !== "push_to_talk" || this.isPttActive);
+
     for (const track of this.localAudioStream.getAudioTracks()) {
-      track.enabled = !this.selfMute && !this.selfDeafen;
+      track.enabled = canTransmit;
     }
     if (this.txSourceNode && this.txMixNode) {
       try {
-        if (this.selfMute || this.selfDeafen) {
+        if (!canTransmit) {
           this.txSourceNode.disconnect(this.txMixNode);
         } else {
           this.txSourceNode.connect(this.txMixNode);

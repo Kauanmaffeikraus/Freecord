@@ -1622,6 +1622,20 @@ function loadInitialWebNodeStatus() {
   const [micInputLevel, setMicInputLevel] = useState(0);
   const [cameraTestStream, setCameraTestStream] = useState(null);
 
+  // Push-to-Talk (PTT) and Voice Input Modes
+  const [inputMode, setInputMode] = useState(() => {
+    return localStorage.getItem("freecord_input_mode") || "voice_activity";
+  });
+  const [pttShortcut, setPttShortcut] = useState(() => {
+    return localStorage.getItem("freecord_ptt_shortcut") || "ControlRight";
+  });
+  const [pttReleaseDelay, setPttReleaseDelay] = useState(() => {
+    const saved = localStorage.getItem("freecord_ptt_delay");
+    return saved ? Number(saved) : 200;
+  });
+  const [isPttPressed, setIsPttPressed] = useState(false);
+  const [isRecordingPttKey, setIsRecordingPttKey] = useState(false);
+
   const voiceEngineRef = useRef(null);
   const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
   const activeVoiceChannelIdRef = useRef(activeVoiceChannelId);
@@ -1676,6 +1690,68 @@ function loadInitialWebNodeStatus() {
   useEffect(() => {
     roomsRef.current = rooms;
   }, [rooms]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("freecord_input_mode", inputMode);
+    } catch {}
+    voiceEngineRef.current?.setInputMode(inputMode);
+    if (isElectron) {
+      if (inputMode === "push_to_talk") {
+        window.DiscordNative?.ptt?.setShortcut(pttShortcut, pttReleaseDelay);
+      } else {
+        window.DiscordNative?.ptt?.unregister();
+      }
+    }
+  }, [inputMode, pttShortcut, pttReleaseDelay, isElectron]);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const cleanup = window.DiscordNative?.ptt?.onStateChanged(({ active }) => {
+      voiceEngineRef.current?.setPttState(active);
+      setIsPttPressed(active);
+    });
+    return () => cleanup?.();
+  }, [isElectron]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (isRecordingPttKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = e.code || e.key;
+        setPttShortcut(key);
+        try {
+          localStorage.setItem("freecord_ptt_shortcut", key);
+        } catch {}
+        setIsRecordingPttKey(false);
+        return;
+      }
+      if (inputMode !== "push_to_talk") return;
+      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+      if (e.code === pttShortcut || e.key === pttShortcut) {
+        if (!isPttPressed) {
+          voiceEngineRef.current?.setPttState(true);
+          setIsPttPressed(true);
+        }
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (inputMode !== "push_to_talk") return;
+      if (e.code === pttShortcut || e.key === pttShortcut) {
+        voiceEngineRef.current?.setPttState(false);
+        setIsPttPressed(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [inputMode, pttShortcut, isPttPressed, isRecordingPttKey]);
 
   const pushToast = (toastObj) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -7240,6 +7316,14 @@ return (
             </div>
 
             <div className="user-panel-actions">
+              {inputMode === "push_to_talk" && (
+                <span
+                  className={`ptt-status-pill ${isPttPressed ? "active" : ""}`}
+                  title={`Atalho PTT: ${pttShortcut} • ${isPttPressed ? "Transmitindo" : "Aguardando tecla"}`}
+                >
+                  PTT: {pttShortcut}
+                </span>
+              )}
               <button
                 className={`icon-btn ${selfMute ? "danger" : ""}`}
                 onClick={toggleSelfMute}
@@ -8163,6 +8247,39 @@ return (
                     <PhoneOff size={22} />
                   </button>
                 </div>
+
+                {inputMode === "push_to_talk" && (
+                  <button
+                    type="button"
+                    className={`mobile-ptt-floating-btn ${isPttPressed ? "active" : ""}`}
+                    onTouchStart={(e) => {
+                      e.preventDefault();
+                      voiceEngineRef.current?.setPttState(true);
+                      setIsPttPressed(true);
+                    }}
+                    onTouchEnd={(e) => {
+                      e.preventDefault();
+                      voiceEngineRef.current?.setPttState(false);
+                      setIsPttPressed(false);
+                    }}
+                    onTouchCancel={(e) => {
+                      e.preventDefault();
+                      voiceEngineRef.current?.setPttState(false);
+                      setIsPttPressed(false);
+                    }}
+                    onMouseDown={() => {
+                      voiceEngineRef.current?.setPttState(true);
+                      setIsPttPressed(true);
+                    }}
+                    onMouseUp={() => {
+                      voiceEngineRef.current?.setPttState(false);
+                      setIsPttPressed(false);
+                    }}
+                  >
+                    <Mic size={20} />
+                    <span>{isPttPressed ? "FALANDO..." : "PRESSIONE PARA FALAR"}</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -8764,6 +8881,105 @@ return (
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    {/* Input Mode: VAD vs Push-to-Talk */}
+                    <div className="media-section-card" style={{ marginTop: 14 }}>
+                      <div className="media-section-header">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Radio size={16} color="#5865f2" />
+                          <span>Modo de Entrada de Voz</span>
+                        </span>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+                        <div
+                          className={`input-mode-card ${inputMode === "voice_activity" ? "active" : ""}`}
+                          onClick={() => setInputMode("voice_activity")}
+                        >
+                          <div style={{ fontWeight: 600, color: "#fff", marginBottom: 4 }}>
+                            Detecção de Voz (VAD)
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            O microfone ativa automaticamente quando você fala.
+                          </div>
+                        </div>
+
+                        <div
+                          className={`input-mode-card ${inputMode === "push_to_talk" ? "active" : ""}`}
+                          onClick={() => setInputMode("push_to_talk")}
+                        >
+                          <div style={{ fontWeight: 600, color: "#fff", marginBottom: 4 }}>
+                            Pressionar para Falar (PTT)
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                            O microfone transmite apenas enquanto a tecla estiver pressionada.
+                          </div>
+                        </div>
+                      </div>
+
+                      {inputMode === "push_to_talk" && (
+                        <div style={{ marginTop: 14, background: "#1e1f22", padding: 12, borderRadius: 8 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                            <label style={{ fontSize: 12, fontWeight: 600, color: "#dbdee1", margin: 0 }}>
+                              Atalho do Push-to-Talk {isElectron ? "(Global / Em segundo plano)" : ""}
+                            </label>
+                            <button
+                              type="button"
+                              className={`btn-secondary ${isRecordingPttKey ? "active" : ""}`}
+                              style={{ padding: "4px 10px", fontSize: 12 }}
+                              onClick={() => setIsRecordingPttKey((prev) => !prev)}
+                            >
+                              {isRecordingPttKey ? "Pressione qualquer tecla..." : "Gravar Atalho"}
+                            </button>
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <kbd className="ptt-key-badge">{pttShortcut}</kbd>
+                            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                              {isElectron ? "Funciona em segundo plano durante jogos em tela cheia." : "Atalho ativo enquanto a janela estiver em uso."}
+                            </span>
+                          </div>
+
+                          {/* Quick Preset Shortcuts */}
+                          <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                            {["ControlRight", "CapsLock", "PageDown", "F13", "Space", "AltRight"].map((key) => (
+                              <button
+                                key={key}
+                                type="button"
+                                className={`preset-key-btn ${pttShortcut === key ? "active" : ""}`}
+                                onClick={() => {
+                                  setPttShortcut(key);
+                                  try { localStorage.setItem("freecord_ptt_shortcut", key); } catch {}
+                                }}
+                              >
+                                {key}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Release Delay Slider */}
+                          <div style={{ marginTop: 14 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#dbdee1", marginBottom: 4 }}>
+                              <span>Atraso para Soltar PTT (Release Delay)</span>
+                              <span style={{ color: "#5865f2", fontWeight: 700 }}>{pttReleaseDelay} ms</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="20"
+                              max="1000"
+                              step="20"
+                              value={pttReleaseDelay}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setPttReleaseDelay(val);
+                                try { localStorage.setItem("freecord_ptt_delay", String(val)); } catch {}
+                              }}
+                              style={{ width: "100%", accentColor: "#5865f2" }}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
