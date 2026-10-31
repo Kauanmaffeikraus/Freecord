@@ -54,6 +54,102 @@ let currentPttShortcut = null;
 let pttReleaseDelay = 200;
 let pttReleaseTimer = null;
 
+let gamesDatabase = {};
+try {
+  const gamesPath = path.join(__dirname, "games.json");
+  if (fs.existsSync(gamesPath)) {
+    gamesDatabase = JSON.parse(fs.readFileSync(gamesPath, "utf8"));
+  }
+} catch (err) {
+  console.warn("[Freecord GameScanner] Error loading games.json:", err.message);
+}
+
+let activeGameActivity = null;
+let gameScanInterval = null;
+
+function scanActiveGames() {
+  const { execFile } = require("node:child_process");
+  if (process.platform === "win32") {
+    execFile("tasklist", ["/FO", "CSV", "/NH"], { windowsHide: true }, (err, stdout) => {
+      if (err || !stdout) return;
+
+      const lines = stdout.split(/\r?\n/);
+      let matchedGame = null;
+      let matchedExe = null;
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const match = line.match(/^"([^"]+)"/);
+        if (match && match[1]) {
+          const exeName = match[1].toLowerCase();
+          if (gamesDatabase[exeName]) {
+            matchedGame = gamesDatabase[exeName];
+            matchedExe = exeName;
+            if (
+              matchedGame.category !== "Desenvolvimento" &&
+              matchedGame.category !== "Música" &&
+              matchedGame.category !== "Loja de Jogos"
+            ) {
+              break;
+            }
+          }
+        }
+      }
+
+      if (matchedGame) {
+        if (!activeGameActivity || activeGameActivity.executable !== matchedExe) {
+          activeGameActivity = {
+            name: matchedGame.name,
+            category: matchedGame.category,
+            executable: matchedExe,
+            startTime: activeGameActivity?.executable === matchedExe ? activeGameActivity.startTime : Date.now(),
+          };
+          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+        }
+      } else {
+        if (activeGameActivity !== null) {
+          activeGameActivity = null;
+          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+        }
+      }
+    });
+  } else if (process.platform === "linux") {
+    execFile("ps", ["-A", "-o", "comm="], (err, stdout) => {
+      if (err || !stdout) return;
+      const lines = stdout.split(/\r?\n/);
+      let matchedGame = null;
+      let matchedExe = null;
+
+      for (const line of lines) {
+        const comm = line.trim().toLowerCase();
+        const exeWithExt = `${comm}.exe`;
+        if (gamesDatabase[exeWithExt] || gamesDatabase[comm]) {
+          matchedGame = gamesDatabase[exeWithExt] || gamesDatabase[comm];
+          matchedExe = comm;
+          break;
+        }
+      }
+
+      if (matchedGame) {
+        if (!activeGameActivity || activeGameActivity.executable !== matchedExe) {
+          activeGameActivity = {
+            name: matchedGame.name,
+            category: matchedGame.category,
+            executable: matchedExe,
+            startTime: activeGameActivity?.executable === matchedExe ? activeGameActivity.startTime : Date.now(),
+          };
+          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+        }
+      } else {
+        if (activeGameActivity !== null) {
+          activeGameActivity = null;
+          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+        }
+      }
+    });
+  }
+}
+
 function registerGlobalPtt(shortcut, releaseDelay = 200) {
   if (currentPttShortcut) {
     try {
@@ -151,6 +247,10 @@ function createMainWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    if (!gameScanInterval) {
+      setTimeout(scanActiveGames, 3000);
+      gameScanInterval = setInterval(scanActiveGames, 15000);
+    }
   });
 
   mainWindow.on("resize", () => {
@@ -411,6 +511,11 @@ function registerIpcHandlers() {
     }
     return true;
   });
+
+  // Local Game Activity IPC
+  ipcMain.handle("GET_CURRENT_GAME", () => {
+    return activeGameActivity;
+  });
 }
 
 function setupAutoUpdater() {
@@ -507,6 +612,10 @@ app.on("window-all-closed", () => {
   try {
     globalShortcut.unregisterAll();
   } catch {}
+  if (gameScanInterval) {
+    clearInterval(gameScanInterval);
+    gameScanInterval = null;
+  }
   if (p2pNode) {
     p2pNode.stop();
   }

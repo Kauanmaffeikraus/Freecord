@@ -54,6 +54,7 @@ import {
   Pin,
   Pencil,
   Smile,
+  Gamepad2,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -936,6 +937,17 @@ function UserAvatar({
   );
 }
 
+function formatGameElapsed(startTime) {
+  if (!startTime) return "";
+  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - startTime) / 60000));
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes} min`;
+  }
+  const hours = Math.floor(elapsedMinutes / 60);
+  const mins = elapsedMinutes % 60;
+  return `${hours}h ${mins}m`;
+}
+
 function ProfileCard({
   profile,
   isSelf,
@@ -1023,6 +1035,25 @@ function ProfileCard({
           <div className="profile-custom-status-box">
             {profile?.statusEmoji && <span>{profile.statusEmoji}</span>}
             <span>{profile?.customStatus}</span>
+          </div>
+        )}
+
+        {/* Discord PTB Game / Activity Card */}
+        {profile?.currentGame && (
+          <div className="profile-activity-card">
+            <div className="profile-activity-header">
+              <Gamepad2 size={13} color="#23a55a" />
+              <span>JOGANDO UM JOGO</span>
+            </div>
+            <div className="profile-activity-content">
+              <div className="profile-activity-name">{profile.currentGame.name}</div>
+              <div className="profile-activity-details">{profile.currentGame.category || "Jogo"}</div>
+              {profile.currentGame.startTime && (
+                <div className="profile-activity-time">
+                  decorridos {formatGameElapsed(profile.currentGame.startTime)}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -1635,6 +1666,7 @@ function loadInitialWebNodeStatus() {
   });
   const [isPttPressed, setIsPttPressed] = useState(false);
   const [isRecordingPttKey, setIsRecordingPttKey] = useState(false);
+  const [currentGame, setCurrentGame] = useState(null);
 
   const voiceEngineRef = useRef(null);
   const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
@@ -1752,6 +1784,23 @@ function loadInitialWebNodeStatus() {
       window.removeEventListener("keyup", handleKeyUp);
     };
   }, [inputMode, pttShortcut, isPttPressed, isRecordingPttKey]);
+
+  // Local Game Activity Scanner Listener
+  useEffect(() => {
+    if (!isElectron) return;
+    window.DiscordNative?.games?.getCurrentGame?.().then((game) => {
+      if (game) {
+        setCurrentGame(game);
+        window.DiscordNative?.p2p?.updateProfile?.({ currentGame: game });
+      }
+    });
+
+    const cleanup = window.DiscordNative?.games?.onGameActivity?.((game) => {
+      setCurrentGame(game);
+      window.DiscordNative?.p2p?.updateProfile?.({ currentGame: game });
+    });
+    return () => cleanup?.();
+  }, [isElectron]);
 
   const pushToast = (toastObj) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -6537,10 +6586,17 @@ function loadInitialWebNodeStatus() {
             <span className="peer-card-name">
               {selfDisplayName}#{nodeStatus.profile.tag}
             </span>
-            <span className="peer-card-sub">
-              {nodeStatus.profile.statusEmoji || ""}{" "}
-              {nodeStatus.profile.customStatus || `TCP: ${nodeStatus.tcpPort || "Web"}`}
-            </span>
+            {currentGame ? (
+              <span className="peer-card-game">
+                <Gamepad2 size={11} color="#23a55a" />
+                <span>Jogando {currentGame.name}</span>
+              </span>
+            ) : (
+              <span className="peer-card-sub">
+                {nodeStatus.profile.statusEmoji || ""}{" "}
+                {nodeStatus.profile.customStatus || `TCP: ${nodeStatus.tcpPort || "Web"}`}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -6565,9 +6621,16 @@ function loadInitialWebNodeStatus() {
               <span className="peer-card-name">
                 {peer.displayName || peer.username}#{peer.tag}
               </span>
-              <span className="peer-card-sub">
-                {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port} • ${peer.rttMs}ms`}
-              </span>
+              {peer.currentGame ? (
+                <span className="peer-card-game">
+                  <Gamepad2 size={11} color="#23a55a" />
+                  <span>Jogando {peer.currentGame.name}</span>
+                </span>
+              ) : (
+                <span className="peer-card-sub">
+                  {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port} • ${peer.rttMs}ms`}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -7308,10 +7371,17 @@ return (
               />
               <div style={{ minWidth: 0 }}>
                 <div className="user-panel-name">{selfDisplayName}</div>
-                <div className="user-panel-sub">
-                  {nodeStatus.profile.statusEmoji || ""}{" "}
-                  {nodeStatus.profile.customStatus || `#${nodeStatus.profile.tag}`}
-                </div>
+                {currentGame ? (
+                  <div className="user-panel-game" title={currentGame.name}>
+                    <Gamepad2 size={11} color="#23a55a" />
+                    <span>Jogando {currentGame.name}</span>
+                  </div>
+                ) : (
+                  <div className="user-panel-sub">
+                    {nodeStatus.profile.statusEmoji || ""}{" "}
+                    {nodeStatus.profile.customStatus || `#${nodeStatus.profile.tag}`}
+                  </div>
+                )}
               </div>
             </div>
 

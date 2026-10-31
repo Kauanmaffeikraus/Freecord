@@ -91,6 +91,14 @@ const DiscordNative = {
       return () => ipcRenderer.removeListener("PTT_STATE_CHANGED", listener);
     },
   },
+  games: {
+    getCurrentGame: () => ipcRenderer.invoke("GET_CURRENT_GAME"),
+    onGameActivity: (callback) => {
+      const listener = (_event, game) => callback(game);
+      ipcRenderer.on("GAME_ACTIVITY_CHANGED", listener);
+      return () => ipcRenderer.removeListener("GAME_ACTIVITY_CHANGED", listener);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld("DiscordNative", DiscordNative);

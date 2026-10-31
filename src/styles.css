@@ -3955,3 +3955,63 @@ body, html, #root {
   color: #ffffff;
   border-color: #23a55a;
 }
+
+/* Discord PTB Profile Activity Card */
+.profile-activity-card {
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.profile-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #23a55a;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.profile-activity-name {
+  font-weight: 700;
+  color: #ffffff;
+  font-size: 13px;
+}
+
+.profile-activity-details {
+  font-size: 11px;
+  color: #dbdee1;
+  margin-top: 2px;
+}
+
+.profile-activity-time {
+  font-size: 11px;
+  color: #949ba4;
+  margin-top: 2px;
+}
+
+.peer-card-game {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #4ade80;
+  margin-top: 2px;
+}
+
+.user-panel-game {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #4ade80;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
