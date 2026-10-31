@@ -59,6 +59,7 @@ import {
 } from "./services/webrtcVoiceEngine";
 import {
   loadOrCreateCryptoIdentity,
+  ensureECDHCryptoIdentity,
   encryptChatMessagePayload,
   decryptChatMessagePayload,
   buildSharedChannelIds,
@@ -1373,6 +1374,19 @@ function loadInitialWebNodeStatus() {
   const [cryptoIdentity, setCryptoIdentity] = useState(() =>
     loadOrCreateCryptoIdentity()
   );
+  const cryptoIdentityRef = useRef(cryptoIdentity);
+  useEffect(() => {
+    cryptoIdentityRef.current = cryptoIdentity;
+  }, [cryptoIdentity]);
+
+  useEffect(() => {
+    // AGENTS.md § 2.2: Diffie-Hellman real (ECDH P-256) via Web Crypto
+    ensureECDHCryptoIdentity(selfPeerIdRef.current).then((upgraded) => {
+      if (upgraded && upgraded.publicKey !== cryptoIdentityRef.current?.publicKey) {
+        setCryptoIdentity(upgraded);
+      }
+    });
+  }, []);
 
   // Chat State (Persisted locally for offline History Sync)
   const [messages, setMessages] = useState(() => {
@@ -2211,14 +2225,9 @@ function loadInitialWebNodeStatus() {
 
   const requestHistorySyncFromPeer = (targetPeerId = null) => {
     const myId = selfPeerIdRef.current;
+    // AGENTS.md § 2.3: Proibição de Vazamento de DMs.
+    // Sincroniza apenas os canais autorizados mútuos (servidores em comum e a DM direta com targetPeerId)
     const sharedChs = buildSharedChannelIds(roomsRef.current, myId, targetPeerId || "");
-    // Also include all DM channels with currently connected peers
-    for (const cp of connectedPeersRef.current || []) {
-      if (cp?.peerId) {
-        const sorted = [myId, cp.peerId].sort().join("__");
-        if (!sharedChs.includes(`dm_${sorted}`)) sharedChs.push(`dm_${sorted}`);
-      }
-    }
     const digest = buildHistorySyncDigest(messagesRef.current, sharedChs);
     sendP2PPacket(
       {
@@ -2231,13 +2240,14 @@ function loadInitialWebNodeStatus() {
     );
   };
 
-  const normalizeIncomingMessage = (rawMsg) => {
+  const normalizeIncomingMessage = async (rawMsg) => {
     if (!rawMsg || !rawMsg.id) return null;
     if (rawMsg.e2ee && rawMsg.e2ee.ciphertext) {
-      const dec = decryptChatMessagePayload(
+      const dec = await decryptChatMessagePayload(
         rawMsg.e2ee,
         rawMsg.channelId,
-        "🔒 [Mensagem Criptografada]"
+        "🔒 [Mensagem Criptografada]",
+        cryptoIdentityRef.current?.privateKey || ""
       );
       return {
         ...rawMsg,
@@ -2248,7 +2258,7 @@ function loadInitialWebNodeStatus() {
     return rawMsg;
   };
 
-  const handleIncomingP2PEvent = (event) => {
+  const handleIncomingP2PEvent = async (event) => {
     switch (event.type) {
       case "CHAT_MESSAGE": {
         if (!event.message || !event.message.id) return;
@@ -2264,7 +2274,7 @@ function loadInitialWebNodeStatus() {
           seenMessageIdsRef.current.delete(first);
         }
 
-        const msg = normalizeIncomingMessage(event.message);
+        const msg = await normalizeIncomingMessage(event.message);
         if (!msg) return;
 
         setMessages((prev) => {
@@ -2434,19 +2444,13 @@ function loadInitialWebNodeStatus() {
       case "HISTORY_SYNC_REQUEST": {
         const requesterId = event.fromPeerId;
         const myId = selfPeerIdRef.current;
+        // AGENTS.md § 2.3: Proibição de Vazamento de DMs:
+        // Apenas canais de servidores compartilhados e a DM exclusiva entre o usuário local e o peer solicitante podem ser sincronizados.
         const allowedChannels = buildSharedChannelIds(
           roomsRef.current,
           myId,
           requesterId || ""
         );
-        for (const cp of connectedPeersRef.current || []) {
-          if (cp?.peerId) {
-            const sorted = [myId, cp.peerId].sort().join("__");
-            if (!allowedChannels.includes(`dm_${sorted}`)) {
-              allowedChannels.push(`dm_${sorted}`);
-            }
-          }
-        }
         const missed = collectMissedMessagesForPeer(
           messagesRef.current,
           event.digest || {},
@@ -2467,15 +2471,16 @@ function loadInitialWebNodeStatus() {
 
       case "HISTORY_SYNC_RESPONSE": {
         if (!Array.isArray(event.messages) || event.messages.length === 0) break;
-        const normalizedList = event.messages
-          .map((m) => normalizeIncomingMessage(m))
-          .filter(Boolean);
+        const normalizedList = (
+          await Promise.all(event.messages.map((m) => normalizeIncomingMessage(m)))
+        ).filter(Boolean);
         if (normalizedList.length === 0) break;
+        for (const m of normalizedList) {
+          if (m?.id) seenMessageIdsRef.current.add(m.id);
+        }
         setMessages((prev) => {
-          const { merged, addedCount } = mergeHistoryMessages(prev, normalizedList);
-          if (addedCount > 0 && notificationsEnabledRef.current) {
-            playSynthesizedUiSound("message");
-          }
+          const { merged } = mergeHistoryMessages(prev, normalizedList);
+          // AGENTS.md § 2.3: Silenciamento em Sync: Sincronizações de histórico jamais disparam sons
           return merged;
         });
         break;
@@ -2905,7 +2910,7 @@ function loadInitialWebNodeStatus() {
     keyFingerprint: cryptoIdentity.keyFingerprint,
   });
 
-  const handleSendMessage = (e) => {
+  const handleSendMessage = async (e) => {
     e?.preventDefault();
     const trimmed = chatInput.trim();
     if (!trimmed) return;
@@ -2914,15 +2919,17 @@ function loadInitialWebNodeStatus() {
     const remotePeerObj = targetPeer
       ? connectedPeers.find((p) => p.peerId === targetPeer)
       : null;
-    const e2eeEnvelope = encryptChatMessagePayload(
+    const e2eeEnvelope = await encryptChatMessagePayload(
       trimmed,
       effectiveChannelId,
       cryptoIdentity.publicKey,
-      remotePeerObj?.cryptoPubKey || ""
+      remotePeerObj?.cryptoPubKey || "",
+      cryptoIdentity.privateKey || ""
     );
 
+    const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const newMsg = {
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: msgId,
       createdAt: Date.now(),
       channelId: effectiveChannelId,
       author: buildAuthorSnapshot(),
@@ -2933,23 +2940,31 @@ function loadInitialWebNodeStatus() {
       reactions: {},
     };
 
+    seenMessageIdsRef.current.add(msgId);
     setMessages((prev) => [...prev, newMsg]);
     setChatInput("");
 
-    sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, targetPeer);
+    // AGENTS.md § 2.2: Mascaramento de Rede: pacote na rede nunca expõe o texto original em claro
+    const wireMsg = {
+      ...newMsg,
+      text: e2eeEnvelope ? "🔒 [Mensagem Criptografada]" : trimmed,
+    };
+    sendP2PPacket({ type: "CHAT_MESSAGE", message: wireMsg }, targetPeer);
   };
 
-  const handleSendQuickDm = (peerProfile, text) => {
+  const handleSendQuickDm = async (peerProfile, text) => {
     const sorted = [nodeStatus.profile.peerId, peerProfile.peerId].sort().join("__");
     const dmChId = `dm_${sorted}`;
-    const e2eeEnvelope = encryptChatMessagePayload(
+    const e2eeEnvelope = await encryptChatMessagePayload(
       text,
       dmChId,
       cryptoIdentity.publicKey,
-      peerProfile?.cryptoPubKey || ""
+      peerProfile?.cryptoPubKey || "",
+      cryptoIdentity.privateKey || ""
     );
+    const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const newMsg = {
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      id: msgId,
       createdAt: Date.now(),
       channelId: dmChId,
       author: buildAuthorSnapshot(),
@@ -2959,8 +2974,15 @@ function loadInitialWebNodeStatus() {
       e2eeVerified: true,
       reactions: {},
     };
+    seenMessageIdsRef.current.add(msgId);
     setMessages((prev) => [...prev, newMsg]);
-    sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, peerProfile.peerId);
+
+    // AGENTS.md § 2.2: Mascaramento de Rede
+    const wireMsg = {
+      ...newMsg,
+      text: e2eeEnvelope ? "🔒 [Mensagem Criptografada]" : text,
+    };
+    sendP2PPacket({ type: "CHAT_MESSAGE", message: wireMsg }, peerProfile.peerId);
     setInspectedProfile(null);
     setSelectedRoomId("dm_hub");
     setSelectedDmPeerId(peerProfile.peerId);

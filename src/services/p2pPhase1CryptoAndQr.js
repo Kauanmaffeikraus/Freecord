@@ -150,12 +150,126 @@ export function formatKeyFingerprint(pubKeyHex) {
 }
 
 // ============================================================================
-// 2. Cryptographic Identity Lifecycle & E2EE Message Envelope
+// 2. Cryptographic Identity Lifecycle & Genuina E2EE (Web Crypto ECDH P-256)
 // ============================================================================
+
+const sharedSecretCache = new Map();
+
+export async function deriveSharedSecretECDH(myPrivateKeyPkcs8Hex, remotePublicKeyRawHex) {
+  if (!myPrivateKeyPkcs8Hex || !remotePublicKeyRawHex) return null;
+  const cacheKey = `${myPrivateKeyPkcs8Hex}:${remotePublicKeyRawHex}`;
+  if (sharedSecretCache.has(cacheKey)) {
+    return sharedSecretCache.get(cacheKey);
+  }
+
+  try {
+    const cryptoSubtle =
+      (typeof window !== "undefined" && window.crypto?.subtle) ||
+      (typeof globalThis !== "undefined" && globalThis.crypto?.subtle);
+    if (!cryptoSubtle) return null;
+
+    const privKeyBytes = hexToBytes(myPrivateKeyPkcs8Hex);
+    const pubKeyBytes = hexToBytes(remotePublicKeyRawHex);
+
+    // Uncompressed P-256 public key is 65 bytes starting with 0x04 (130 hex chars)
+    if (pubKeyBytes.length !== 65 || pubKeyBytes[0] !== 0x04) {
+      return null;
+    }
+
+    const [privKey, pubKey] = await Promise.all([
+      cryptoSubtle.importKey(
+        "pkcs8",
+        privKeyBytes,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        ["deriveBits"]
+      ),
+      cryptoSubtle.importKey(
+        "raw",
+        pubKeyBytes,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        []
+      ),
+    ]);
+
+    const secretBits = await cryptoSubtle.deriveBits(
+      { name: "ECDH", public: pubKey },
+      privKey,
+      256
+    );
+    const secretBytes = new Uint8Array(secretBits);
+    sharedSecretCache.set(cacheKey, secretBytes);
+    return secretBytes;
+  } catch (err) {
+    console.warn("[Freecord E2EE] ECDH key agreement failed:", err);
+    return null;
+  }
+}
+
+export async function ensureECDHCryptoIdentity(peerId = "") {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CRYPTO_STORAGE_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (
+        parsed &&
+        parsed.version === 2 &&
+        parsed.curve === "P-256" &&
+        parsed.privateKey?.length === 276 &&
+        parsed.publicKey?.length === 130
+      ) {
+        return parsed;
+      }
+    }
+  } catch {}
+
+  const cryptoSubtle =
+    (typeof window !== "undefined" && window.crypto?.subtle) ||
+    (typeof globalThis !== "undefined" && globalThis.crypto?.subtle);
+
+  if (cryptoSubtle) {
+    try {
+      const kp = await cryptoSubtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        ["deriveBits"]
+      );
+      const [rawPub, pkcs8Priv] = await Promise.all([
+        cryptoSubtle.exportKey("raw", kp.publicKey),
+        cryptoSubtle.exportKey("pkcs8", kp.privateKey),
+      ]);
+      const publicKey = bytesToHex(new Uint8Array(rawPub));
+      const privateKey = bytesToHex(new Uint8Array(pkcs8Priv));
+      const keyFingerprint = formatKeyFingerprint(publicKey);
+
+      const identity = {
+        version: 2,
+        curve: "P-256",
+        privateKey,
+        publicKey,
+        keyFingerprint,
+        createdAt: Date.now(),
+      };
+
+      try {
+        if (typeof localStorage !== "undefined") {
+          localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(identity));
+        }
+      } catch {}
+
+      return identity;
+    } catch (err) {
+      console.warn("[Freecord E2EE] Error generating P-256 keypair:", err);
+    }
+  }
+
+  return loadOrCreateCryptoIdentity(peerId);
+}
 
 export function loadOrCreateCryptoIdentity(peerId = "") {
   try {
-    const raw = localStorage.getItem(CRYPTO_STORAGE_KEY);
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CRYPTO_STORAGE_KEY) : null;
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.privateKey && parsed.publicKey) {
@@ -178,13 +292,22 @@ export function loadOrCreateCryptoIdentity(peerId = "") {
   };
 
   try {
-    localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(identity));
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(identity));
+    }
   } catch {}
 
   return identity;
 }
 
-function deriveChannelMasterKey(channelId, pubKeyA = "", pubKeyB = "") {
+export function deriveChannelMasterKey(channelId, sharedSecretBytes = null, pubKeyA = "", pubKeyB = "") {
+  if (sharedSecretBytes && sharedSecretBytes.length === 32) {
+    const chBytes = new TextEncoder().encode(channelId);
+    const seed = new Uint8Array(32 + chBytes.length);
+    seed.set(sharedSecretBytes);
+    seed.set(chBytes, 32);
+    return sha256Bytes(seed);
+  }
   const sortedPubs = [String(pubKeyA || ""), String(pubKeyB || "")].filter(Boolean).sort().join(":");
   const seed = `FREECORD_E2EE_V1|${channelId}|${sortedPubs}`;
   return sha256Bytes(new TextEncoder().encode(seed));
@@ -211,10 +334,32 @@ function sha256CtrXor(inputBytes, masterKeyBytes, ivHex) {
   return out;
 }
 
-export function encryptChatMessagePayload(plainText, channelId, myPubKey = "", remotePubKey = "") {
+export async function encryptChatMessagePayload(
+  plainText,
+  channelId,
+  myPubKey = "",
+  remotePubKey = "",
+  myPrivKey = ""
+) {
   if (!plainText) return null;
+
+  let masterKey = null;
+  let isEcdh = false;
+
+  // AGENTS.md § 2.2: Diffie-Hellman real (ECDH P-256) via Web Crypto
+  if (myPrivKey && remotePubKey && remotePubKey.length === 130) {
+    const sharedSecret = await deriveSharedSecretECDH(myPrivKey, remotePubKey);
+    if (sharedSecret) {
+      masterKey = deriveChannelMasterKey(channelId, sharedSecret);
+      isEcdh = true;
+    }
+  }
+
+  if (!masterKey) {
+    masterKey = deriveChannelMasterKey(channelId, null, myPubKey, remotePubKey);
+  }
+
   const iv = randomHex(12);
-  const masterKey = deriveChannelMasterKey(channelId, myPubKey, remotePubKey);
   const plainBytes = new TextEncoder().encode(plainText);
   const cipherBytes = sha256CtrXor(plainBytes, masterKey, iv);
   const ciphertext = bytesToHex(cipherBytes);
@@ -223,7 +368,7 @@ export function encryptChatMessagePayload(plainText, channelId, myPubKey = "", r
   const mac = bytesToHex(hmacSha256(masterKey, authData)).slice(0, 32);
 
   return {
-    alg: "FC-SHA256-CTR-HMAC",
+    alg: isEcdh ? "FC-ECDH-P256-CTR-HMAC" : "FC-SHA256-CTR-HMAC",
     iv,
     ciphertext,
     mac,
@@ -232,22 +377,45 @@ export function encryptChatMessagePayload(plainText, channelId, myPubKey = "", r
   };
 }
 
-export function decryptChatMessagePayload(e2eeEnvelope, channelId, fallbackText = "") {
+export async function decryptChatMessagePayload(
+  e2eeEnvelope,
+  channelId,
+  fallbackText = "",
+  myPrivKey = ""
+) {
   if (!e2eeEnvelope || !e2eeEnvelope.ciphertext || !e2eeEnvelope.iv) {
     return { text: fallbackText, verified: false };
   }
   try {
-    const masterKey = deriveChannelMasterKey(
-      channelId,
-      e2eeEnvelope.senderPubKey || "",
-      e2eeEnvelope.recipientPubKey || ""
-    );
+    let masterKey = null;
+
+    if (
+      e2eeEnvelope.alg === "FC-ECDH-P256-CTR-HMAC" &&
+      myPrivKey &&
+      e2eeEnvelope.senderPubKey &&
+      e2eeEnvelope.senderPubKey.length === 130
+    ) {
+      const sharedSecret = await deriveSharedSecretECDH(myPrivKey, e2eeEnvelope.senderPubKey);
+      if (sharedSecret) {
+        masterKey = deriveChannelMasterKey(channelId, sharedSecret);
+      }
+    }
+
+    if (!masterKey) {
+      masterKey = deriveChannelMasterKey(
+        channelId,
+        null,
+        e2eeEnvelope.senderPubKey || "",
+        e2eeEnvelope.recipientPubKey || ""
+      );
+    }
+
     const authData = new TextEncoder().encode(
       `${channelId}:${e2eeEnvelope.iv}:${e2eeEnvelope.ciphertext}`
     );
     const expectedMac = bytesToHex(hmacSha256(masterKey, authData)).slice(0, 32);
     if (expectedMac !== e2eeEnvelope.mac) {
-      return { text: fallbackText || "🔒 [Encrypted Message — Key Mismatch]", verified: false };
+      return { text: fallbackText || "🔒 [Mensagem Criptografada — Falha de Autenticação]", verified: false };
     }
     const cipherBytes = hexToBytes(e2eeEnvelope.ciphertext);
     const plainBytes = sha256CtrXor(cipherBytes, masterKey, e2eeEnvelope.iv);
