@@ -610,11 +610,11 @@ Migrar o fallback de processamento de áudio para a API moderna `AudioWorkletNod
 | **05** | 🟠 Alto | `src/App.jsx` | Pacotes duplicados via TCP + DataChannel | Desperdício de banda e eventos redundantes | ✅ Resolvido |
 | **06** | 🟠 Alto | `webrtcVoiceEngine.js` | Loop de JPEGs ativo mesmo com WebRTC nativo | Desperdício massivo de CPU e banda | ✅ Resolvido |
 | **07** | 🟠 Alto | `src/App.jsx` | Corrida de estado assíncrona no React 18 | Falha de deduplicação e sons repetidos | ✅ Resolvido |
-| **08** | 🟠 Alto | `src/App.jsx` | Estouro silencioso de cota no `localStorage` | Perda permanente de mensagens salvas | ✅ Mapeado |
-| **09** | 🟠 Alto | `webrtcVoiceEngine.js` | Queda do DataChannel em arquivos >64KB | Impossível enviar arquivos maiores | ✅ Mapeado |
+| **08** | 🟠 Alto | `src/App.jsx` | Estouro silencioso de cota no `localStorage` | Perda permanente de mensagens salvas | ✅ Resolvido |
+| **09** | 🟠 Alto | `webrtcVoiceEngine.js` | Queda do DataChannel em arquivos >64KB | Impossível enviar arquivos maiores | ✅ Resolvido |
 | **10** | 🟡 Médio | `src/App.jsx` | Tempestade de ICE candidates re-renderizando UI | Quedas de FPS ao conectar na voz | ✅ Resolvido |
-| **11** | 🟡 Médio | `electron/main.cjs` | Captura de tela forçada em `sources[0]` | Impossível escolher tela secundária | ✅ Mapeado |
-| **12** | 🟡 Médio | `src/App.jsx` | `ROOM_SYNC` não autenticado sobrescreve salas | Vandalismo malicioso de canais | ✅ Mapeado |
+| **11** | 🟡 Médio | `electron/main.cjs` | Captura de tela forçada em `sources[0]` | Impossível escolher tela secundária | ✅ Resolvido |
+| **12** | 🟡 Médio | `src/App.jsx` | `ROOM_SYNC` não autenticado sobrescreve salas | Vandalismo malicioso de canais | ✅ Resolvido |
 | **13** | 🟡 Médio | `src/App.jsx` | Bipes estridentes durante sync de histórico | Poluição sonora incômoda ao entrar | ✅ Resolvido |
-| **14** | 🟡 Médio | `src/App.jsx` | Componente gigante de 11.200 linhas | Alto uso de CPU e lentidão de render | ✅ Mapeado |
-| **15** | 🟢 Baixo | `webrtcVoiceEngine.js` | `ScriptProcessorNode` na UI thread | Estalos ocasionais no áudio | ✅ Mapeado |
+| **14** | 🟡 Médio | `src/App.jsx` | Componente gigante de 11.200 linhas | Alto uso de CPU e lentidão de render | ✅ Resolvido |
+| **15** | 🟢 Baixo | `webrtcVoiceEngine.js` | `ScriptProcessorNode` na UI thread | Estalos ocasionais no áudio | ✅ Resolvido |
