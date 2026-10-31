@@ -69,6 +69,10 @@ Toda IA que for escrever, refatorar ou auditar código no Freecord **DEVE** segu
    - O arquivo `src/App.jsx` é volumoso. Evite adicionar estados globais desnecessários que forcem re-renders descontrolados da árvore inteira.
    - Para checagens rápidas de duplicatas ou controle de temporizadores, prefira `useRef` síncrono a `useState`.
    - Sempre que criar novas funcionalidades grandes, isole-as em componentes dedicados em `src/components/`.
+5. **Criação de Branches Separadas & Commits Atômicos Obrigatórios:**
+   - NUNCA codifique novas funcionalidades ou correções complexas direto na `main` ou misturadas em uma branch existente suja.
+   - Antes de iniciar qualquer tarefa, **CRIE UMA BRANCH DEDICADA** (`git checkout -b <type>/<description-in-english>`).
+   - Conforme cada função for implementada e testada, ou conforme cada bug for sanado, **VÁ FAZENDO COMMITS ATÔMICOS E PROGRESSIVOS**. Não acumule dezenas de alterações não relacionadas para commitar tudo de uma vez no final.
 
 ---
 
@@ -138,6 +142,47 @@ chore(git): ignore third-party test loaders and editor artifacts in gitignore
 - `fixed stuff` ❌ *(vago e sem escopo)*
 - `Update App.jsx` ❌ *(genérico)*
 - `feat: Adicionado suporte a markdown` ❌ *(misto/português)*
+
+---
+
+### 4.3 Política Obrigatória de Branches Isoladas e Commits Atômicos Progressivos
+
+Para manter o repositório organizado, rastreável e facilitar code reviews:
+
+1. **Uma Tarefa = Uma Branch Dedicada:**
+   - Toda nova funcionalidade, correção de bug ou refatoração DEVE ser desenvolvida em sua própria branch isolada.
+   - NUNCA misture a implementação de duas features distintas na mesma branch.
+   - Exemplo de fluxo correto:
+     ```bash
+     # Para uma nova funcionalidade:
+     git checkout main
+     git pull origin main
+     git checkout -b feat/discord-markdown-parser
+
+     # Para a correção de um bug específico:
+     git checkout -b fix/p2p-cross-dialing-tiebreaker
+     ```
+
+2. **Commits Frequentes, Atômicos e Granulares (Atomic Commits):**
+   - **Vá commitando à medida que for avançando.** Não espere terminar o projeto inteiro ou fazer 3 dias de trabalho para dar um único commit gigantesco de 30 arquivos.
+   - Cada commit deve representar **uma única unidade lógica de trabalho** que compila com sucesso.
+   - Exemplo de sequência saudável de commits progressivos para uma feature:
+     ```bash
+     # Passo 1: Adiciona o parser básico
+     git commit -m "feat(chat): add AST parser for bold, italic and strikethrough"
+     
+     # Passo 2: Adiciona spoilers interativos
+     git commit -m "feat(chat): add interactive spoiler blur tag renderer"
+     
+     # Passo 3: Adiciona destaque de código PrismJS
+     git commit -m "feat(chat): integrate syntax highlighter for code blocks"
+     
+     # Passo 4: Sanitização de segurança
+     git commit -m "fix(chat): sanitize markdown html output using dompurify"
+     ```
+
+3. **Validação Obrigatória Antes de Cada Commit:**
+   - Execute `npm run build` antes de commitar para garantir que nenhum commit intermediário quebre a árvore de histórico (`git bisect`).
 
 ---
 
@@ -211,3 +256,5 @@ Antes de declarar qualquer modificação ou tarefa concluída, a IA **DEVE** val
 - [ ] **5. Sem Vazamento de Dados:** Nenhuma informação privada (DMs, chaves privadas) trafega em broadcast.
 - [ ] **6. Preservação de Documentação:** Comentários úteis e documentações existentes foram preservados.
 - [ ] **7. Git Limpo:** Nenhum arquivo temporário, build quebrado ou segredo foi deixado na árvore de trabalho.
+- [ ] **8. Branch Isolada Utilizada:** O desenvolvimento foi executado em sua própria branch dedicada (`feat/...`, `fix/...` em inglês), nunca misturando tarefas distintas.
+- [ ] **9. Commits Atômicos Progressivos:** As alterações foram commitadas de forma granular e atômica à medida que cada etapa foi validada, com mensagens estritamente em inglês.

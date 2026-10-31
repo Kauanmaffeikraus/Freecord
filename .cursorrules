@@ -4,7 +4,7 @@
 
 - All code MUST adhere strictly to 100% Serverless, P2P Mesh, and Local-First architecture.
 - NEVER introduce cloud databases (Firebase, Supabase) or central telemetry.
-- ALL git commits MUST be in English following Conventional Commits 1.0.0 (e.g., `feat(scope): ...`, `fix(scope): ...`).
-- ALL new branches MUST be in English following naming conventions (e.g., `feat/feature-name`, `fix/issue-name`).
-- Every code change MUST pass `npm run build` before completion.
-- Refer to `AGENTS.md`, `ANALISE_DISCORD_VS_FREECORD.md` and `RELATORIO_BUGS_E_AUDITORIA.md` for detailed guidelines.
+- ALWAYS create a separate dedicated branch in English (`feat/...`, `fix/...`) before starting any new feature or bug fix.
+- ALWAYS commit progressively and atomically in English following Conventional Commits 1.0.0 (e.g. `feat(chat): ...`, `fix(p2p): ...`). Never accumulate bloated monolithic commits.
+- Every commit and branch MUST pass `npm run build` before completion.
+- Refer to `AGENTS.md`, `ANALISE_DISCORD_VS_FREECORD.md` and `RELATORIO_BUGS_E_AUDITORIA.md` for detailed specifications.
