@@ -228,6 +228,32 @@ function registerIpcHandlers() {
     return true;
   });
 
+  // Persistent Chat Storage on Disk (AGENTS.md § 2.4 & RELATORIO_BUGS_E_AUDITORIA Bug 08)
+  ipcMain.handle("SAVE_CHAT_STORAGE", async (_event, data) => {
+    try {
+      const filePath = path.join(app.getPath("userData"), "chat_history.json");
+      await fs.promises.writeFile(filePath, JSON.stringify(data), "utf8");
+      return true;
+    } catch (err) {
+      console.warn("[Freecord Storage] Error saving chat history:", err.message);
+      return false;
+    }
+  });
+
+  ipcMain.handle("LOAD_CHAT_STORAGE", async () => {
+    try {
+      const filePath = path.join(app.getPath("userData"), "chat_history.json");
+      if (fs.existsSync(filePath)) {
+        const raw = await fs.promises.readFile(filePath, "utf8");
+        return JSON.parse(raw);
+      }
+      return null;
+    } catch (err) {
+      console.warn("[Freecord Storage] Error loading chat history:", err.message);
+      return null;
+    }
+  });
+
   // Desktop Capturer for Go Live / Screen Share (matching discord_voice setDesktopSource / presentDesktopSourcePicker)
   ipcMain.handle("SET_PENDING_DISPLAY_SOURCE", (_event, sourceId) => {
     pendingDisplaySourceId = sourceId;

@@ -36,6 +36,10 @@ const DiscordNative = {
     get: (key, defaultValue) => ipcRenderer.invoke("DISCORD_SETTINGS_GET", key, defaultValue),
     set: (key, value) => ipcRenderer.invoke("DISCORD_SETTINGS_SET", key, value),
   },
+  storage: {
+    saveChatHistory: (data) => ipcRenderer.invoke("SAVE_CHAT_STORAGE", data),
+    loadChatHistory: () => ipcRenderer.invoke("LOAD_CHAT_STORAGE"),
+  },
   desktopCapture: {
     getDesktopSources: () => ipcRenderer.invoke("DISCORD_GET_DESKTOP_SOURCES"),
     setPendingDisplaySource: (sourceId) => ipcRenderer.invoke("SET_PENDING_DISPLAY_SOURCE", sourceId),

@@ -1403,12 +1403,44 @@ function loadInitialWebNodeStatus() {
   const [typingPeers, setTypingPeers] = useState({});
   const messagesRef = useRef(messages);
   const seenMessageIdsRef = useRef(new Set((messages || []).map((m) => m?.id).filter(Boolean)));
+  const pendingTransfersRef = useRef(new Map());
+
+  // AGENTS.md § 2.4 & RELATORIO_BUGS_E_AUDITORIA Bug 08: Persistent disk storage in Electron via IPC
+  useEffect(() => {
+    if (window.DiscordNative?.storage?.loadChatHistory) {
+      window.DiscordNative.storage
+        .loadChatHistory()
+        .then((saved) => {
+          if (Array.isArray(saved) && saved.length > 0) {
+            setMessages((prev) => {
+              const merged = mergeHistoryMessages(prev, saved);
+              for (const m of merged.merged) {
+                if (m?.id) seenMessageIdsRef.current.add(m.id);
+              }
+              return merged.merged;
+            });
+          }
+        })
+        .catch((err) => {
+          console.warn("[Freecord Storage] Error loading persistent disk history:", err);
+        });
+    }
+  }, []);
 
   useEffect(() => {
     messagesRef.current = messages;
+
+    // Persist to Electron disk JSON file (no 5MB localStorage limit)
+    if (window.DiscordNative?.storage?.saveChatHistory) {
+      window.DiscordNative.storage.saveChatHistory(messages.slice(-1000)).catch((err) => {
+        console.warn("[Freecord Storage] Failed to save chat to disk:", err);
+      });
+    }
+
+    // Fallback to localStorage (compacted to prevent QuotaExceededError)
     try {
-      const compact = messages.slice(-250).map((m) => {
-        if (m?.attachment?.dataUrl && m.attachment.dataUrl.length > 512 * 1024) {
+      const compact = messages.slice(-150).map((m) => {
+        if (m?.attachment?.dataUrl && m.attachment.dataUrl.length > 256 * 1024) {
           return {
             ...m,
             attachment: { ...m.attachment, dataUrl: null, omittedInStorage: true },
@@ -1417,7 +1449,9 @@ function loadInitialWebNodeStatus() {
         return m;
       });
       localStorage.setItem("freecord_chat_messages_v1", JSON.stringify(compact));
-    } catch {}
+    } catch (err) {
+      console.warn("[Freecord Storage] localStorage write error (quota limit or restricted):", err);
+    }
   }, [messages]);
 
   // Voice, Simultaneous Webcam + Screen Share & Resizable Stage State
@@ -2360,6 +2394,83 @@ function loadInitialWebNodeStatus() {
         break;
       }
 
+      // AGENTS.md § 2.5 & RELATORIO_BUGS_E_AUDITORIA Bug 09: Fragmentação de Arquivos WebRTC
+      case "FILE_TRANSFER_START": {
+        if (!event.transferId || !event.totalChunks) break;
+        pendingTransfersRef.current.set(event.transferId, {
+          meta: event,
+          chunks: new Map(),
+          receivedChunks: 0,
+          totalChunks: event.totalChunks,
+        });
+        break;
+      }
+
+      case "FILE_TRANSFER_CHUNK": {
+        const transfer = pendingTransfersRef.current.get(event.transferId);
+        if (!transfer) break;
+        if (!transfer.chunks.has(event.chunkIndex)) {
+          transfer.chunks.set(event.chunkIndex, event.data);
+          transfer.receivedChunks++;
+        }
+        break;
+      }
+
+      case "FILE_TRANSFER_COMPLETE": {
+        const transfer = pendingTransfersRef.current.get(event.transferId);
+        if (!transfer) break;
+        pendingTransfersRef.current.delete(event.transferId);
+
+        const meta = transfer.meta;
+        if (!meta) break;
+
+        const chunkList = [];
+        for (let i = 0; i < meta.totalChunks; i++) {
+          const chunkData = transfer.chunks.get(i);
+          if (!chunkData) {
+            console.warn(`[Freecord P2P] Missing chunk ${i} for file ${meta.fileName}`);
+            return;
+          }
+          const byteChars = atob(chunkData);
+          const byteNumbers = new Uint8Array(byteChars.length);
+          for (let j = 0; j < byteChars.length; j++) {
+            byteNumbers[j] = byteChars.charCodeAt(j);
+          }
+          chunkList.push(byteNumbers);
+        }
+        const fullBlob = new Blob(chunkList, {
+          type: meta.mimeType || "application/octet-stream",
+        });
+        const objectUrl = URL.createObjectURL(fullBlob);
+
+        const assembledMsg = {
+          id: meta.messageId,
+          channelId: meta.channelId,
+          author: meta.author,
+          timestamp:
+            meta.timestamp ||
+            new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          text: t.fileSharedText(meta.fileName, (meta.fileSize / 1024).toFixed(1)),
+          attachment: {
+            name: meta.fileName,
+            size: meta.fileSize,
+            mimeType: meta.mimeType,
+            isImage: meta.isImage,
+            dataUrl: objectUrl,
+          },
+          reactions: {},
+        };
+
+        if (!seenMessageIdsRef.current.has(assembledMsg.id)) {
+          seenMessageIdsRef.current.add(assembledMsg.id);
+          setMessages((prev) => [...prev, assembledMsg]);
+          if (notificationsEnabledRef.current) {
+            playSynthesizedUiSound("message");
+          }
+        }
+        break;
+      }
+
       case "CHAT_REACTION": {
         const { messageId, emoji, peerId } = event;
         if (!messageId || !emoji || !peerId) return;
@@ -2997,10 +3108,13 @@ function loadInitialWebNodeStatus() {
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const isImage = file.type.startsWith("image/");
+      const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+
       const newMsg = {
-        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id: msgId,
         channelId: effectiveChannelId,
         author: buildAuthorSnapshot(),
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -3015,9 +3129,75 @@ function loadInitialWebNodeStatus() {
         reactions: {},
       };
 
+      seenMessageIdsRef.current.add(msgId);
       setMessages((prev) => [...prev, newMsg]);
-      const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
-      sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, targetPeer);
+
+      // AGENTS.md § 2.5: Se o arquivo for maior que 32 KB, fragmentar em chunks binários
+      const CHUNK_SIZE = 32 * 1024;
+      if (file.size > CHUNK_SIZE) {
+        const transferId = `ft_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+        sendP2PPacket(
+          {
+            type: "FILE_TRANSFER_START",
+            dedupId: `ft_start_${transferId}`,
+            transferId,
+            messageId: msgId,
+            channelId: effectiveChannelId,
+            author: buildAuthorSnapshot(),
+            timestamp: newMsg.timestamp,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || "application/octet-stream",
+            isImage,
+            totalChunks,
+          },
+          targetPeer
+        );
+
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(file.size, start + CHUNK_SIZE);
+          const sliceBlob = file.slice(start, end);
+          const arrayBuf = await sliceBlob.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = "";
+          for (let b = 0; b < bytes.length; b += 8192) {
+            binary += String.fromCharCode.apply(
+              null,
+              bytes.subarray(b, Math.min(b + 8192, bytes.length))
+            );
+          }
+          const chunkBase64 = btoa(binary);
+
+          sendP2PPacket(
+            {
+              type: "FILE_TRANSFER_CHUNK",
+              dedupId: `ft_chunk_${transferId}_${i}`,
+              transferId,
+              chunkIndex: i,
+              data: chunkBase64,
+            },
+            targetPeer
+          );
+
+          if (i % 4 === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 8));
+          }
+        }
+
+        sendP2PPacket(
+          {
+            type: "FILE_TRANSFER_COMPLETE",
+            dedupId: `ft_end_${transferId}`,
+            transferId,
+          },
+          targetPeer
+        );
+      } else {
+        sendP2PPacket({ type: "CHAT_MESSAGE", message: newMsg }, targetPeer);
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = "";
