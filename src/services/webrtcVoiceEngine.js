@@ -538,16 +538,9 @@ export class WebRTCVoiceEngine {
       }, 45);
 
       // Fallback PCM processor ONLY attached while a peer's WebRTC connection is still shaking hands
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      const zeroGain = ctx.createGain();
-      zeroGain.gain.value = 0;
-      this.txProcessorNode = processor;
-      this.txZeroGainNode = zeroGain;
-      this.txProcessorAttached = false;
-      this.updateFallbackProcessorState();
-
+      // Uses AudioWorkletNode off the main UI thread when supported, with ScriptProcessorNode fallback
       let hangoverBuffers = 0;
-      processor.onaudioprocess = (e) => {
+      const handleAudioData = (input) => {
         if (!this.inVoiceChannel || !this.onAudioChunkSend || this.connections.size === 0) {
           return;
         }
@@ -567,7 +560,6 @@ export class WebRTCVoiceEngine {
 
         if (this.selfMute || this.selfDeafen) return;
 
-        const input = e.inputBuffer.getChannelData(0);
         let sumSq = 0;
         for (let i = 0; i < input.length; i++) {
           const v = input[i];
@@ -606,6 +598,73 @@ export class WebRTCVoiceEngine {
           sampleRate: Math.round(ctx.sampleRate / 2),
         });
       };
+
+      let initialProcessor = null;
+      if (typeof ctx.createScriptProcessor === "function") {
+        try {
+          initialProcessor = ctx.createScriptProcessor(4096, 1, 1);
+          initialProcessor.onaudioprocess = (e) => {
+            handleAudioData(e.inputBuffer.getChannelData(0));
+          };
+        } catch {}
+      }
+
+      const zeroGain = ctx.createGain();
+      zeroGain.gain.value = 0;
+      this.txProcessorNode = initialProcessor;
+      this.txZeroGainNode = zeroGain;
+      this.txProcessorAttached = false;
+      this.updateFallbackProcessorState();
+
+      // Attempt to upgrade to off-thread AudioWorkletNode (RELATORIO_BUGS_E_AUDITORIA Bug 15)
+      if (typeof AudioWorkletNode !== "undefined" && ctx.audioWorklet?.addModule) {
+        const workletCode = `
+          class FallbackPcmWorklet extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              this.buffer = new Float32Array(4096);
+              this.offset = 0;
+            }
+            process(inputs) {
+              const ch = inputs[0] && inputs[0][0];
+              if (ch) {
+                this.buffer.set(ch, this.offset);
+                this.offset += ch.length;
+                if (this.offset >= 4096) {
+                  this.port.postMessage(this.buffer.slice(0, 4096));
+                  this.offset = 0;
+                }
+              }
+              return true;
+            }
+          }
+          registerProcessor("fallback-pcm-worklet", FallbackPcmWorklet);
+        `;
+        const blob = new Blob([workletCode], { type: "application/javascript" });
+        const blobUrl = URL.createObjectURL(blob);
+        ctx.audioWorklet
+          .addModule(blobUrl)
+          .then(() => {
+            URL.revokeObjectURL(blobUrl);
+            if (this.audioContext !== ctx) return;
+            const workletNode = new AudioWorkletNode(ctx, "fallback-pcm-worklet");
+            workletNode.port.onmessage = (ev) => {
+              if (ev.data) handleAudioData(ev.data);
+            };
+            if (this.txProcessorAttached && this.txProcessorNode) {
+              try {
+                this.txMixNode?.disconnect(this.txProcessorNode);
+                this.txProcessorNode.disconnect();
+              } catch {}
+            }
+            this.txProcessorNode = workletNode;
+            this.txProcessorAttached = false;
+            this.updateFallbackProcessorState();
+          })
+          .catch(() => {
+            URL.revokeObjectURL(blobUrl);
+          });
+      }
     } catch {}
   }
 
@@ -1133,6 +1192,12 @@ export class WebRTCVoiceEngine {
       this.localScreenStream = null;
     }
 
+    if (window.DiscordNative?.desktopCapture?.setPendingDisplaySource && sourceId) {
+      try {
+        await window.DiscordNative.desktopCapture.setPendingDisplaySource(sourceId);
+      } catch {}
+    }
+
     try {
       if (sourceId !== "browser-display" && window.DiscordNative?.isRenderer) {
         const strictMandatoryVideo = {
@@ -1505,6 +1570,24 @@ export class WebRTCVoiceEngine {
     if (!this.frameRelayInterval) {
       this.frameRelayInterval = setInterval(() => {
         if (!this.inVoiceChannel || !this.onFrameSend || this.connections.size === 0) return;
+
+        // AGENTS.md § 2 & RELATORIO_BUGS_E_AUDITORIA Bug 06:
+        // Pausar o relay de quadros JPEG quando todos os peers já possuem streaming WebRTC nativo ativo a 60 FPS
+        const conns = Array.from(this.connections.values());
+        const allHaveNativeWebRTC =
+          conns.length > 0 &&
+          conns.every((conn) => {
+            if (!this.isWebRTCPeerConnected(conn)) return false;
+            const hasScr =
+              !this.localScreenStream || conn.screenSender?.track?.readyState === "live";
+            const hasCam =
+              !this.localVideoStream || conn.cameraSender?.track?.readyState === "live";
+            return hasScr && hasCam;
+          });
+
+        if (allHaveNativeWebRTC) {
+          return;
+        }
 
         // Continuous lightweight preview frame relay: guarantees immediate visual feedback on remote computers
         if (this.localScreenStream && this.relayScrVideoEl && this.relayScrVideoEl.videoWidth > 0) {

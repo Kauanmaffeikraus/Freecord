@@ -38,6 +38,7 @@ const DiscordNative = {
   },
   desktopCapture: {
     getDesktopSources: () => ipcRenderer.invoke("DISCORD_GET_DESKTOP_SOURCES"),
+    setPendingDisplaySource: (sourceId) => ipcRenderer.invoke("SET_PENDING_DISPLAY_SOURCE", sourceId),
   },
   p2p: {
     getStatus: () => ipcRenderer.invoke("FREECORD_P2P_STATUS"),

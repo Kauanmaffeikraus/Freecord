@@ -44,6 +44,8 @@ const DEFAULT_SETTINGS = {
   version: "1.0.1225-p2p",
 };
 
+let pendingDisplaySourceId = null;
+
 let mainWindow = null;
 let p2pNode = null;
 let appSettings = { ...DEFAULT_SETTINGS };
@@ -227,6 +229,11 @@ function registerIpcHandlers() {
   });
 
   // Desktop Capturer for Go Live / Screen Share (matching discord_voice setDesktopSource / presentDesktopSourcePicker)
+  ipcMain.handle("SET_PENDING_DISPLAY_SOURCE", (_event, sourceId) => {
+    pendingDisplaySourceId = sourceId;
+    return true;
+  });
+
   ipcMain.handle("DISCORD_GET_DESKTOP_SOURCES", async () => {
     try {
       const sources = await desktopCapturer.getSources({
@@ -387,14 +394,11 @@ app.whenReady().then(async () => {
   });
 
   // Configure DisplayMedia handler so navigator.mediaDevices.getDisplayMedia works natively in Electron
-  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     try {
       const sources = await desktopCapturer.getSources({ types: ["screen", "window"] });
-      if (sources.length > 0) {
-        callback({ video: sources[0], audio: "loopback" });
-      } else {
-        callback({});
-      }
+      const chosen = sources.find((s) => s.id === pendingDisplaySourceId) || sources[0];
+      callback(chosen ? { video: chosen, audio: "loopback" } : {});
     } catch {
       callback({});
     }
