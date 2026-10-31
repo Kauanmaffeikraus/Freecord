@@ -50,6 +50,10 @@ import {
   QrCode,
   Camera,
   KeyRound,
+  Reply,
+  Pin,
+  Pencil,
+  Smile,
 } from "lucide-react";
 import {
   WebRTCVoiceEngine,
@@ -75,6 +79,8 @@ import {
   parseIdentityBackupBundle,
 } from "./services/p2pPhase1CryptoAndQr";
 import DiscordMarkdown from "./components/chat/DiscordMarkdown";
+import EmojiPickerPopover from "./components/chat/EmojiPickerPopover";
+import PinnedMessagesModal from "./components/chat/PinnedMessagesModal";
 
 const AVAILABLE_BADGES = [
   "P2P Node",
@@ -1401,6 +1407,19 @@ function loadInitialWebNodeStatus() {
     return INITIAL_REA_MESSAGES;
   });
   const [chatInput, setChatInput] = useState("");
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editInput, setEditInput] = useState("");
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showPinnedModal, setShowPinnedModal] = useState(false);
+  const [pinnedMessageIds, setPinnedMessageIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("freecord_pinned_msgs_v1") || "null");
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
   const [typingPeers, setTypingPeers] = useState({});
   const messagesRef = useRef(messages);
   const seenMessageIdsRef = useRef(new Set((messages || []).map((m) => m?.id).filter(Boolean)));
@@ -2509,6 +2528,49 @@ function loadInitialWebNodeStatus() {
         break;
       }
 
+      case "CHAT_EDIT": {
+        if (!event.messageId || !event.newText || !event.authorPeerId) break;
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== event.messageId) return m;
+            // Validação de autor: apenas o autor original pode editar sua mensagem
+            if (m.author?.peerId !== event.authorPeerId) return m;
+            return {
+              ...m,
+              text: event.newText,
+              editedAt: event.editedAt || Date.now(),
+            };
+          })
+        );
+        break;
+      }
+
+      case "CHAT_DELETE": {
+        if (!event.messageId || !event.authorPeerId) break;
+        setMessages((prev) =>
+          prev.filter((m) => {
+            if (m.id !== event.messageId) return true;
+            // Validação de autor: apenas o autor pode deletar sua mensagem
+            return m.author?.peerId !== event.authorPeerId;
+          })
+        );
+        break;
+      }
+
+      case "PIN_TOGGLE": {
+        if (!event.messageId) break;
+        setPinnedMessageIds((prev) => {
+          const next = prev.includes(event.messageId)
+            ? prev.filter((id) => id !== event.messageId)
+            : [...prev, event.messageId];
+          try {
+            localStorage.setItem("freecord_pinned_msgs_v1", JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        break;
+      }
+
       case "TYPING_STATE": {
         const { channelId, username, fromPeerId } = event;
         if (!channelId || !fromPeerId) return;
@@ -3056,6 +3118,14 @@ function loadInitialWebNodeStatus() {
     );
 
     const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const replySnapshot = replyingTo
+      ? {
+          messageId: replyingTo.messageId,
+          authorName: replyingTo.authorName,
+          textSnippet: replyingTo.textSnippet,
+        }
+      : null;
+
     const newMsg = {
       id: msgId,
       createdAt: Date.now(),
@@ -3063,6 +3133,7 @@ function loadInitialWebNodeStatus() {
       author: buildAuthorSnapshot(),
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       text: trimmed,
+      replyTo: replySnapshot,
       e2ee: e2eeEnvelope,
       e2eeVerified: true,
       reactions: {},
@@ -3071,6 +3142,7 @@ function loadInitialWebNodeStatus() {
     seenMessageIdsRef.current.add(msgId);
     setMessages((prev) => [...prev, newMsg]);
     setChatInput("");
+    setReplyingTo(null);
 
     // AGENTS.md § 2.2: Mascaramento de Rede: pacote na rede nunca expõe o texto original em claro
     const wireMsg = {
@@ -3079,6 +3151,95 @@ function loadInitialWebNodeStatus() {
     };
     sendP2PPacket({ type: "CHAT_MESSAGE", message: wireMsg }, targetPeer);
   };
+
+  const scrollToMessage = (msgId) => {
+    const el = document.getElementById(`msg_${msgId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("highlight-flash");
+      setTimeout(() => el.classList.remove("highlight-flash"), 1600);
+    }
+  };
+
+  const handleStartReply = (msg) => {
+    setReplyingTo({
+      messageId: msg.id,
+      authorName: msg.author?.displayName || msg.author?.username || "Peer",
+      textSnippet: (msg.text || "").slice(0, 80),
+    });
+  };
+
+  const handleStartEdit = (msg) => {
+    setEditingMessageId(msg.id);
+    setEditInput(msg.text || "");
+  };
+
+  const handleSaveEdit = (messageId) => {
+    const trimmed = editInput.trim();
+    if (!trimmed) return;
+    const editedAt = Date.now();
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, text: trimmed, editedAt } : m))
+    );
+    setEditingMessageId(null);
+    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+    sendP2PPacket(
+      {
+        type: "CHAT_EDIT",
+        dedupId: `edit_${messageId}_${editedAt}`,
+        messageId,
+        channelId: effectiveChannelId,
+        newText: trimmed,
+        editedAt,
+        authorPeerId: selfPeerIdRef.current,
+      },
+      targetPeer
+    );
+  };
+
+  const handleDeleteMessage = (messageId) => {
+    if (!confirm("Tem certeza que deseja excluir esta mensagem?")) return;
+    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+    sendP2PPacket(
+      {
+        type: "CHAT_DELETE",
+        dedupId: `del_${messageId}_${Date.now()}`,
+        messageId,
+        channelId: effectiveChannelId,
+        authorPeerId: selfPeerIdRef.current,
+      },
+      targetPeer
+    );
+  };
+
+  const handleTogglePin = (messageId) => {
+    setPinnedMessageIds((prev) => {
+      const next = prev.includes(messageId)
+        ? prev.filter((id) => id !== messageId)
+        : [...prev, messageId];
+      try {
+        localStorage.setItem("freecord_pinned_msgs_v1", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+    sendP2PPacket(
+      {
+        type: "PIN_TOGGLE",
+        dedupId: `pin_${messageId}_${Date.now()}`,
+        messageId,
+        channelId: effectiveChannelId,
+      },
+      targetPeer
+    );
+  };
+
+  const pinnedSet = useMemo(() => new Set(pinnedMessageIds), [pinnedMessageIds]);
+
+  const currentChannelPinnedMessages = useMemo(() => {
+    return messages.filter((m) => m.channelId === effectiveChannelId && pinnedSet.has(m.id));
+  }, [messages, effectiveChannelId, pinnedSet]);
 
   const handleSendQuickDm = async (peerProfile, text) => {
     const sorted = [nodeStatus.profile.peerId, peerProfile.peerId].sort().join("__");
@@ -5562,6 +5723,16 @@ function loadInitialWebNodeStatus() {
 
     const renderChatColumnContent = () => (
     <div className="chat-column" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+      {/* Pinned Messages Popover Modal */}
+      {showPinnedModal && (
+        <PinnedMessagesModal
+          pinnedMessages={currentChannelPinnedMessages}
+          onJumpToMessage={(msgId) => scrollToMessage(msgId)}
+          onUnpinMessage={(msgId) => handleTogglePin(msgId)}
+          onClose={() => setShowPinnedModal(false)}
+        />
+      )}
+
       {/* Outgoing Private Call Ringing Banner */}
               {outgoingDmCall && (
                 <div className="outgoing-call-banner">
@@ -5880,7 +6051,28 @@ function loadInitialWebNodeStatus() {
                     </div>
 
                     {filteredMessages.map((msg) => (
-                      <div key={msg.id} className="message-item">
+                      <div
+                        key={msg.id}
+                        id={`msg_${msg.id}`}
+                        className={`message-item ${pinnedSet.has(msg.id) ? "is-pinned" : ""}`}
+                      >
+                        {/* Discord Reply Quote Spine preview */}
+                        {msg.replyTo && (
+                          <div
+                            className="message-reply-preview"
+                            onClick={() => scrollToMessage(msg.replyTo.messageId)}
+                            title="Ir para a mensagem original"
+                          >
+                            <span className="reply-spine" />
+                            <span className="reply-author">
+                              @{msg.replyTo.authorName}
+                            </span>
+                            <span className="reply-text">
+                              {msg.replyTo.textSnippet}
+                            </span>
+                          </div>
+                        )}
+
                         <UserAvatar
                           profile={msg.author}
                           onClick={() => setInspectedProfile(msg.author)}
@@ -5918,10 +6110,49 @@ function loadInitialWebNodeStatus() {
                               </span>
                             )}
                             <span className="message-timestamp">{msg.timestamp}</span>
+                            {msg.editedAt && (
+                              <span
+                                className="message-edited-badge"
+                                title={new Date(msg.editedAt).toLocaleTimeString()}
+                              >
+                                (editado)
+                              </span>
+                            )}
                           </div>
 
                           <div className="message-text">
-                            <DiscordMarkdown content={msg.text} />
+                            {editingMessageId === msg.id ? (
+                              <div className="message-edit-container">
+                                <input
+                                  type="text"
+                                  className="message-edit-input"
+                                  value={editInput}
+                                  onChange={(e) => setEditInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      handleSaveEdit(msg.id);
+                                    } else if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      setEditingMessageId(null);
+                                    }
+                                  }}
+                                  autoFocus
+                                />
+                                <div className="message-edit-help">
+                                  <span>pressione Esc para </span>
+                                  <button type="button" onClick={() => setEditingMessageId(null)}>
+                                    cancelar
+                                  </button>
+                                  <span> • Enter para </span>
+                                  <button type="button" onClick={() => handleSaveEdit(msg.id)}>
+                                    salvar
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <DiscordMarkdown content={msg.text} />
+                            )}
                           </div>
 
                           {/* Interactive P2P Server Invite Card Embed */}
@@ -6060,17 +6291,55 @@ function loadInitialWebNodeStatus() {
                           )}
                         </div>
 
-                        {/* Hover Quick React Bar */}
-                        <div className="quick-react-bar">
+                        {/* Discord PTB Quick Action Bar */}
+                        <div className="quick-action-bar">
                           {["👍", "❤️", "🔥", "🚀", "⚡"].map((emoji) => (
                             <button
                               key={emoji}
-                              className="quick-react-btn"
+                              className="quick-action-btn"
                               onClick={() => handleToggleReaction(msg.id, emoji)}
+                              title={`Reagir com ${emoji}`}
                             >
-                              {emoji}
+                              <span>{emoji}</span>
                             </button>
                           ))}
+                          <button
+                            type="button"
+                            className="quick-action-btn"
+                            onClick={() => handleStartReply(msg)}
+                            title="Responder"
+                          >
+                            <Reply size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            className="quick-action-btn"
+                            onClick={() => handleTogglePin(msg.id)}
+                            title={pinnedSet.has(msg.id) ? "Desafixar mensagem" : "Fixar mensagem"}
+                            style={pinnedSet.has(msg.id) ? { color: "#e9a820" } : undefined}
+                          >
+                            <Pin size={15} />
+                          </button>
+                          {msg.author?.peerId === nodeStatus.profile.peerId && (
+                            <>
+                              <button
+                                type="button"
+                                className="quick-action-btn"
+                                onClick={() => handleStartEdit(msg)}
+                                title="Editar mensagem"
+                              >
+                                <Pencil size={15} />
+                              </button>
+                              <button
+                                type="button"
+                                className="quick-action-btn delete"
+                                onClick={() => handleDeleteMessage(msg.id)}
+                                title="Excluir mensagem"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -6079,6 +6348,25 @@ function loadInitialWebNodeStatus() {
 
                   {/* Chat Input */}
                   <div className="chat-input-wrapper">
+                    {/* Direct Reply Banner */}
+                    {replyingTo && (
+                      <div className="chat-reply-banner">
+                        <div className="chat-reply-banner-left">
+                          <Reply size={14} color="#5865f2" />
+                          <span>Respondendo a <strong>@{replyingTo.authorName}</strong></span>
+                          <span className="chat-reply-banner-snippet">{replyingTo.textSnippet}</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="chat-reply-cancel-btn"
+                          onClick={() => setReplyingTo(null)}
+                          title="Cancelar resposta"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    )}
+
                     {activeTyping && (
                       <div
                         style={{
@@ -6091,7 +6379,7 @@ function loadInitialWebNodeStatus() {
                         <b>{t.isTyping(activeTyping.username)}</b>
                       </div>
                     )}
-                    <form className="chat-input-bar" onSubmit={handleSendMessage}>
+                    <form className="chat-input-bar" onSubmit={handleSendMessage} style={{ position: "relative" }}>
                       <input
                         ref={fileInputRef}
                         type="file"
@@ -6123,6 +6411,31 @@ function loadInitialWebNodeStatus() {
                           }
                         }}
                       />
+                      <button
+                        type="button"
+                        className={`icon-btn ${showEmojiPicker ? "active" : ""}`}
+                        onClick={() => setShowEmojiPicker((prev) => !prev)}
+                        title="Emojis"
+                      >
+                        <Smile size={18} color={showEmojiPicker ? "#5865f2" : undefined} />
+                      </button>
+
+                      {showEmojiPicker && (
+                        <>
+                          <div
+                            className="emoji-picker-backdrop"
+                            onClick={() => setShowEmojiPicker(false)}
+                          />
+                          <EmojiPickerPopover
+                            onSelectEmoji={(emoji) => {
+                              setChatInput((prev) => prev + emoji);
+                              setShowEmojiPicker(false);
+                            }}
+                            onClose={() => setShowEmojiPicker(false)}
+                          />
+                        </>
+                      )}
+
                       <button type="submit" className="icon-btn" title={t.sendMessageTooltip}>
                         <Send size={18} color="var(--brand-blurple)" />
                       </button>
@@ -7045,6 +7358,21 @@ return (
                   </button>
                 </>
               )}
+              {!(selectedRoomId === "dm_hub" && !selectedDmPeerId) && (
+                <button
+                  type="button"
+                  className={`btn-secondary ${showPinnedModal ? "active" : ""}`}
+                  style={{ position: "relative" }}
+                  onClick={() => setShowPinnedModal((prev) => !prev)}
+                  title="Mensagens Fixadas"
+                >
+                  <Pin size={14} />
+                  <span>Fixadas</span>
+                  {currentChannelPinnedMessages.length > 0 && (
+                    <span className="discord-header-badge">{currentChannelPinnedMessages.length}</span>
+                  )}
+                </button>
+              )}
               <button className="btn-secondary" onClick={() => openProfileStudio("media")}>
                 <Sliders size={14} />
                 <span>{t.mediaSettingsBtn}</span>
@@ -7061,665 +7389,8 @@ return (
           </div>
 
           <div className="stage-body">
-            <div className="chat-column">
-              {/* Outgoing Private Call Ringing Banner */}
-              {outgoingDmCall && (
-                <div className="outgoing-call-banner">
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <UserAvatar profile={outgoingDmCall.peer} size="small" />
-                    <span>
-                      {t.outgoingCallRinging(
-                        outgoingDmCall.peer?.displayName ||
-                          outgoingDmCall.peer?.username ||
-                          "Peer"
-                      )}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    style={{ backgroundColor: "rgba(242, 63, 67, 0.25)", color: "#fca5a5" }}
-                    onClick={handleCancelOutgoingDmCall}
-                  >
-                    <PhoneOff size={13} />
-                    <span>{t.cancelCallBtn}</span>
-                  </button>
-                </div>
-              )}
-              {/* Voice / Simultaneous Webcam + Go Live Screen Stage */}
-              {activeVoiceChannelId && (
-                <div
-                  ref={stageContainerRef}
-                  className={`voice-stage-container ${stageTheaterMode ? "theater-mode" : ""}`}
-                  style={!stageTheaterMode ? { height: stageHeight } : undefined}
-                >
-                  <div className="stage-toolbar">
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Volume2 size={16} color="#23a55a" />
-                      <strong style={{ color: "#fff", fontSize: 13 }}>
-                        {t.voiceStageTitle}
-                      </strong>
-                    </div>
-
-                    <div className="stage-toolbar-controls">
-                      {/* Tile Size Slider for Grid Mode */}
-                      {!activeSpotlightTile && (
-                        <div className="stage-size-pill">
-                          <span>{t.tileSizeLabel}:</span>
-                          <input
-                            type="range"
-                            min="180"
-                            max="640"
-                            step="20"
-                            value={tileMinWidth}
-                            onChange={(e) => setTileMinWidth(Number(e.target.value))}
-                            style={{ width: 78, cursor: "pointer" }}
-                          />
-                        </div>
-                      )}
-
-                      {/* Grid vs Spotlight Toggle */}
-                      {activeSpotlightTile && (
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => setSpotlightTileId(null)}
-                        >
-                          <LayoutGrid size={14} />
-                          <span>{t.gridModeBtn}</span>
-                        </button>
-                      )}
-
-                      {/* Floating Webcam PiP Toggle when Screen Share is Spotlighted */}
-                      {activeSpotlightTile && activeWebcamTileForPip && (
-                        <button
-                          type="button"
-                          className={showWebcamPipOverlay ? "btn-primary" : "btn-secondary"}
-                          onClick={() => setShowWebcamPipOverlay((v) => !v)}
-                        >
-                          <PictureInPicture2 size={14} />
-                          <span>{t.webcamPipToggle}</span>
-                        </button>
-                      )}
-
-                      {/* Hide / Show All Webcams Toggle */}
-                      {hasAnyActiveWebcam && (
-                        <button
-                          type="button"
-                          className={hideAllWebcams ? "btn-primary" : "btn-secondary"}
-                          onClick={() => setHideAllWebcams((v) => !v)}
-                          title={hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}
-                        >
-                          {hideAllWebcams ? <Video size={14} /> : <VideoOff size={14} />}
-                          <span>{hideAllWebcams ? t.showAllWebcamsBtn : t.hideAllWebcamsBtn}</span>
-                        </button>
-                      )}
-
-                      {/* Theater Mode Toggle */}
-                      <button
-                        type="button"
-                        className={stageTheaterMode ? "btn-primary" : "btn-secondary"}
-                        onClick={() => setStageTheaterMode((v) => !v)}
-                      >
-                        {stageTheaterMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                        <span>{stageTheaterMode ? t.exitTheaterBtn : t.theaterModeBtn}</span>
-                      </button>
-
-                      {/* Fullscreen Entire Stage */}
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => toggleElementFullscreen(stageContainerRef.current)}
-                        title={t.stageFullscreenBtn}
-                      >
-                        <Maximize2 size={14} />
-                        <span>{t.stageFullscreenBtn}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => openProfileStudio("media")}
-                      >
-                        <Sliders size={14} />
-                        <span>{t.mediaSettingsBtn}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        className={videoEnabled ? "btn-primary" : "btn-secondary"}
-                        onClick={toggleCamera}
-                      >
-                        {videoEnabled ? <Video size={14} /> : <VideoOff size={14} />}
-                        <span>{videoEnabled ? t.turnOffCamera : t.turnOnCamera}</span>
-                      </button>
-
-                      <button type="button" className="btn-primary" onClick={openGoLivePicker}>
-                        <Monitor size={14} />
-                        <span>
-                          {screenSharing
-                            ? `${t.stopGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`
-                            : `${t.startGoLive} (${screenResolution.toUpperCase()} ${screenFps}FPS)`}
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Stage Body: Spotlight Mode (Main Large Tile + Dock Strip) vs Resizable Grid Mode */}
-                  {activeSpotlightTile ? (
-                    <div className="voice-spotlight-layout">
-                      <div className="voice-spotlight-main">
-                        {renderStageTile(activeSpotlightTile, true)}
-                      </div>
-
-                      {stageTiles.length > 1 && (
-                        <div className="voice-spotlight-dock">
-                          {stageTiles
-                            .filter((tile) => tile.id !== activeSpotlightTile.id)
-                            .map((tile) => renderStageTile(tile, false))}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      className="voice-video-grid"
-                      style={{
-                        gridTemplateColumns: `repeat(auto-fit, minmax(${tileMinWidth}px, 1fr))`,
-                      }}
-                    >
-                      {stageTiles.map((tile) => renderStageTile(tile, false))}
-                    </div>
-                  )}
-
-                  {/* Bottom Drag Handle to Resize Stage Height */}
-                  {!stageTheaterMode && (
-                    <div
-                      className="stage-resize-handle"
-                      onMouseDown={startStageHeightDrag}
-                      title={t.dragResizeHint}
-                    >
-                      <div className="stage-resize-handle-bar" />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Direct P2P Network Hub View */}
-              {selectedRoomId === "dm_hub" && !selectedDmPeerId ? (
-                <div className="messages-scroller" style={{ padding: "22px 26px" }}>
-                  <div
-                    style={{
-                      background: "linear-gradient(135deg, rgba(88,101,242,0.18), rgba(155,89,182,0.14))",
-                      border: "1px solid rgba(88,101,242,0.35)",
-                      borderRadius: 10,
-                      padding: 20,
-                      marginBottom: 20,
-                      display: "flex",
-                      gap: 18,
-                      alignItems: "center",
-                    }}
-                  >
-                    <img
-                      src="./logo.png"
-                      alt="Freecord Logo"
-                      style={{
-                        width: 76,
-                        height: 76,
-                        borderRadius: 16,
-                        boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <h2 style={{ color: "#fff", fontSize: 20, marginBottom: 6 }}>
-                        {t.hubBannerTitle}
-                      </h2>
-                      <p style={{ color: "var(--text-normal)", fontSize: 13, lineHeight: 1.5 }}>
-                        {t.hubBannerDesc}
-                      </p>
-
-                      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 10 }}>
-                        {(nodeStatus.connectionStrings || []).map((ep) => (
-                          <div key={ep} className="endpoint-copy-card" style={{ marginBottom: 0, gap: 12 }}>
-                            <div>
-                              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 700 }}>
-                                {t.yourEndpointLabel}
-                              </div>
-                              <div className="endpoint-code">{ep}</div>
-                            </div>
-                            <button className="btn-primary" onClick={() => handleCopy(ep)}>
-                              {copiedText === ep ? <Check size={14} /> : <Copy size={14} />}
-                              <span>{copiedText === ep ? t.copied : t.copyIpPort}</span>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Discovered LAN / Local Peers */}
-                  <h3 style={{ color: "var(--text-header)", fontSize: 14, marginBottom: 10 }}>
-                    {t.discoveredLanHeader(lanPeers.length)}
-                  </h3>
-                  {lanPeers.length === 0 ? (
-                    <div
-                      style={{
-                        background: "#2b2d31",
-                        padding: 16,
-                        borderRadius: 8,
-                        color: "var(--text-muted)",
-                        marginBottom: 20,
-                      }}
-                    >
-                      {t.searchingLan}{" "}
-                      {isElectron && (
-                        <button
-                          className="btn-primary"
-                          style={{ marginLeft: 10 }}
-                          onClick={handleSpawnSecondPeer}
-                        >
-                          <ExternalLink size={14} />
-                          <span>{t.spawnPeerBtn}</span>
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 8, marginBottom: 22 }}>
-                      {lanPeers.map((lp) => (
-                        <div
-                          key={lp.peerId}
-                          style={{
-                            background: "#2b2d31",
-                            padding: "12px 16px",
-                            borderRadius: 8,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                            <UserAvatar profile={lp} showStatus={true} />
-                            <div>
-                              <div style={{ fontWeight: 700, color: "#fff" }}>
-                                {lp.displayName || lp.username}#{lp.tag}{" "}
-                                <span className="message-peer-badge">{lp.peerId}</span>
-                              </div>
-                              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                                Endpoint: {lp.host}:{lp.tcpPort} • {lp.customStatus}
-                              </div>
-                            </div>
-                          </div>
-                          {lp.isConnected ? (
-                            <span style={{ color: "#4ade80", fontWeight: 700, fontSize: 12 }}>
-                              {t.interconnected}
-                            </span>
-                          ) : (
-                            <button
-                              className="btn-success"
-                              onClick={() =>
-                                window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)
-                              }
-                            >
-                              {t.connectP2pBtn}
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                /* Messages Feed */
-                <>
-                  <div className="messages-scroller">
-                    <div className="channel-welcome">
-                      <h2>{t.welcomeChannelTitle(currentChannelObj?.name)}</h2>
-                      <p>
-                        {currentChannelObj?.topic || t.welcomeChannelDefault}
-                      </p>
-                    </div>
-
-                    {filteredMessages.map((msg) => (
-                      <div key={msg.id} className="message-item">
-                        <UserAvatar
-                          profile={msg.author}
-                          onClick={() => setInspectedProfile(msg.author)}
-                        />
-
-                        <div className="message-content">
-                          <div className="message-header">
-                            <span
-                              className="message-author"
-                              style={{ cursor: "pointer" }}
-                              onClick={() => setInspectedProfile(msg.author)}
-                            >
-                              {msg.author?.displayName || msg.author?.username}
-                            </span>
-                            <span className="message-peer-badge">
-                              #{msg.author?.tag || "P2P"}
-                            </span>
-                            {msg.e2eeVerified && (
-                              <span
-                                className="message-peer-badge"
-                                style={{
-                                  backgroundColor: "rgba(35, 165, 90, 0.2)",
-                                  color: "#57f287",
-                                  border: "1px solid rgba(35, 165, 90, 0.35)",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 3,
-                                }}
-                                title={`End-to-End Encrypted • Key: ${
-                                  msg.author?.keyFingerprint || "SHA256-CTR-HMAC"
-                                }`}
-                              >
-                                <Lock size={10} />
-                                <span>E2EE</span>
-                              </span>
-                            )}
-                            <span className="message-timestamp">{msg.timestamp}</span>
-                          </div>
-
-                          <div className="message-text">
-                            <DiscordMarkdown content={msg.text} />
-                          </div>
-
-                          {/* Interactive P2P Server Invite Card Embed */}
-                          {msg.serverInvite?.room && (() => {
-                            const invRoom = msg.serverInvite.room;
-                            const isAlreadyMember = rooms.some((r) => r.id === invRoom.id);
-                            return (
-                              <div className="server-invite-card">
-                                <div
-                                  className="server-invite-banner"
-                                  style={{
-                                    background: invRoom.bannerUrl
-                                      ? `url(${invRoom.bannerUrl}) center/cover no-repeat`
-                                      : `linear-gradient(135deg, ${
-                                          invRoom.bannerColor || invRoom.color || "#5865f2"
-                                        } 0%, ${invRoom.bannerSecondaryColor || "#9b59b6"} 100%)`,
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      fontSize: 10,
-                                      fontWeight: 800,
-                                      color: "rgba(255,255,255,0.85)",
-                                      letterSpacing: 0.5,
-                                      zIndex: 2,
-                                    }}
-                                  >
-                                    {t.serverInviteCardHeader}
-                                  </span>
-                                </div>
-                                <div className="server-invite-body">
-                                  <div className="server-invite-info">
-                                    <div
-                                      className="server-invite-icon"
-                                      style={{ backgroundColor: invRoom.color || "#5865f2" }}
-                                    >
-                                      {invRoom.iconUrl ? (
-                                        <img src={invRoom.iconUrl} alt={invRoom.name} />
-                                      ) : (
-                                        invRoom.shortName || "FC"
-                                      )}
-                                    </div>
-                                    <div className="server-invite-meta">
-                                      <div className="server-invite-name">
-                                        <span>{invRoom.name}</span>
-                                        {invRoom.serverTag && (
-                                          <span className="server-tag-badge">
-                                            ✦ {invRoom.serverTag}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div className="server-invite-desc">
-                                        {invRoom.description ||
-                                          t.invitedYouToJoin(
-                                            msg.author?.displayName ||
-                                              msg.author?.username ||
-                                              "Peer"
-                                          )}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {isAlreadyMember ? (
-                                    <button
-                                      type="button"
-                                      className="btn-secondary"
-                                      onClick={() => {
-                                        setSelectedRoomId(invRoom.id);
-                                        if (invRoom.textChannels?.[0]?.id) {
-                                          setSelectedChannelId(invRoom.textChannels[0].id);
-                                        }
-                                      }}
-                                    >
-                                      <span>{t.joinedServerBadge}</span>
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="btn-success"
-                                      onClick={() =>
-                                        handleJoinServerRoom(invRoom, msg.serverInvite.hostEndpoint)
-                                      }
-                                    >
-                                      <UserPlus size={14} />
-                                      <span>{t.joinServerBtn}</span>
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })()}
-
-                          {msg.attachment && (
-                            <div className="message-attachment">
-                              {msg.attachment.isImage ? (
-                                <img src={msg.attachment.dataUrl} alt={msg.attachment.name} />
-                              ) : null}
-                              <div className="file-attachment-card">
-                                <div>
-                                  <div style={{ fontWeight: 600, color: "#fff", fontSize: 13 }}>
-                                    {msg.attachment.name}
-                                  </div>
-                                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                                    {(msg.attachment.size / 1024).toFixed(1)} KB • {t.directP2pTransfer}
-                                  </div>
-                                </div>
-                                <a
-                                  href={msg.attachment.dataUrl}
-                                  download={msg.attachment.name}
-                                  className="btn-primary"
-                                  style={{ textDecoration: "none" }}
-                                >
-                                  <Download size={14} />
-                                  <span>{t.downloadBtn}</span>
-                                </a>
-                              </div>
-                            </div>
-                          )}
-
-                          {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                            <div className="reactions-row">
-                              {Object.entries(msg.reactions).map(([emoji, peerList]) => {
-                                const active = peerList.includes(nodeStatus.profile.peerId);
-                                return (
-                                  <div
-                                    key={emoji}
-                                    className={`reaction-pill ${active ? "active" : ""}`}
-                                    onClick={() => handleToggleReaction(msg.id, emoji)}
-                                  >
-                                    <span>{emoji}</span>
-                                    <span>{peerList.length}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Hover Quick React Bar */}
-                        <div className="quick-react-bar">
-                          {["👍", "❤️", "🔥", "🚀", "⚡"].map((emoji) => (
-                            <button
-                              key={emoji}
-                              className="quick-react-btn"
-                              onClick={() => handleToggleReaction(msg.id, emoji)}
-                            >
-                              {emoji}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </div>
-
-                  {/* Chat Input */}
-                  <div className="chat-input-wrapper">
-                    {activeTyping && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--text-muted)",
-                          marginBottom: 4,
-                          paddingLeft: 4,
-                        }}
-                      >
-                        <b>{t.isTyping(activeTyping.username)}</b>
-                      </div>
-                    )}
-                    <form className="chat-input-bar" onSubmit={handleSendMessage}>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        style={{ display: "none" }}
-                        onChange={handleFileAttachment}
-                      />
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        onClick={() => fileInputRef.current?.click()}
-                        title={t.sendFileTooltip}
-                      >
-                        <Paperclip size={18} />
-                      </button>
-                      <input
-                        type="text"
-                        placeholder={t.chatPlaceholder(currentChannelObj?.name)}
-                        value={chatInput}
-                        onChange={(e) => {
-                          setChatInput(e.target.value);
-                          const now = Date.now();
-                          if (now - lastTypingSentRef.current > 2000) {
-                            lastTypingSentRef.current = now;
-                            sendP2PPacket({
-                              type: "TYPING_STATE",
-                              channelId: effectiveChannelId,
-                              username: selfDisplayName,
-                            });
-                          }
-                        }}
-                      />
-                      <button type="submit" className="icon-btn" title={t.sendMessageTooltip}>
-                        <Send size={18} color="var(--brand-blurple)" />
-                      </button>
-                    </form>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Right Sidebar: Connected Peers & Node Info */}
-            <div className="peer-sidebar">
-              <div className="channel-section-title" style={{ paddingTop: 0 }}>
-                <span>{t.youSidebarHeader}</span>
-              </div>
-              <div
-                className="peer-card"
-                onClick={() => setInspectedProfile(nodeStatus.profile)}
-              >
-                <div className="peer-card-left">
-                  <UserAvatar profile={nodeStatus.profile} showStatus={true} />
-                  <div className="peer-card-meta">
-                    <span className="peer-card-name">
-                      {selfDisplayName}#{nodeStatus.profile.tag}
-                    </span>
-                    <span className="peer-card-sub">
-                      {nodeStatus.profile.statusEmoji || ""}{" "}
-                      {nodeStatus.profile.customStatus || `TCP: ${nodeStatus.tcpPort || "Web"}`}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="channel-section-title">
-                <span>{t.connectedComputersHeader(connectedPeers.length)}</span>
-              </div>
-              {connectedPeers.map((peer) => (
-                <div
-                  key={peer.peerId}
-                  className="peer-card"
-                  onClick={() => setInspectedProfile(peer)}
-                  title={`Click to view ${peer.displayName || peer.username}'s Profile Card`}
-                >
-                  <div className="peer-card-left">
-                    <UserAvatar
-                      profile={peer}
-                      speaking={Boolean(
-                        activeVoiceChannelId &&
-                          peer.voiceChannelId === activeVoiceChannelId &&
-                          speakingMap[peer.peerId]
-                      )}
-                      showStatus={true}
-                    />
-                    <div className="peer-card-meta">
-                      <span className="peer-card-name">
-                        {peer.displayName || peer.username}#{peer.tag}
-                      </span>
-                      <span className="peer-card-sub">
-                        {peer.statusEmoji || ""} {peer.customStatus || `${peer.address}:${peer.port} • ${peer.rttMs}ms`}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              <div className="channel-section-title">
-                <span>{t.discoveredLanSidebar(lanPeers.filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0).length)}</span>
-                <RefreshCw
-                  size={12}
-                  style={{ cursor: "pointer" }}
-                  onClick={() => window.DiscordNative?.p2p?.beaconNow()}
-                  title="Broadcast UDP Discovery Beacon Now"
-                />
-              </div>
-              {lanPeers
-                .filter((l) => !l.isConnected && Number(l.tcpPort || 0) > 0)
-                .map((lp) => (
-                  <div key={lp.peerId} className="peer-card">
-                    <div className="peer-card-left">
-                      <UserAvatar profile={lp} showStatus={true} />
-                      <div className="peer-card-meta">
-                        <span className="peer-card-name">{lp.displayName || lp.username}</span>
-                        <span className="peer-card-sub">
-                          {lp.host}:{lp.tcpPort}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      className="btn-success"
-                      onClick={() =>
-                        window.DiscordNative?.p2p?.connect(lp.host, lp.tcpPort)
-                      }
-                    >
-                      {t.connectShortBtn}
-                    </button>
-                  </div>
-                ))}
-            </div>
+            {renderChatColumnContent()}
+            {renderPeerSidebarContent()}
           </div>
         </div>
       </div>
@@ -8090,6 +7761,18 @@ return (
                     <div className="mobile-header-actions">
                       <button
                         type="button"
+                        className={`icon-btn mobile-header-btn ${showPinnedModal ? "active" : ""}`}
+                        style={{ position: "relative" }}
+                        onClick={() => setShowPinnedModal((prev) => !prev)}
+                        title="Mensagens Fixadas"
+                      >
+                        <Pin size={18} />
+                        {currentChannelPinnedMessages.length > 0 && (
+                          <span className="discord-header-badge">{currentChannelPinnedMessages.length}</span>
+                        )}
+                      </button>
+                      <button
+                        type="button"
                         className="icon-btn mobile-header-btn"
                         onClick={() => openInviteServerModal(currentRoom)}
                         title={t.inviteServerBtn}
@@ -8301,6 +7984,18 @@ return (
                     )}
 
                     <div className="mobile-header-actions">
+                      <button
+                        type="button"
+                        className={`icon-btn mobile-header-btn ${showPinnedModal ? "active" : ""}`}
+                        style={{ position: "relative" }}
+                        onClick={() => setShowPinnedModal((prev) => !prev)}
+                        title="Mensagens Fixadas"
+                      >
+                        <Pin size={18} />
+                        {currentChannelPinnedMessages.length > 0 && (
+                          <span className="discord-header-badge">{currentChannelPinnedMessages.length}</span>
+                        )}
+                      </button>
                       {selectedDmPeer && (
                         <>
                           <button
