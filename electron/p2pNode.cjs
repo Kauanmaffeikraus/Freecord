@@ -141,11 +141,27 @@ class P2PNode extends EventEmitter {
   }
 
   isDuplicatePacket(packet, senderId) {
-    const pid = packet.message?.id || packet.packetId || packet.dedupId;
-    if (!pid) return false;
+    let pid = packet.message?.id || packet.packetId || packet.dedupId;
+    if (!pid) {
+      if (packet.type === "TYPING_STATE") {
+        pid = `typing:${packet.channelId || ""}:${packet.peerId || senderId}:${Math.floor(Date.now() / 2500)}`;
+      } else if (packet.type === "CHAT_REACTION") {
+        pid = `reaction:${packet.messageId || ""}:${packet.emoji || ""}:${packet.peerId || senderId}`;
+      } else if (packet.type === "ROOM_SYNC") {
+        pid = `roomsync:${senderId}:${packet.updatedAt || packet.timestamp || Math.floor(Date.now() / 3000)}`;
+      } else if (packet.type === "VOICE_STATE") {
+        pid = `vstate:${senderId}:${packet.channelId || "none"}:${JSON.stringify(packet.voiceState || {})}`;
+      } else if (packet.type === "VOICE_SPEAKING") {
+        pid = `vspk:${senderId}:${Boolean(packet.speaking)}:${Math.floor(Date.now() / 1000)}`;
+      } else if (packet.type === "PROFILE_UPDATE") {
+        pid = `prof:${senderId}:${packet.profile?.updatedAt || Math.floor(Date.now() / 3000)}`;
+      } else {
+        pid = `${packet.type}:${senderId}:${crypto.createHash("sha256").update(JSON.stringify(packet)).digest("hex").slice(0, 16)}`;
+      }
+    }
     if (this.seenPacketIds.has(pid)) return true;
     this.seenPacketIds.add(pid);
-    if (this.seenPacketIds.size > 2000) {
+    if (this.seenPacketIds.size > 5000) {
       const first = this.seenPacketIds.values().next().value;
       this.seenPacketIds.delete(first);
     }
@@ -732,18 +748,31 @@ class P2PNode extends EventEmitter {
           return;
         }
 
-        // Deduplicate simultaneous connections
+        // Deduplicate simultaneous connections (Cross-Dialing Race Condition - AGENTS.md § 2.1)
         if (this.peers.has(remotePeerId)) {
           const existing = this.peers.get(remotePeerId);
           if (existing.socket !== socket && !existing.socket.destroyed) {
-            // Deterministic tie-breaker by peerId
-            if (ctx.isInitiator && this.profile.peerId < remotePeerId) {
-              closeSocket(socket);
-              if (ctx.onHandshakeResolve) {
-                ctx.onHandshakeResolve(this.serializePeer(existing));
+            // Regra Determinística Universal:
+            // O nó com peerId léxica MENOR é sempre o cliente (mantém o socket de saída).
+            // O nó com peerId léxica MAIOR é sempre o servidor (mantém o socket de entrada).
+            const iShouldBeClient = this.profile.peerId < remotePeerId;
+
+            if (iShouldBeClient) {
+              // Devo ser o cliente: se este socket NÃO for de saída (iniciador), descarte-o
+              if (!ctx.isInitiator) {
+                closeSocket(socket);
+                return;
               }
-              return;
+              closeSocket(existing.socket);
             } else {
+              // Devo ser o servidor: se este socket FOR de saída (iniciador), descarte-o
+              if (ctx.isInitiator) {
+                closeSocket(socket);
+                if (ctx.onHandshakeResolve) {
+                  ctx.onHandshakeResolve(this.serializePeer(existing));
+                }
+                return;
+              }
               closeSocket(existing.socket);
             }
           }
@@ -951,8 +980,21 @@ class P2PNode extends EventEmitter {
   }
 
   broadcast(packet, targetPeerId = null) {
+    const dedupId =
+      packet.dedupId ||
+      packet.packetId ||
+      packet.message?.id ||
+      `${packet.type}:${this.profile.peerId}:${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    this.seenPacketIds.add(dedupId);
+    if (this.seenPacketIds.size > 5000) {
+      const first = this.seenPacketIds.values().next().value;
+      this.seenPacketIds.delete(first);
+    }
+
     const enriched = {
       fromPeerId: this.profile.peerId,
+      dedupId,
       ...(targetPeerId ? { targetPeerId } : {}),
       ...packet,
     };

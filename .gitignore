@@ -1,14 +1,66 @@
+# Dependencies
 node_modules/
+.pnp
+.pnp.js
+
+# Build Outputs & Bundles
 dist/
+build/
+out/
 release/
+*.apk
+*.aab
+*.exe
+*.AppImage
+*.deb
+*.rpm
+*.snap
+
+# Android Specific
 android/local.properties
 android/.gradle/
 android/app/build/
+android/app/.cxx/
+android/.idea/
+android/captures/
+
+# Embedded / External Submodules or Third-Party Experiments
 rea/
+
+
+# Logs and Runtime State
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 freecord-state-*.json
 settings.json
+*.freecord-id.json
+
+# Environment Variables & Secrets
 .env
 .env.*
+!.env.example
+
+# IDE & Editor Directories
+.vscode/
+.idea/
+*.swp
+*.swo
+.turbo/
+.cache/
+
+# OS Generated Files
 .DS_Store
+Thumbs.db
+Desktop.ini
+*.lnk
+*.url
+
+# Electron / Chromium Runtime Artifacts
+crash_reports/
+Crashpad/
+e
+Thumbs.db
+e
 Thumbs.db

@@ -1388,6 +1388,7 @@ function loadInitialWebNodeStatus() {
   const [chatInput, setChatInput] = useState("");
   const [typingPeers, setTypingPeers] = useState({});
   const messagesRef = useRef(messages);
+  const seenMessageIdsRef = useRef(new Set((messages || []).map((m) => m?.id).filter(Boolean)));
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -2161,10 +2162,17 @@ function loadInitialWebNodeStatus() {
       ...(targetPeerId ? { targetPeerId } : {}),
       ...packet,
     };
+    let hasTcpRoute = false;
     // 1. Send via Electron Native P2P if available
     if (window.DiscordNative?.p2p) {
       try {
         window.DiscordNative.p2p.send(enrichedPacket, targetPeerId);
+        if (targetPeerId) {
+          const peer = connectedPeersRef.current?.find((p) => p.peerId === targetPeerId);
+          if (peer && Number(peer.port || 0) > 0) {
+            hasTcpRoute = true;
+          }
+        }
       } catch {}
     }
     // 2. Send via Mobile WebSocket if connected to a desktop node
@@ -2173,9 +2181,12 @@ function loadInitialWebNodeStatus() {
         mobileWsRef.current.send(JSON.stringify(enrichedPacket));
       } catch {}
     }
-    // 3. Always deliver over all active WebRTC DataChannels!
-    // This guarantees immediate delivery when connected across external VPN / WAN.
-    voiceEngineRef.current?.sendViaDataChannel(enrichedPacket, targetPeerId);
+    // 3. Deliver via WebRTC DataChannels:
+    // Only send via WebRTC DataChannel if no direct native TCP socket exists for this target,
+    // or if this is a broadcast packet that must reach WebRTC-only peers (e.g. mobile/VPN)
+    if (!hasTcpRoute || !targetPeerId) {
+      voiceEngineRef.current?.sendViaDataChannel(enrichedPacket, targetPeerId);
+    }
   };
 
   const syncVoiceStateP2P = (channelId, voiceState = {}) => {
@@ -2223,7 +2234,11 @@ function loadInitialWebNodeStatus() {
   const normalizeIncomingMessage = (rawMsg) => {
     if (!rawMsg || !rawMsg.id) return null;
     if (rawMsg.e2ee && rawMsg.e2ee.ciphertext) {
-      const dec = decryptChatMessagePayload(rawMsg.e2ee, rawMsg.channelId, rawMsg.text || "");
+      const dec = decryptChatMessagePayload(
+        rawMsg.e2ee,
+        rawMsg.channelId,
+        "🔒 [Mensagem Criptografada]"
+      );
       return {
         ...rawMsg,
         text: dec.text,
@@ -2237,17 +2252,27 @@ function loadInitialWebNodeStatus() {
     switch (event.type) {
       case "CHAT_MESSAGE": {
         if (!event.message || !event.message.id) return;
+        const msgId = event.message.id;
+
+        // Sincronamente descarta mensagens já processadas sem disparar notificações repetidas
+        if (seenMessageIdsRef.current.has(msgId)) {
+          break;
+        }
+        seenMessageIdsRef.current.add(msgId);
+        if (seenMessageIdsRef.current.size > 3000) {
+          const first = seenMessageIdsRef.current.values().next().value;
+          seenMessageIdsRef.current.delete(first);
+        }
+
         const msg = normalizeIncomingMessage(event.message);
         if (!msg) return;
-        let isDuplicate = false;
+
         setMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) {
-            isDuplicate = true;
             return prev;
           }
           return [...prev, msg];
         });
-        if (isDuplicate) break;
 
         const fromId = msg.author?.peerId || event.fromPeerId;
         if (fromId && fromId !== selfPeerIdRef.current) {
@@ -2660,26 +2685,37 @@ function loadInitialWebNodeStatus() {
         const activeCh = activeVoiceChannelIdRef.current;
         if (!activeCh || !event.fromPeerId || !event.signal) break;
         if (event.voiceChannelId && event.voiceChannelId !== activeCh) break;
-        setConnectedPeers((prev) => {
-          const exists = prev.some((p) => p.peerId === event.fromPeerId);
-          if (exists) {
-            return prev.map((p) =>
-              p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
-                ? { ...p, voiceChannelId: activeCh }
-                : p
-            );
-          }
-          return [
-            ...prev,
-            {
-              peerId: event.fromPeerId,
-              voiceChannelId: activeCh,
-              name: event.fromPeerId.slice(0, 8),
-            },
-          ];
-        });
+
+        const isSdpHandshake =
+          event.signal.type === "offer" ||
+          event.signal.type === "answer" ||
+          Boolean(event.signal.sdp);
+
+        // Apenas ofertas/respostas SDP atualizam o estado React e retomam o AudioContext.
+        // Candidatos ICE (20-50 pacotes/seg) são encaminhados direto ao motor sem re-renderizar a árvore.
+        if (isSdpHandshake) {
+          setConnectedPeers((prev) => {
+            const exists = prev.some((p) => p.peerId === event.fromPeerId);
+            if (exists) {
+              return prev.map((p) =>
+                p.peerId === event.fromPeerId && p.voiceChannelId !== activeCh
+                  ? { ...p, voiceChannelId: activeCh }
+                  : p
+              );
+            }
+            return [
+              ...prev,
+              {
+                peerId: event.fromPeerId,
+                voiceChannelId: activeCh,
+                name: event.fromPeerId.slice(0, 8),
+              },
+            ];
+          });
+          voiceEngineRef.current?.resumeAllAudio();
+        }
+
         voiceEngineRef.current?.handleIncomingSignal(event.fromPeerId, event.signal);
-        voiceEngineRef.current?.resumeAllAudio();
         break;
       }
 
