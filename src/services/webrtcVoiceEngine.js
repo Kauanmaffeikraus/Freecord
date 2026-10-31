@@ -153,6 +153,26 @@ export class WebRTCVoiceEngine {
     this.isPttActive = false;
     this.pttReleaseDelay = 200; // ms
     this.pttReleaseTimer = null;
+
+    // Studio-grade DSP Voice Isolation & Dynamic Noise Gate
+    this.txHighpassNode = null;
+    this.txLowpassNode = null;
+    this.txNoiseGateNode = null;
+    this.studioDspEnabled = true;
+    this.noiseGateThreshold = -46; // dB
+  }
+
+  setStudioDspEnabled(enabled) {
+    this.studioDspEnabled = Boolean(enabled);
+    if (!this.studioDspEnabled && this.txNoiseGateNode && this.audioContext) {
+      const now = this.audioContext.currentTime;
+      this.txNoiseGateNode.gain.cancelScheduledValues(now);
+      this.txNoiseGateNode.gain.setValueAtTime(1.0, now);
+    }
+  }
+
+  setNoiseGateThreshold(thresholdDb) {
+    this.noiseGateThreshold = Math.max(-65, Math.min(-15, Number(thresholdDb) || -46));
   }
 
   setInputMode(mode) {
@@ -517,15 +537,36 @@ export class WebRTCVoiceEngine {
       const source = ctx.createMediaStreamSource(stream);
       this.txSourceNode = source;
 
+      // Studio-grade Vocal Isolation Filters (85 Hz High-pass + 7800 Hz Low-pass)
+      const hpFilter = ctx.createBiquadFilter();
+      hpFilter.type = "highpass";
+      hpFilter.frequency.value = 85;
+      hpFilter.Q.value = 0.707;
+      this.txHighpassNode = hpFilter;
+
+      const lpFilter = ctx.createBiquadFilter();
+      lpFilter.type = "lowpass";
+      lpFilter.frequency.value = 7800;
+      lpFilter.Q.value = 0.707;
+      this.txLowpassNode = lpFilter;
+
+      const gateNode = ctx.createGain();
+      gateNode.gain.value = 1.0;
+      this.txNoiseGateNode = gateNode;
+
+      source.connect(hpFilter);
+      hpFilter.connect(lpFilter);
+      lpFilter.connect(gateNode);
+
       const mixNode = ctx.createGain();
       mixNode.gain.value = 1;
       this.txMixNode = mixNode;
-      source.connect(mixNode);
+      gateNode.connect(mixNode);
 
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.25;
-      source.connect(analyser);
+      lpFilter.connect(analyser);
       this.txAnalyser = analyser;
       const freqData = new Uint8Array(analyser.frequencyBinCount);
       const timeData = new Float32Array(analyser.fftSize);
@@ -564,6 +605,16 @@ export class WebRTCVoiceEngine {
           if (abs > peak) peak = abs;
         }
         const rms = Math.sqrt(sumSq / timeData.length);
+
+        const db = 20 * Math.log10(rms || 0.00001);
+        if (this.studioDspEnabled && this.txNoiseGateNode) {
+          const nowAudio = ctx.currentTime;
+          if (db < this.noiseGateThreshold) {
+            this.txNoiseGateNode.gain.setTargetAtTime(0.0001, nowAudio, 0.06);
+          } else {
+            this.txNoiseGateNode.gain.setTargetAtTime(1.0, nowAudio, 0.012);
+          }
+        }
 
         const levelPercent = Math.min(
           100,
@@ -902,12 +953,15 @@ export class WebRTCVoiceEngine {
     for (const track of this.localAudioStream.getAudioTracks()) {
       track.enabled = canTransmit;
     }
-    if (this.txSourceNode && this.txMixNode) {
+    if (this.txSourceNode) {
       try {
-        if (!canTransmit) {
-          this.txSourceNode.disconnect(this.txMixNode);
-        } else {
-          this.txSourceNode.connect(this.txMixNode);
+        const destNode = this.txHighpassNode || this.txMixNode;
+        if (destNode) {
+          if (!canTransmit) {
+            this.txSourceNode.disconnect(destNode);
+          } else {
+            this.txSourceNode.connect(destNode);
+          }
         }
       } catch {}
     }

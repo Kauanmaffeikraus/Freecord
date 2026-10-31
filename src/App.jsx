@@ -1667,6 +1667,13 @@ function loadInitialWebNodeStatus() {
   const [isPttPressed, setIsPttPressed] = useState(false);
   const [isRecordingPttKey, setIsRecordingPttKey] = useState(false);
   const [currentGame, setCurrentGame] = useState(null);
+  const [studioDspEnabled, setStudioDspEnabled] = useState(() => {
+    return localStorage.getItem("freecord_studio_dsp") !== "false";
+  });
+  const [noiseGateThreshold, setNoiseGateThreshold] = useState(() => {
+    const saved = localStorage.getItem("freecord_gate_threshold");
+    return saved ? Number(saved) : -46;
+  });
 
   const voiceEngineRef = useRef(null);
   const selfPeerIdRef = useRef(nodeStatus.profile.peerId);
@@ -1801,6 +1808,15 @@ function loadInitialWebNodeStatus() {
     });
     return () => cleanup?.();
   }, [isElectron]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("freecord_studio_dsp", String(studioDspEnabled));
+      localStorage.setItem("freecord_gate_threshold", String(noiseGateThreshold));
+    } catch {}
+    voiceEngineRef.current?.setStudioDspEnabled(studioDspEnabled);
+    voiceEngineRef.current?.setNoiseGateThreshold(noiseGateThreshold);
+  }, [studioDspEnabled, noiseGateThreshold]);
 
   const pushToast = (toastObj) => {
     const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -8950,7 +8966,37 @@ return (
                             {opt.label}
                           </button>
                         ))}
+                        <button
+                          type="button"
+                          className={`status-choice-btn ${studioDspEnabled ? "active" : ""}`}
+                          onClick={() => setStudioDspEnabled(!studioDspEnabled)}
+                          title="Filtro de voz passa-alta 85Hz + passa-baixa 7800Hz e Noise Gate dinâmico"
+                        >
+                          {studioDspEnabled ? "✓ " : ""}
+                          Studio DSP & Noise Gate
+                        </button>
                       </div>
+
+                      {studioDspEnabled && (
+                        <div style={{ marginTop: 12, background: "#1e1f22", padding: 10, borderRadius: 6 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#dbdee1", marginBottom: 4 }}>
+                            <span>Limiar do Noise Gate (Supressão de Ruído de Fundo)</span>
+                            <span style={{ color: "#23a55a", fontWeight: 700 }}>{noiseGateThreshold} dB</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="-65"
+                            max="-15"
+                            step="1"
+                            value={noiseGateThreshold}
+                            onChange={(e) => setNoiseGateThreshold(Number(e.target.value))}
+                            style={{ width: "100%", accentColor: "#23a55a" }}
+                          />
+                          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                            Corta ruídos de ventilador, cliques mecânicos e estalos abaixo de {noiseGateThreshold} dB.
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Input Mode: VAD vs Push-to-Talk */}
