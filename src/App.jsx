@@ -1819,6 +1819,20 @@ function loadInitialWebNodeStatus() {
     voiceEngineRef.current?.setNoiseGateThreshold(noiseGateThreshold);
   }, [studioDspEnabled, noiseGateThreshold]);
 
+  const [minimizeToTray, setMinimizeToTray] = useState(true);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    window.DiscordNative?.settings?.get("MINIMIZE_TO_TRAY", true).then((val) => {
+      if (typeof val === "boolean") setMinimizeToTray(val);
+    });
+  }, [isElectron]);
+
+  const handleToggleMinimizeToTray = (val) => {
+    setMinimizeToTray(val);
+    window.DiscordNative?.settings?.set("MINIMIZE_TO_TRAY", val);
+  };
+
   const [overlayActive, setOverlayActive] = useState(false);
 
   const toggleOverlay = async () => {
@@ -6643,7 +6657,7 @@ function loadInitialWebNodeStatus() {
             {currentGame ? (
               <span className="peer-card-game">
                 <Gamepad2 size={11} color="#23a55a" />
-                <span>Jogando {currentGame.name}</span>
+                <span>{formatActivityLabel(currentGame)}</span>
               </span>
             ) : (
               <span className="peer-card-sub">
@@ -6678,7 +6692,7 @@ function loadInitialWebNodeStatus() {
               {peer.currentGame ? (
                 <span className="peer-card-game">
                   <Gamepad2 size={11} color="#23a55a" />
-                  <span>Jogando {peer.currentGame.name}</span>
+                  <span>{formatActivityLabel(peer.currentGame)}</span>
                 </span>
               ) : (
                 <span className="peer-card-sub">

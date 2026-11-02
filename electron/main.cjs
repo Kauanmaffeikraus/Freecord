@@ -1,6 +1,7 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain, globalShortcut, desktopCapturer, session, shell, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, ipcMain, globalShortcut, desktopCapturer, session, shell, powerSaveBlocker, Tray, Menu, nativeImage, safeStorage } = require("electron");
+const { DiscordRpcServer } = require("./discordRpcServer.cjs");
 const path = require("node:path");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -35,7 +36,7 @@ const DEFAULT_SETTINGS = {
   WINDOW_BOUNDS: { width: 1280, height: 800 },
   IS_MAXIMIZED: false,
   IS_MINIMIZED: false,
-  MINIMIZE_TO_TRAY: false,
+  MINIMIZE_TO_TRAY: true,
   enableHardwareAcceleration: true,
   audioSubsystem: "experimental",
   offloadAdmControls: true,
@@ -68,6 +69,144 @@ let activeGameActivity = null;
 let gameScanInterval = null;
 
 let overlayWindow = null;
+
+let appTray = null;
+let currentVoiceStatus = { inVoice: false, channelName: "", muted: false };
+let rpcServer = null;
+let rpcActivity = null;
+
+function restoreMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function updateTrayMenu() {
+  if (!appTray) return;
+  const inVoice = Boolean(currentVoiceStatus.inVoice);
+  const isMuted = Boolean(currentVoiceStatus.muted);
+  const channelName = currentVoiceStatus.channelName || "Voz";
+
+  const template = [
+    {
+      label: "Abrir Freecord",
+      click: () => restoreMainWindow(),
+    },
+    { type: "separator" },
+    {
+      label: inVoice
+        ? (isMuted ? "🎤 Desmutar Microfone" : "🔇 Mutar Microfone")
+        : "🎤 Microfone (Sem Chamada)",
+      enabled: inVoice,
+      click: () => {
+        mainWindow?.webContents.send("TRAY_MUTE_TOGGLE");
+      },
+    },
+    {
+      label: inVoice ? `🔴 Sair de: ${channelName}` : "🔴 Desconectar Chamada",
+      enabled: inVoice,
+      click: () => {
+        mainWindow?.webContents.send("TRAY_DISCONNECT_VOICE");
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Minimizar para a Bandeja ao Fechar",
+      type: "checkbox",
+      checked: Boolean(appSettings.MINIMIZE_TO_TRAY),
+      click: (menuItem) => {
+        appSettings.MINIMIZE_TO_TRAY = menuItem.checked;
+        saveSettings();
+        mainWindow?.webContents.send("DISCORD_SETTINGS_CHANGED", { MINIMIZE_TO_TRAY: menuItem.checked });
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Sair do Freecord",
+      click: () => {
+        app.isQuitting = true;
+        app.quit();
+      },
+    },
+  ];
+
+  appTray.setContextMenu(Menu.buildFromTemplate(template));
+  const tooltip = inVoice
+    ? `Freecord PTB — Chamada: #${channelName}`
+    : `Freecord PTB (Peer #${instanceId})`;
+  appTray.setToolTip(tooltip);
+}
+
+function setupSystemTray() {
+  if (appTray) return;
+  try {
+    const iconPath = path.join(__dirname, "..", "public", "logo.png");
+    let icon = nativeImage.createFromPath(iconPath);
+    if (!icon.isEmpty()) {
+      icon = icon.resize({ width: 16, height: 16 });
+    }
+    appTray = new Tray(icon);
+    appTray.setToolTip(`Freecord PTB (Peer #${instanceId})`);
+
+    appTray.on("click", () => {
+      if (mainWindow?.isVisible()) {
+        if (mainWindow.isFocused()) {
+          mainWindow.hide();
+        } else {
+          restoreMainWindow();
+        }
+      } else {
+        restoreMainWindow();
+      }
+    });
+
+    appTray.on("double-click", () => {
+      restoreMainWindow();
+    });
+
+    updateTrayMenu();
+  } catch (err) {
+    console.warn("[Freecord SystemTray] Failed to initialize tray:", err.message);
+  }
+}
+
+function updateThumbarButtons() {
+  if (process.platform !== "win32" || !mainWindow) return;
+  try {
+    const assetsDir = path.join(__dirname, "assets");
+    const micPath = path.join(assetsDir, currentVoiceStatus.muted ? "thumbar-micoff.png" : "thumbar-mic.png");
+    const discPath = path.join(assetsDir, "thumbar-disconnect.png");
+
+    const micIcon = nativeImage.createFromPath(micPath);
+    const discIcon = nativeImage.createFromPath(discPath);
+
+    const buttons = [
+      {
+        tooltip: currentVoiceStatus.muted ? "Desmutar Microfone" : "Mutar Microfone",
+        icon: micIcon,
+        flags: currentVoiceStatus.inVoice ? [] : ["disabled"],
+        click: () => {
+          mainWindow?.webContents.send("TRAY_MUTE_TOGGLE");
+        },
+      },
+      {
+        tooltip: "Desconectar Chamada",
+        icon: discIcon,
+        flags: currentVoiceStatus.inVoice ? [] : ["disabled"],
+        click: () => {
+          mainWindow?.webContents.send("TRAY_DISCONNECT_VOICE");
+        },
+      },
+    ];
+
+    mainWindow.setThumbarButtons(buttons);
+  } catch (err) {
+    console.warn("[Freecord Thumbar] Failed to update thumbar buttons:", err.message);
+  }
+}
 
 function toggleOverlay(show) {
   const shouldShow = show !== undefined ? Boolean(show) : !overlayWindow || !overlayWindow.isVisible();
@@ -669,6 +808,22 @@ app.whenReady().then(async () => {
       createMainWindow();
     }
   });
+});
+
+app.on("before-quit", () => {
+  app.isQuitting = true;
+  if (appTray) {
+    try {
+      appTray.destroy();
+    } catch {}
+    appTray = null;
+  }
+  if (rpcServer) {
+    try {
+      rpcServer.stop();
+    } catch {}
+    rpcServer = null;
+  }
 });
 
 app.on("window-all-closed", () => {

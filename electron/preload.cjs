@@ -99,6 +99,24 @@ const DiscordNative = {
       return () => ipcRenderer.removeListener("GAME_ACTIVITY_CHANGED", listener);
     },
   },
+  tray: {
+    updateVoiceStatus: (status) => ipcRenderer.invoke("TRAY_UPDATE_VOICE_STATUS", status),
+    onMuteToggle: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("TRAY_MUTE_TOGGLE", listener);
+      return () => ipcRenderer.removeListener("TRAY_MUTE_TOGGLE", listener);
+    },
+    onDisconnectVoice: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on("TRAY_DISCONNECT_VOICE", listener);
+      return () => ipcRenderer.removeListener("TRAY_DISCONNECT_VOICE", listener);
+    },
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => ipcRenderer.invoke("SAFE_STORAGE_IS_AVAILABLE"),
+    encryptString: (plainText) => ipcRenderer.invoke("SAFE_STORAGE_ENCRYPT", plainText),
+    decryptString: (cipherBase64) => ipcRenderer.invoke("SAFE_STORAGE_DECRYPT", cipherBase64),
+  },
   overlay: {
     toggle: (show) => ipcRenderer.invoke("OVERLAY_TOGGLE", show),
     getState: () => ipcRenderer.invoke("OVERLAY_GET_STATE"),
