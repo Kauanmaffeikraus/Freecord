@@ -1,3 +1,4 @@
+let thumbarInitialized = false;
 "use strict";
 
 const { app, BrowserWindow, ipcMain, globalShortcut, desktopCapturer, session, shell, powerSaveBlocker, Tray, Menu, nativeImage, safeStorage } = require("electron");
@@ -202,7 +203,12 @@ function updateThumbarButtons() {
       },
     ];
 
-    mainWindow.setThumbarButtons(buttons);
+    const ok = mainWindow.setThumbarButtons(buttons);
+    if (!ok && !thumbarInitialized) {
+      setTimeout(updateThumbarButtons, 1200);
+    } else if (ok) {
+      thumbarInitialized = true;
+    }
   } catch (err) {
     console.warn("[Freecord Thumbar] Failed to update thumbar buttons:", err.message);
   }
@@ -235,10 +241,11 @@ function toggleOverlay(show) {
       overlayWindow.setIgnoreMouseEvents(true, { forward: true });
       overlayWindow.setAlwaysOnTop(true, "screen-saver");
 
-      if (app.isPackaged) {
-        overlayWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "overlay" });
+      const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+      if (devServerUrl) {
+        overlayWindow.loadURL(`${devServerUrl}#overlay`);
       } else {
-        overlayWindow.loadURL("http://localhost:5173/#overlay");
+        overlayWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "overlay" });
       }
 
       overlayWindow.on("closed", () => {

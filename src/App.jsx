@@ -7398,9 +7398,18 @@ return (
             <div className="voice-connected-panel">
               <div className="voice-status-top">
                 <div className="voice-status-text">
-                  <div className="voice-status-title">
+                  <div className="voice-status-title" style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <Radio size={14} />
                     <span>{t.voiceConnected}</span>
+                    {inputMode === "push_to_talk" && (
+                      <span
+                        className={`ptt-status-pill ${isPttPressed ? "active" : ""}`}
+                        style={{ marginLeft: 6, fontSize: 10, padding: "1px 6px" }}
+                        title={`Atalho PTT: ${pttShortcut} • ${isPttPressed ? "Transmitindo" : "Aguardando tecla"}`}
+                      >
+                        PTT: {pttShortcut}
+                      </span>
+                    )}
                   </div>
                   <span className="voice-status-sub">
                     {t.directWebrtcMesh} •{" "}
@@ -7474,14 +7483,6 @@ return (
             </div>
 
             <div className="user-panel-actions">
-              {inputMode === "push_to_talk" && (
-                <span
-                  className={`ptt-status-pill ${isPttPressed ? "active" : ""}`}
-                  title={`Atalho PTT: ${pttShortcut} • ${isPttPressed ? "Transmitindo" : "Aguardando tecla"}`}
-                >
-                  PTT: {pttShortcut}
-                </span>
-              )}
               <button
                 className={`icon-btn ${selfMute ? "danger" : ""}`}
                 onClick={toggleSelfMute}
