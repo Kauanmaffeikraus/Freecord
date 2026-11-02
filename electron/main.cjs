@@ -337,7 +337,33 @@ function scanActiveGames() {
   }
 }
 
-function registerGlobalPtt(shortcut, releaseDelay = 200) {
+function normalizeAccelerator(shortcut) {
+  if (!shortcut || typeof shortcut !== "string") return null;
+  const s = shortcut.trim();
+  if (s === "none" || s === "" || s === "None") return null;
+
+  const map = {
+    ControlRight: "Control",
+    ControlLeft: "Control",
+    AltRight: "Alt",
+    AltLeft: "Alt",
+    ShiftRight: "Shift",
+    ShiftLeft: "Shift",
+    MetaRight: "Super",
+    MetaLeft: "Super",
+    Space: "Space",
+    Escape: "Esc",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right",
+  };
+
+  if (map[s]) return map[s];
+  return s;
+}
+
+function registerGlobalPtt(rawShortcut, releaseDelay = 200) {
   if (currentPttShortcut) {
     try {
       globalShortcut.unregister(currentPttShortcut);
@@ -345,7 +371,8 @@ function registerGlobalPtt(shortcut, releaseDelay = 200) {
     currentPttShortcut = null;
   }
 
-  if (!shortcut || shortcut === "none") return true;
+  const shortcut = normalizeAccelerator(rawShortcut);
+  if (!shortcut) return true;
 
   pttReleaseDelay = Math.max(20, Math.min(2000, Number(releaseDelay) || 200));
   try {
@@ -362,11 +389,11 @@ function registerGlobalPtt(shortcut, releaseDelay = 200) {
       currentPttShortcut = shortcut;
       return true;
     } else {
-      console.warn(`[Freecord PTT] Failed to register global shortcut: ${shortcut}`);
+      console.warn(`[Freecord PTT] Could not register global shortcut: ${shortcut} (raw: ${rawShortcut})`);
       return false;
     }
   } catch (err) {
-    console.warn(`[Freecord PTT] Error registering shortcut: ${err.message}`);
+    console.warn(`[Freecord PTT] Error registering shortcut (${shortcut}): ${err.message}`);
     return false;
   }
 }
@@ -792,6 +819,19 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers();
   setupAutoUpdater();
+
+  // Start Discord RPC local named pipe emulator
+  try {
+    rpcServer = new DiscordRpcServer();
+    rpcServer.on("activity-changed", (activity) => {
+      rpcActivity = activity;
+      const effective = rpcActivity || activeGameActivity;
+      mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", effective);
+    });
+    rpcServer.start();
+  } catch (err) {
+    console.warn("[Freecord RPC] Error starting RPC server:", err.message);
+  }
   await setupP2PNode();
   createMainWindow();
 

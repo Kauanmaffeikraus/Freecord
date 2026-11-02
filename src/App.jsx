@@ -948,6 +948,16 @@ function formatGameElapsed(startTime) {
   return `${hours}h ${mins}m`;
 }
 
+function formatActivityLabel(act) {
+  if (!act) return "";
+  const isMusic = act.category === "Música" || act.name === "Spotify";
+  const prefix = isMusic ? "Ouvindo" : "Jogando";
+  if (act.details) {
+    return `${prefix} ${act.name}: ${act.details}`;
+  }
+  return `${prefix} ${act.name}`;
+}
+
 function ProfileCard({
   profile,
   isSelf,
@@ -1659,7 +1669,7 @@ function loadInitialWebNodeStatus() {
     return localStorage.getItem("freecord_input_mode") || "voice_activity";
   });
   const [pttShortcut, setPttShortcut] = useState(() => {
-    return localStorage.getItem("freecord_ptt_shortcut") || "ControlRight";
+    return localStorage.getItem("freecord_ptt_shortcut") || "CapsLock";
   });
   const [pttReleaseDelay, setPttReleaseDelay] = useState(() => {
     const saved = localStorage.getItem("freecord_ptt_delay");
