@@ -163,7 +163,17 @@ export async function deriveSharedSecretECDH(myPrivateKeyPkcs8Hex, remotePublicK
   }
 
   try {
-    const cryptoSubtle =
+    try {
+    const safeBackup = await loadIdentityFromSafeStorage();
+    if (safeBackup && safeBackup.publicKey && safeBackup.privateKey) {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(safeBackup));
+      }
+      return safeBackup;
+    }
+  } catch {}
+
+  const cryptoSubtle =
       (typeof window !== "undefined" && window.crypto?.subtle) ||
       (typeof globalThis !== "undefined" && globalThis.crypto?.subtle);
     if (!cryptoSubtle) return null;
@@ -205,6 +215,41 @@ export async function deriveSharedSecretECDH(myPrivateKeyPkcs8Hex, remotePublicK
     console.warn("[Freecord E2EE] ECDH key agreement failed:", err);
     return null;
   }
+}
+
+
+export async function persistIdentityWithSafeStorage(identity) {
+  try {
+    if (typeof window !== "undefined" && window.DiscordNative?.safeStorage?.isEncryptionAvailable) {
+      const isAvail = await window.DiscordNative.safeStorage.isEncryptionAvailable();
+      if (isAvail) {
+        const encrypted = await window.DiscordNative.safeStorage.encryptString(JSON.stringify(identity));
+        if (encrypted) {
+          await window.DiscordNative.settings?.set("freecord_safe_identity", encrypted);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Freecord safeStorage] Failed to persist encrypted identity:", err);
+  }
+}
+
+export async function loadIdentityFromSafeStorage() {
+  try {
+    if (typeof window !== "undefined" && window.DiscordNative?.safeStorage?.isEncryptionAvailable) {
+      const isAvail = await window.DiscordNative.safeStorage.isEncryptionAvailable();
+      if (isAvail) {
+        const encrypted = await window.DiscordNative.settings?.get("freecord_safe_identity", null);
+        if (encrypted) {
+          const decrypted = await window.DiscordNative.safeStorage.decryptString(encrypted);
+          if (decrypted) return JSON.parse(decrypted);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("[Freecord safeStorage] Failed to load encrypted identity:", err);
+  }
+  return null;
 }
 
 export async function ensureECDHCryptoIdentity(peerId = "") {
@@ -255,6 +300,7 @@ export async function ensureECDHCryptoIdentity(peerId = "") {
       try {
         if (typeof localStorage !== "undefined") {
           localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(identity));
+          persistIdentityWithSafeStorage(identity);
         }
       } catch {}
 
