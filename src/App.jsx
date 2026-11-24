@@ -1466,6 +1466,9 @@ function loadInitialWebNodeStatus() {
   const messagesRef = useRef(messages);
   const seenMessageIdsRef = useRef(new Set((messages || []).map((m) => m?.id).filter(Boolean)));
   const pendingTransfersRef = useRef(new Map());
+  const isDiskHistoryLoadedRef = useRef(
+    typeof window === "undefined" || !window.DiscordNative?.storage?.loadChatHistory
+  );
 
   // AGENTS.md § 2.4 & RELATORIO_BUGS_E_AUDITORIA Bug 08: Persistent disk storage in Electron via IPC
   useEffect(() => {
@@ -1473,6 +1476,7 @@ function loadInitialWebNodeStatus() {
       window.DiscordNative.storage
         .loadChatHistory()
         .then((saved) => {
+          isDiskHistoryLoadedRef.current = true;
           if (Array.isArray(saved) && saved.length > 0) {
             setMessages((prev) => {
               const merged = mergeHistoryMessages(prev, saved);
@@ -1484,6 +1488,7 @@ function loadInitialWebNodeStatus() {
           }
         })
         .catch((err) => {
+          isDiskHistoryLoadedRef.current = true;
           console.warn("[Freecord Storage] Error loading persistent disk history:", err);
         });
     }
@@ -1492,8 +1497,8 @@ function loadInitialWebNodeStatus() {
   useEffect(() => {
     messagesRef.current = messages;
 
-    // Persist to Electron disk JSON file (no 5MB localStorage limit)
-    if (window.DiscordNative?.storage?.saveChatHistory) {
+    // Persist to Electron disk JSON file ONLY after initial disk load completes (prevents startup overwrite!)
+    if (window.DiscordNative?.storage?.saveChatHistory && isDiskHistoryLoadedRef.current) {
       window.DiscordNative.storage.saveChatHistory(messages.slice(-1000)).catch((err) => {
         console.warn("[Freecord Storage] Failed to save chat to disk:", err);
       });
@@ -1502,7 +1507,8 @@ function loadInitialWebNodeStatus() {
     // Fallback to localStorage (compacted to prevent QuotaExceededError)
     try {
       const compact = messages.slice(-150).map((m) => {
-        if (m?.attachment?.dataUrl && m.attachment.dataUrl.length > 256 * 1024) {
+        const dUrl = m?.attachment?.dataUrl;
+        if (dUrl && (dUrl.length > 256 * 1024 || String(dUrl).startsWith("blob:"))) {
           return {
             ...m,
             attachment: { ...m.attachment, dataUrl: null, omittedInStorage: true },
@@ -2677,11 +2683,18 @@ function loadInitialWebNodeStatus() {
       // AGENTS.md § 2.5 & RELATORIO_BUGS_E_AUDITORIA Bug 09: Fragmentação de Arquivos WebRTC
       case "FILE_TRANSFER_START": {
         if (!event.transferId || !event.totalChunks) break;
+        const now = Date.now();
+        for (const [tid, entry] of pendingTransfersRef.current.entries()) {
+          if (now - (entry.startedAt || 0) > 5 * 60 * 1000) {
+            pendingTransfersRef.current.delete(tid);
+          }
+        }
         pendingTransfersRef.current.set(event.transferId, {
           meta: event,
           chunks: new Map(),
           receivedChunks: 0,
           totalChunks: event.totalChunks,
+          startedAt: now,
         });
         break;
       }
@@ -2721,10 +2734,20 @@ function loadInitialWebNodeStatus() {
         const fullBlob = new Blob(chunkList, {
           type: meta.mimeType || "application/octet-stream",
         });
-        const objectUrl = URL.createObjectURL(fullBlob);
+        const persistentDataUrl = await new Promise((resolve) => {
+          try {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => resolve(URL.createObjectURL(fullBlob));
+            reader.readAsDataURL(fullBlob);
+          } catch {
+            resolve(URL.createObjectURL(fullBlob));
+          }
+        });
 
         const assembledMsg = {
           id: meta.messageId,
+          createdAt: Date.now(),
           channelId: meta.channelId,
           author: meta.author,
           timestamp:
@@ -2736,7 +2759,7 @@ function loadInitialWebNodeStatus() {
             size: meta.fileSize,
             mimeType: meta.mimeType,
             isImage: meta.isImage,
-            dataUrl: objectUrl,
+            dataUrl: persistentDataUrl,
           },
           reactions: {},
         };
