@@ -44,7 +44,7 @@ export const PinnedMessagesModal = memo(
                     <DiscordMarkdown content={msg.text} />
                   </div>
 
-                  {msg.attachment?.isImage && (
+                  {msg.attachment?.isImage && msg.attachment?.dataUrl && (
                     <div className="pinned-msg-attachment">
                       <img src={msg.attachment.dataUrl} alt={msg.attachment.name} />
                     </div>

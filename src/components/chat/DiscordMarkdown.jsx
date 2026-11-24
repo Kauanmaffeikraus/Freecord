@@ -31,9 +31,12 @@ const CodeBlock = memo(({ code, language }) => {
   const handleCopy = (e) => {
     e.stopPropagation();
     try {
-      navigator.clipboard.writeText(code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      Promise.resolve(navigator.clipboard?.writeText(code))
+        .then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch(() => {});
     } catch {}
   };
 
@@ -59,8 +62,9 @@ const CodeBlock = memo(({ code, language }) => {
 });
 
 // Inline Tokenizer: parses bold, italic, underline, strike, inline code, spoilers, links, and mentions
-function parseInline(text, keyPrefix = "") {
+function parseInline(text, keyPrefix = "", depth = 0) {
   if (!text) return null;
+  if (depth > 8) return text;
 
   // Regex patterns in precedence order
   // 1: Spoilers: ||...||
@@ -69,13 +73,13 @@ function parseInline(text, keyPrefix = "") {
   // 4: Bold: **...**
   // 5: Underline + Italic: ___...___
   // 6: Underline: __...__
-  // 7: Italic: *...* or _..._
+  // 7: Italic: *...* or boundary-safe _..._ (preserves snake_case identifiers)
   // 8: Strikethrough: ~~...~~
   // 9: Markdown link: [text](url)
   // 10: Auto URL: https?://...
   // 11: Mentions: @... or #...
   const tokenRegex =
-    /(\|\|[\s\S]+?\|\|)|(`[^`\n]+?`)|(\*\*\*[\s\S]+?\*\*\*)|(\*\*[\s\S]+?\*\*)|(___[\s\S]+?___)|(__[\s\S]+?__)|(\*[^\s\*][\s\S]*?\*|_[^\s_][\s\S]*?_)|(~~[\s\S]+?~~)|(\[[^\]]+\]\((?:https?:\/\/[^\s\)]+)\))|(https?:\/\/[^\s<]+[^<.,:;"')\]\s])|(@[a-zA-Z0-9_\-\u00C0-\u017F]+|#[a-zA-Z0-9_\-\u00C0-\u017F]+)/g;
+    /(\|\|[\s\S]+?\|\|)|(`[^`\n]+?`)|(\*\*\*[\s\S]+?\*\*\*)|(\*\*[\s\S]+?\*\*)|(___[\s\S]+?___)|(__[\s\S]+?__)|(\*[^\s\*](?:[\s\S]*?[^\s\*])?\*|(?<![a-zA-Z0-9_])_[^\s_](?:[\s\S]*?[^\s_])?_(?![a-zA-Z0-9_]))|(~~[\s\S]+?~~)|(\[[^\]]+\]\((?:https?:\/\/[^\s\)]+)\))|(https?:\/\/[^\s<]+[^<.,:;"')\]\s])|(@[a-zA-Z0-9_\-\u00C0-\u017F]+|#[a-zA-Z0-9_\-\u00C0-\u017F]+)/g;
 
   const elements = [];
   let lastIndex = 0;
@@ -92,7 +96,7 @@ function parseInline(text, keyPrefix = "") {
 
     if (raw.startsWith("||") && raw.endsWith("||")) {
       const inner = raw.slice(2, -2);
-      elements.push(<Spoiler key={key}>{parseInline(inner, `${key}_sp`)}</Spoiler>);
+      elements.push(<Spoiler key={key}>{parseInline(inner, `${key}_sp`, depth + 1)}</Spoiler>);
     } else if (raw.startsWith("`") && raw.endsWith("`")) {
       const inner = raw.slice(1, -1);
       elements.push(
@@ -104,31 +108,31 @@ function parseInline(text, keyPrefix = "") {
       const inner = raw.slice(3, -3);
       elements.push(
         <strong key={key}>
-          <em>{parseInline(inner, `${key}_bi`)}</em>
+          <em>{parseInline(inner, `${key}_bi`, depth + 1)}</em>
         </strong>
       );
     } else if (raw.startsWith("**") && raw.endsWith("**")) {
       const inner = raw.slice(2, -2);
-      elements.push(<strong key={key}>{parseInline(inner, `${key}_b`)}</strong>);
+      elements.push(<strong key={key}>{parseInline(inner, `${key}_b`, depth + 1)}</strong>);
     } else if (raw.startsWith("___") && raw.endsWith("___")) {
       const inner = raw.slice(3, -3);
       elements.push(
         <u key={key}>
-          <em>{parseInline(inner, `${key}_ui`)}</em>
+          <em>{parseInline(inner, `${key}_ui`, depth + 1)}</em>
         </u>
       );
     } else if (raw.startsWith("__") && raw.endsWith("__")) {
       const inner = raw.slice(2, -2);
-      elements.push(<u key={key}>{parseInline(inner, `${key}_u`)}</u>);
+      elements.push(<u key={key}>{parseInline(inner, `${key}_u`, depth + 1)}</u>);
     } else if (
       (raw.startsWith("*") && raw.endsWith("*")) ||
       (raw.startsWith("_") && raw.endsWith("_"))
     ) {
       const inner = raw.slice(1, -1);
-      elements.push(<em key={key}>{parseInline(inner, `${key}_i`)}</em>);
+      elements.push(<em key={key}>{parseInline(inner, `${key}_i`, depth + 1)}</em>);
     } else if (raw.startsWith("~~") && raw.endsWith("~~")) {
       const inner = raw.slice(2, -2);
-      elements.push(<s key={key}>{parseInline(inner, `${key}_s`)}</s>);
+      elements.push(<s key={key}>{parseInline(inner, `${key}_s`, depth + 1)}</s>);
     } else if (raw.startsWith("[") && raw.includes("](") && raw.endsWith(")")) {
       const closeBracket = raw.indexOf("](");
       const label = raw.slice(1, closeBracket);
@@ -189,9 +193,20 @@ export const DiscordMarkdown = memo(({ content }) => {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Multi-line code block: ```[lang]
+    // Multi-line or single-line fenced code block: ```[lang] ... ```
     if (line.trimStart().startsWith("```")) {
-      const lang = line.trimStart().slice(3).trim();
+      const rest = line.trimStart().slice(3);
+      const inlineCloseIdx = rest.indexOf("```");
+      if (inlineCloseIdx !== -1) {
+        const inlineCode = rest.slice(0, inlineCloseIdx).trim();
+        blocks.push(
+          <CodeBlock key={`block_${blocks.length}`} code={inlineCode} language="" />
+        );
+        i++;
+        continue;
+      }
+
+      const lang = rest.trim();
       const codeLines = [];
       i++;
       while (i < lines.length && !lines[i].trimStart().startsWith("```")) {
