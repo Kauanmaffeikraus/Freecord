@@ -2518,7 +2518,8 @@ function loadInitialWebNodeStatus() {
         rawMsg.e2ee,
         rawMsg.channelId,
         "🔒 [Mensagem Criptografada]",
-        cryptoIdentityRef.current?.privateKey || ""
+        cryptoIdentityRef.current?.privateKey || "",
+        cryptoIdentityRef.current?.publicKey || ""
       );
       return {
         ...rawMsg,
@@ -2733,15 +2734,28 @@ function loadInitialWebNodeStatus() {
       }
 
       case "CHAT_EDIT": {
-        if (!event.messageId || !event.newText || !event.authorPeerId) break;
+        const senderPeerId = event.fromPeerId || event.authorPeerId;
+        if (!event.messageId || (!event.newText && !event.e2ee) || !senderPeerId) break;
+        let resolvedText = event.newText || "";
+        if (event.e2ee && event.e2ee.ciphertext) {
+          const dec = await decryptChatMessagePayload(
+            event.e2ee,
+            event.channelId,
+            "🔒 [Mensagem Criptografada]",
+            cryptoIdentityRef.current?.privateKey || "",
+            cryptoIdentityRef.current?.publicKey || ""
+          );
+          resolvedText = dec.text;
+        }
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== event.messageId) return m;
-            // Validação de autor: apenas o autor original pode editar sua mensagem
-            if (m.author?.peerId !== event.authorPeerId) return m;
+            // Validação de autor vinculada ao remetente autenticado no socket/malha
+            if (m.author?.peerId !== senderPeerId) return m;
             return {
               ...m,
-              text: event.newText,
+              text: resolvedText,
+              ...(event.e2ee ? { e2ee: event.e2ee } : {}),
               editedAt: event.editedAt || Date.now(),
             };
           })
@@ -2750,12 +2764,13 @@ function loadInitialWebNodeStatus() {
       }
 
       case "CHAT_DELETE": {
-        if (!event.messageId || !event.authorPeerId) break;
+        const senderPeerId = event.fromPeerId || event.authorPeerId;
+        if (!event.messageId || !senderPeerId) break;
         setMessages((prev) =>
           prev.filter((m) => {
             if (m.id !== event.messageId) return true;
-            // Validação de autor: apenas o autor pode deletar sua mensagem
-            return m.author?.peerId !== event.authorPeerId;
+            // Validação de autor vinculada ao remetente autenticado no socket/malha
+            return m.author?.peerId !== senderPeerId;
           })
         );
         break;
@@ -2850,11 +2865,15 @@ function loadInitialWebNodeStatus() {
           allowedChannels
         );
         if (missed.length > 0) {
+          // AGENTS.md § 2.2: Nunca expor texto em claro em pacotes de rede E2EE
+          const maskedMissed = missed.map((m) =>
+            m?.e2ee?.ciphertext ? { ...m, text: "🔒 [Mensagem Criptografada]" } : m
+          );
           sendP2PPacket(
             {
               type: "HISTORY_SYNC_RESPONSE",
               fromPeerId: myId,
-              messages: missed,
+              messages: maskedMissed,
             },
             requesterId || null
           );
@@ -3378,22 +3397,40 @@ function loadInitialWebNodeStatus() {
     setEditInput(msg.text || "");
   };
 
-  const handleSaveEdit = (messageId) => {
+  const handleSaveEdit = async (messageId) => {
     const trimmed = editInput.trim();
     if (!trimmed) return;
     const editedAt = Date.now();
+    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+    const remotePeerObj = targetPeer
+      ? connectedPeers.find((p) => p.peerId === targetPeer)
+      : null;
+
+    const e2eeEnvelope = await encryptChatMessagePayload(
+      trimmed,
+      effectiveChannelId,
+      cryptoIdentity.publicKey,
+      remotePeerObj?.cryptoPubKey || "",
+      cryptoIdentity.privateKey || ""
+    );
+
     setMessages((prev) =>
-      prev.map((m) => (m.id === messageId ? { ...m, text: trimmed, editedAt } : m))
+      prev.map((m) =>
+        m.id === messageId
+          ? { ...m, text: trimmed, ...(e2eeEnvelope ? { e2ee: e2eeEnvelope } : {}), editedAt }
+          : m
+      )
     );
     setEditingMessageId(null);
-    const targetPeer = selectedRoomId === "dm_hub" ? selectedDmPeerId : null;
+
     sendP2PPacket(
       {
         type: "CHAT_EDIT",
         dedupId: `edit_${messageId}_${editedAt}`,
         messageId,
         channelId: effectiveChannelId,
-        newText: trimmed,
+        newText: e2eeEnvelope ? "🔒 [Mensagem Criptografada]" : trimmed,
+        e2ee: e2eeEnvelope,
         editedAt,
         authorPeerId: selfPeerIdRef.current,
       },

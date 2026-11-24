@@ -163,17 +163,7 @@ export async function deriveSharedSecretECDH(myPrivateKeyPkcs8Hex, remotePublicK
   }
 
   try {
-    try {
-    const safeBackup = await loadIdentityFromSafeStorage();
-    if (safeBackup && safeBackup.publicKey && safeBackup.privateKey) {
-      if (typeof localStorage !== "undefined") {
-        localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(safeBackup));
-      }
-      return safeBackup;
-    }
-  } catch {}
-
-  const cryptoSubtle =
+    const cryptoSubtle =
       (typeof window !== "undefined" && window.crypto?.subtle) ||
       (typeof globalThis !== "undefined" && globalThis.crypto?.subtle);
     if (!cryptoSubtle) return null;
@@ -253,19 +243,34 @@ export async function loadIdentityFromSafeStorage() {
 }
 
 export async function ensureECDHCryptoIdentity(peerId = "") {
+  const isValidV2 = (obj) =>
+    Boolean(
+      obj &&
+        obj.version === 2 &&
+        obj.curve === "P-256" &&
+        obj.privateKey?.length === 276 &&
+        obj.publicKey?.length === 130
+    );
+
   try {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CRYPTO_STORAGE_KEY) : null;
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (
-        parsed &&
-        parsed.version === 2 &&
-        parsed.curve === "P-256" &&
-        parsed.privateKey?.length === 276 &&
-        parsed.publicKey?.length === 130
-      ) {
+      if (isValidV2(parsed)) {
+        persistIdentityWithSafeStorage(parsed);
         return parsed;
       }
+    }
+  } catch {}
+
+  // Restore hardware-encrypted identity from Electron safeStorage if localStorage was cleared
+  try {
+    const safeBackup = await loadIdentityFromSafeStorage();
+    if (isValidV2(safeBackup)) {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(safeBackup));
+      }
+      return safeBackup;
     }
   } catch {}
 
@@ -427,46 +432,61 @@ export async function decryptChatMessagePayload(
   e2eeEnvelope,
   channelId,
   fallbackText = "",
-  myPrivKey = ""
+  myPrivKey = "",
+  myPubKey = ""
 ) {
   if (!e2eeEnvelope || !e2eeEnvelope.ciphertext || !e2eeEnvelope.iv) {
     return { text: fallbackText, verified: false };
   }
   try {
-    let masterKey = null;
-
-    if (
-      e2eeEnvelope.alg === "FC-ECDH-P256-CTR-HMAC" &&
-      myPrivKey &&
-      e2eeEnvelope.senderPubKey &&
-      e2eeEnvelope.senderPubKey.length === 130
-    ) {
-      const sharedSecret = await deriveSharedSecretECDH(myPrivKey, e2eeEnvelope.senderPubKey);
-      if (sharedSecret) {
-        masterKey = deriveChannelMasterKey(channelId, sharedSecret);
-      }
-    }
-
-    if (!masterKey) {
-      masterKey = deriveChannelMasterKey(
-        channelId,
-        null,
-        e2eeEnvelope.senderPubKey || "",
-        e2eeEnvelope.recipientPubKey || ""
-      );
-    }
-
     const authData = new TextEncoder().encode(
       `${channelId}:${e2eeEnvelope.iv}:${e2eeEnvelope.ciphertext}`
     );
-    const expectedMac = bytesToHex(hmacSha256(masterKey, authData)).slice(0, 32);
-    if (expectedMac !== e2eeEnvelope.mac) {
-      return { text: fallbackText || "🔒 [Mensagem Criptografada — Falha de Autenticação]", verified: false };
+
+    const tryDecryptWithKey = (masterKey) => {
+      if (!masterKey) return null;
+      const expectedMac = bytesToHex(hmacSha256(masterKey, authData)).slice(0, 32);
+      if (expectedMac !== e2eeEnvelope.mac) return null;
+      const cipherBytes = hexToBytes(e2eeEnvelope.ciphertext);
+      const plainBytes = sha256CtrXor(cipherBytes, masterKey, e2eeEnvelope.iv);
+      const decoded = new TextDecoder().decode(plainBytes);
+      return { text: decoded, verified: true };
+    };
+
+    if (e2eeEnvelope.alg === "FC-ECDH-P256-CTR-HMAC" && myPrivKey) {
+      const candidatePubs = [];
+      const senderPub = e2eeEnvelope.senderPubKey || "";
+      const recipientPub = e2eeEnvelope.recipientPubKey || "";
+
+      // If decrypting our own synced message, use recipientPubKey first; otherwise senderPubKey first
+      if (myPubKey && senderPub === myPubKey) {
+        if (recipientPub.length === 130) candidatePubs.push(recipientPub);
+        if (senderPub.length === 130) candidatePubs.push(senderPub);
+      } else {
+        if (senderPub.length === 130) candidatePubs.push(senderPub);
+        if (recipientPub.length === 130 && recipientPub !== senderPub) candidatePubs.push(recipientPub);
+      }
+
+      for (const remotePub of candidatePubs) {
+        const sharedSecret = await deriveSharedSecretECDH(myPrivKey, remotePub);
+        if (sharedSecret) {
+          const masterKey = deriveChannelMasterKey(channelId, sharedSecret);
+          const result = tryDecryptWithKey(masterKey);
+          if (result) return result;
+        }
+      }
     }
-    const cipherBytes = hexToBytes(e2eeEnvelope.ciphertext);
-    const plainBytes = sha256CtrXor(cipherBytes, masterKey, e2eeEnvelope.iv);
-    const decoded = new TextDecoder().decode(plainBytes);
-    return { text: decoded, verified: true };
+
+    const fallbackKey = deriveChannelMasterKey(
+      channelId,
+      null,
+      e2eeEnvelope.senderPubKey || "",
+      e2eeEnvelope.recipientPubKey || ""
+    );
+    const fallbackResult = tryDecryptWithKey(fallbackKey);
+    if (fallbackResult) return fallbackResult;
+
+    return { text: fallbackText || "🔒 [Mensagem Criptografada — Falha de Autenticação]", verified: false };
   } catch {
     return { text: fallbackText, verified: false };
   }
