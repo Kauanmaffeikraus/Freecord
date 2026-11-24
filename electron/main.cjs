@@ -1,5 +1,6 @@
-let thumbarInitialized = false;
 "use strict";
+
+let thumbarInitialized = false;
 
 const { app, BrowserWindow, ipcMain, globalShortcut, desktopCapturer, session, shell, powerSaveBlocker, Tray, Menu, nativeImage, safeStorage } = require("electron");
 const { DiscordRpcServer } = require("./discordRpcServer.cjs");
@@ -298,12 +299,16 @@ function scanActiveGames() {
             executable: matchedExe,
             startTime: activeGameActivity?.executable === matchedExe ? activeGameActivity.startTime : Date.now(),
           };
-          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+          if (!rpcActivity) {
+            mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+          }
         }
       } else {
         if (activeGameActivity !== null) {
           activeGameActivity = null;
-          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+          if (!rpcActivity) {
+            mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+          }
         }
       }
     });
@@ -332,12 +337,16 @@ function scanActiveGames() {
             executable: matchedExe,
             startTime: activeGameActivity?.executable === matchedExe ? activeGameActivity.startTime : Date.now(),
           };
-          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+          if (!rpcActivity) {
+            mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", activeGameActivity);
+          }
         }
       } else {
         if (activeGameActivity !== null) {
           activeGameActivity = null;
-          mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+          if (!rpcActivity) {
+            mainWindow?.webContents.send("GAME_ACTIVITY_CHANGED", null);
+          }
         }
       }
     });
@@ -349,15 +358,47 @@ function normalizeAccelerator(shortcut) {
   const s = shortcut.trim();
   if (s === "none" || s === "" || s === "None") return null;
 
+  // Electron globalShortcut rejects standalone modifier keys (must include a non-modifier key)
+  const standaloneModifiers = new Set([
+    "Control",
+    "ControlLeft",
+    "ControlRight",
+    "Alt",
+    "AltLeft",
+    "AltRight",
+    "Shift",
+    "ShiftLeft",
+    "ShiftRight",
+    "Meta",
+    "MetaLeft",
+    "MetaRight",
+    "Super",
+    "CapsLock",
+  ]);
+  if (standaloneModifiers.has(s)) return null;
+
+  // Normalize browser KeyboardEvent.code formats (KeyA -> A, Digit1 -> 1, Numpad0 -> num0)
+  if (/^Key([A-Z])$/.test(s)) return s.slice(3);
+  if (/^Digit([0-9])$/.test(s)) return s.slice(5);
+  if (/^Numpad([0-9])$/.test(s)) return `num${s.slice(6)}`;
+
   const map = {
-    ControlRight: "Control",
-    ControlLeft: "Control",
-    AltRight: "Alt",
-    AltLeft: "Alt",
-    ShiftRight: "Shift",
-    ShiftLeft: "Shift",
-    MetaRight: "Super",
-    MetaLeft: "Super",
+    Backquote: "`",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+    NumpadAdd: "numadd",
+    NumpadSubtract: "numsub",
+    NumpadMultiply: "nummult",
+    NumpadDivide: "numdiv",
+    NumpadDecimal: "numdec",
     Space: "Space",
     Escape: "Esc",
     ArrowUp: "Up",
@@ -379,9 +420,17 @@ function registerGlobalPtt(rawShortcut, releaseDelay = 200) {
   }
 
   const shortcut = normalizeAccelerator(rawShortcut);
-  if (!shortcut) return true;
+  if (!shortcut) {
+    if (rawShortcut && rawShortcut !== "none" && rawShortcut !== "None") {
+      console.warn(`[Freecord PTT] '${rawShortcut}' cannot be registered as a global Electron accelerator (modifier-only); window-focused PTT still applies.`);
+    }
+    return false;
+  }
 
   pttReleaseDelay = Math.max(20, Math.min(2000, Number(releaseDelay) || 200));
+  // Electron globalShortcut only fires on keydown + OS key-repeat (~500ms initial delay),
+  // so keep a minimum 600ms hold window to prevent cutting out while holding the key down.
+  const effectiveHoldWindow = Math.max(600, pttReleaseDelay);
   try {
     const success = globalShortcut.register(shortcut, () => {
       mainWindow?.webContents.send("PTT_STATE_CHANGED", { active: true });
@@ -389,7 +438,7 @@ function registerGlobalPtt(rawShortcut, releaseDelay = 200) {
       pttReleaseTimer = setTimeout(() => {
         mainWindow?.webContents.send("PTT_STATE_CHANGED", { active: false });
         pttReleaseTimer = null;
-      }, pttReleaseDelay);
+      }, effectiveHoldWindow);
     });
 
     if (success) {
@@ -468,9 +517,21 @@ function createMainWindow() {
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
+    updateThumbarButtons();
     if (!gameScanInterval) {
       setTimeout(scanActiveGames, 3000);
       gameScanInterval = setInterval(scanActiveGames, 15000);
+    }
+  });
+
+  mainWindow.on("show", () => {
+    updateThumbarButtons();
+  });
+
+  mainWindow.on("close", (event) => {
+    if (!app.isQuitting && appSettings.MINIMIZE_TO_TRAY && appTray) {
+      event.preventDefault();
+      mainWindow.hide();
     }
   });
 
@@ -733,9 +794,52 @@ function registerIpcHandlers() {
     return true;
   });
 
-  // Local Game Activity IPC
+  // Local Game Activity IPC (Discord RPC takes priority over process scanner)
   ipcMain.handle("GET_CURRENT_GAME", () => {
-    return activeGameActivity;
+    return rpcActivity || activeGameActivity;
+  });
+
+  // System Tray & Windows Thumbar Voice Status IPC
+  ipcMain.handle("TRAY_UPDATE_VOICE_STATUS", (_event, status) => {
+    if (status && typeof status === "object") {
+      currentVoiceStatus = { ...currentVoiceStatus, ...status };
+      updateTrayMenu();
+      updateThumbarButtons();
+    }
+    return true;
+  });
+
+  // Hardware-backed OS Credential Encryption via Electron safeStorage (DPAPI / Keychain / SecretService)
+  ipcMain.handle("SAFE_STORAGE_IS_AVAILABLE", () => {
+    try {
+      return Boolean(safeStorage && safeStorage.isEncryptionAvailable());
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle("SAFE_STORAGE_ENCRYPT", (_event, plainText) => {
+    try {
+      if (!safeStorage || !safeStorage.isEncryptionAvailable() || typeof plainText !== "string") {
+        return null;
+      }
+      return safeStorage.encryptString(plainText).toString("base64");
+    } catch (err) {
+      console.warn("[Freecord safeStorage] Encrypt error:", err.message);
+      return null;
+    }
+  });
+
+  ipcMain.handle("SAFE_STORAGE_DECRYPT", (_event, cipherBase64) => {
+    try {
+      if (!safeStorage || !safeStorage.isEncryptionAvailable() || typeof cipherBase64 !== "string") {
+        return null;
+      }
+      return safeStorage.decryptString(Buffer.from(cipherBase64, "base64"));
+    } catch (err) {
+      console.warn("[Freecord safeStorage] Decrypt error:", err.message);
+      return null;
+    }
   });
 
   // In-Game Overlay IPC
@@ -840,6 +944,7 @@ app.whenReady().then(async () => {
     console.warn("[Freecord RPC] Error starting RPC server:", err.message);
   }
   await setupP2PNode();
+  setupSystemTray();
   createMainWindow();
 
   if (app.isPackaged) {

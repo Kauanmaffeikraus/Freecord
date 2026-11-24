@@ -35,6 +35,11 @@ const DiscordNative = {
   settings: {
     get: (key, defaultValue) => ipcRenderer.invoke("DISCORD_SETTINGS_GET", key, defaultValue),
     set: (key, value) => ipcRenderer.invoke("DISCORD_SETTINGS_SET", key, value),
+    onSettingsChanged: (callback) => {
+      const listener = (_event, patch) => callback(patch);
+      ipcRenderer.on("DISCORD_SETTINGS_CHANGED", listener);
+      return () => ipcRenderer.removeListener("DISCORD_SETTINGS_CHANGED", listener);
+    },
   },
   storage: {
     saveChatHistory: (data) => ipcRenderer.invoke("SAVE_CHAT_STORAGE", data),

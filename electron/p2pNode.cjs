@@ -146,11 +146,11 @@ class P2PNode extends EventEmitter {
       if (packet.type === "TYPING_STATE") {
         pid = `typing:${packet.channelId || ""}:${packet.peerId || senderId}:${Math.floor(Date.now() / 2500)}`;
       } else if (packet.type === "CHAT_REACTION") {
-        pid = `reaction:${packet.messageId || ""}:${packet.emoji || ""}:${packet.peerId || senderId}`;
+        pid = `reaction:${packet.messageId || ""}:${packet.emoji || ""}:${packet.peerId || senderId}:${Math.floor(Date.now() / 1500)}`;
       } else if (packet.type === "ROOM_SYNC") {
         pid = `roomsync:${senderId}:${packet.updatedAt || packet.timestamp || Math.floor(Date.now() / 3000)}`;
       } else if (packet.type === "VOICE_STATE") {
-        pid = `vstate:${senderId}:${packet.channelId || "none"}:${JSON.stringify(packet.voiceState || {})}`;
+        pid = `vstate:${senderId}:${packet.channelId || "none"}:${JSON.stringify(packet.voiceState || {})}:${Math.floor(Date.now() / 1500)}`;
       } else if (packet.type === "VOICE_SPEAKING") {
         pid = `vspk:${senderId}:${Boolean(packet.speaking)}:${Math.floor(Date.now() / 1000)}`;
       } else if (packet.type === "PROFILE_UPDATE") {
@@ -1063,6 +1063,7 @@ class P2PNode extends EventEmitter {
       status: info.status || "online",
       statusEmoji: info.statusEmoji || "⚡",
       customStatus: info.customStatus || "",
+      currentGame: info.currentGame || null,
       badges: Array.isArray(info.badges) ? info.badges : ["P2P Node"],
       cryptoPubKey: info.cryptoPubKey || "",
       keyFingerprint: info.keyFingerprint || "",

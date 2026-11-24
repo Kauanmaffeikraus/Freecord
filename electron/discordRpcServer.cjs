@@ -31,13 +31,36 @@ class DiscordRpcServer extends EventEmitter {
 
       const pipePath = this.getPipePath(index);
 
-      // On Linux/macOS, delete existing socket file if it exists
+      // On Linux/macOS, probe existing socket before removing: never unlink a live Discord socket
       if (process.platform !== "win32" && fs.existsSync(pipePath)) {
-        try {
-          fs.unlinkSync(pipePath);
-        } catch {}
+        const probe = net.createConnection(pipePath);
+        let handled = false;
+        probe.once("connect", () => {
+          if (handled) return;
+          handled = true;
+          probe.destroy();
+          tryListen(index + 1);
+        });
+        probe.once("error", (probeErr) => {
+          if (handled) return;
+          handled = true;
+          probe.destroy();
+          if (probeErr.code === "ECONNREFUSED" || probeErr.code === "ENOENT") {
+            try {
+              fs.unlinkSync(pipePath);
+            } catch {}
+            bindPipe(pipePath, index);
+          } else {
+            tryListen(index + 1);
+          }
+        });
+        return;
       }
 
+      bindPipe(pipePath, index);
+    };
+
+    const bindPipe = (pipePath, index) => {
       const srv = net.createServer((socket) => {
         this.handleConnection(socket);
       });
@@ -85,10 +108,21 @@ class DiscordRpcServer extends EventEmitter {
 
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > 2 * 1024 * 1024) {
+        console.warn("[Discord RPC Server] Buffer limit exceeded; closing socket.");
+        socket.destroy();
+        return;
+      }
 
       while (buffer.length >= 8) {
         const opcode = buffer.readInt32LE(0);
         const length = buffer.readInt32LE(4);
+
+        if (length < 0 || length > 1024 * 1024) {
+          console.warn(`[Discord RPC Server] Invalid frame length (${length}); closing socket.`);
+          socket.destroy();
+          break;
+        }
 
         if (buffer.length < 8 + length) {
           // Incomplete frame, wait for more data
@@ -101,9 +135,15 @@ class DiscordRpcServer extends EventEmitter {
         try {
           const payloadStr = payloadBuf.toString("utf8");
           const payload = JSON.parse(payloadStr);
-          this.processMessage(socket, opcode, payload, (id) => {
-            clientId = id;
-          });
+          this.processMessage(
+            socket,
+            opcode,
+            payload,
+            (id) => {
+              clientId = id;
+            },
+            () => clientId
+          );
         } catch (parseErr) {
           console.warn("[Discord RPC Server] Failed to parse payload:", parseErr.message);
         }
@@ -136,7 +176,7 @@ class DiscordRpcServer extends EventEmitter {
     }
   }
 
-  processMessage(socket, opcode, payload, setClientId) {
+  processMessage(socket, opcode, payload, setClientId, getClientId) {
     switch (opcode) {
       case 0: { // HANDSHAKE
         const cId = payload.client_id;
@@ -171,8 +211,10 @@ class DiscordRpcServer extends EventEmitter {
           const args = payload.args || {};
           const act = args.activity;
           if (act) {
+            const appId = getClientId ? getClientId() : null;
             const formatted = {
-              name: act.name || act.details || "Jogo / Aplicativo",
+              applicationId: appId || null,
+              name: act.name || act.assets?.large_text || act.details || "Jogo / Aplicativo",
               details: act.details || "",
               state: act.state || "",
               timestamps: act.timestamps || null,

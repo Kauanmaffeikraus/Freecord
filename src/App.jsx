@@ -1669,7 +1669,7 @@ function loadInitialWebNodeStatus() {
     return localStorage.getItem("freecord_input_mode") || "voice_activity";
   });
   const [pttShortcut, setPttShortcut] = useState(() => {
-    return localStorage.getItem("freecord_ptt_shortcut") || "CapsLock";
+    return localStorage.getItem("freecord_ptt_shortcut") || "F9";
   });
   const [pttReleaseDelay, setPttReleaseDelay] = useState(() => {
     const saved = localStorage.getItem("freecord_ptt_delay");
@@ -1746,6 +1746,7 @@ function loadInitialWebNodeStatus() {
       localStorage.setItem("freecord_input_mode", inputMode);
     } catch {}
     voiceEngineRef.current?.setInputMode(inputMode);
+    voiceEngineRef.current?.setPttReleaseDelay(pttReleaseDelay);
     if (isElectron) {
       if (inputMode === "push_to_talk") {
         window.DiscordNative?.ptt?.setShortcut(pttShortcut, pttReleaseDelay);
@@ -1830,13 +1831,53 @@ function loadInitialWebNodeStatus() {
   }, [studioDspEnabled, noiseGateThreshold]);
 
   const [minimizeToTray, setMinimizeToTray] = useState(true);
+  const trayActionsRef = useRef({ toggleMute: null, disconnectVoice: null });
 
   useEffect(() => {
     if (!isElectron) return;
     window.DiscordNative?.settings?.get("MINIMIZE_TO_TRAY", true).then((val) => {
       if (typeof val === "boolean") setMinimizeToTray(val);
     });
+    const cleanupSettings = window.DiscordNative?.settings?.onSettingsChanged?.((patch) => {
+      if (typeof patch?.MINIMIZE_TO_TRAY === "boolean") {
+        setMinimizeToTray(patch.MINIMIZE_TO_TRAY);
+      }
+    });
+    const cleanupMute = window.DiscordNative?.tray?.onMuteToggle?.(() => {
+      trayActionsRef.current.toggleMute?.();
+    });
+    const cleanupDisc = window.DiscordNative?.tray?.onDisconnectVoice?.(() => {
+      trayActionsRef.current.disconnectVoice?.();
+    });
+    return () => {
+      cleanupSettings?.();
+      cleanupMute?.();
+      cleanupDisc?.();
+    };
   }, [isElectron]);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    let channelName = "";
+    if (activeVoiceChannelId) {
+      if (String(activeVoiceChannelId).startsWith("dm_call_")) {
+        channelName = "Chamada Privada";
+      } else {
+        for (const r of rooms) {
+          const found = (r.voiceChannels || []).find((vc) => vc.id === activeVoiceChannelId);
+          if (found) {
+            channelName = found.name || "";
+            break;
+          }
+        }
+      }
+    }
+    window.DiscordNative?.tray?.updateVoiceStatus?.({
+      inVoice: Boolean(activeVoiceChannelId),
+      channelName,
+      muted: Boolean(selfMute || selfDeafen),
+    });
+  }, [isElectron, activeVoiceChannelId, selfMute, selfDeafen, rooms]);
 
   const handleToggleMinimizeToTray = (val) => {
     setMinimizeToTray(val);
@@ -2482,6 +2523,7 @@ function loadInitialWebNodeStatus() {
     }
     const packet = {
       type: "VOICE_STATE",
+      dedupId: `vs_${selfPeerIdRef.current}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       fromPeerId: selfPeerIdRef.current,
       channelId: channelId || null,
       voiceState: voiceState || {},
@@ -3624,14 +3666,17 @@ function loadInitialWebNodeStatus() {
 
   const handleToggleReaction = (messageId, emoji) => {
     const myPeerId = nodeStatus.profile.peerId;
+    const dedupId = `react_${messageId}_${emoji}_${myPeerId}_${Date.now()}`;
     handleIncomingP2PEvent({
       type: "CHAT_REACTION",
+      dedupId,
       messageId,
       emoji,
       peerId: myPeerId,
     });
     sendP2PPacket({
       type: "CHAT_REACTION",
+      dedupId,
       messageId,
       emoji,
       peerId: myPeerId,
@@ -3858,6 +3903,9 @@ function loadInitialWebNodeStatus() {
       });
     }
   };
+
+  trayActionsRef.current.toggleMute = toggleSelfMute;
+  trayActionsRef.current.disconnectVoice = handleLeaveVoiceChannel;
 
   const toggleCamera = async () => {
     const engine = voiceEngineRef.current;
@@ -9167,9 +9215,9 @@ return (
                             </span>
                           </div>
 
-                          {/* Quick Preset Shortcuts */}
+                          {/* Quick Preset Shortcuts (Electron globalShortcut compatible) */}
                           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                            {["ControlRight", "CapsLock", "PageDown", "F13", "Space", "AltRight"].map((key) => (
+                            {["F9", "F10", "F13", "PageDown", "Backquote", "Insert"].map((key) => (
                               <button
                                 key={key}
                                 type="button"
@@ -9199,6 +9247,7 @@ return (
                               onChange={(e) => {
                                 const val = Number(e.target.value);
                                 setPttReleaseDelay(val);
+                                voiceEngineRef.current?.setPttReleaseDelay(val);
                                 try { localStorage.setItem("freecord_ptt_delay", String(val)); } catch {}
                               }}
                               style={{ width: "100%", accentColor: "#5865f2" }}
@@ -9207,6 +9256,26 @@ return (
                         </div>
                       )}
                     </div>
+
+                    {isElectron && (
+                      <div className="media-section-card" style={{ marginTop: 14 }}>
+                        <div className="media-section-header">
+                          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <Monitor size={16} color="#57f287" />
+                            <span>Comportamento no Desktop</span>
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={`status-choice-btn ${minimizeToTray ? "active" : ""}`}
+                          style={{ marginTop: 8, width: "100%", justifyContent: "space-between" }}
+                          onClick={() => handleToggleMinimizeToTray(!minimizeToTray)}
+                        >
+                          <span>Minimizar para a Bandeja ao Fechar (System Tray)</span>
+                          <span>{minimizeToTray ? "✓ Ativo" : "Desativado"}</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Right Column: Camera & Screen Share Resolution / FPS */}
